@@ -1,0 +1,32 @@
+{
+  "matches": {
+    "78bb512f": {
+      "status": "cancelled",
+      "guild_id": 1333962919536492607,
+      "channel_id": 1336836286614339606,
+      "p1_id": 1279106601931899015,
+      "p2_id": 1171999659527512104,
+      "best_of": 3,
+      "venue_id": null,
+      "real_sim_time": false,
+      "run_at_iso": "2026-03-04T18:00:00+00:00",
+      "created_by": 1279106601931899015,
+      "p1_loadout": "preset-001",
+      "p2_loadout": null
+    },
+    "88299866": {
+      "status": "pending",
+      "guild_id": 1333962919536492607,
+      "channel_id": 1334179507438878854,
+      "p1_id": 1171999659527512104,
+      "p2_id": 1279106601931899015,
+      "best_of": 5,
+      "venue_id": "venue-ao-rod-laver-arena",
+      "real_sim_time": false,
+      "run_at_iso": "2026-03-03T18:00:00+00:00",
+      "created_by": 1279106601931899015,
+      "p1_loadout": null,
+      "p2_loadout": null
+    }
+  }
+}

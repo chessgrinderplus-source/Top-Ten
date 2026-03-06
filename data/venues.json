@@ -1,0 +1,41 @@
+{
+  "venues": {
+    "venue-ao-rod-laver-arena": {
+      "venue_id": "venue-ao-rod-laver-arena",
+      "tournament_id": "AO",
+      "name": "Rod Laver Arena",
+      "surface": "hard",
+      "cpi_base": 44,
+      "ball_height_base": "LOW",
+      "roof": true,
+      "stadium_capacity": 80000,
+      "price": 1000000,
+      "weather": {
+        "temp_c_min": 29,
+        "temp_c_max": 45,
+        "wind_kmh_min": 0,
+        "wind_kmh_max": 10,
+        "rain_chance_pct": 5
+      }
+    },
+    "venue-rg-court-phillipe-chatrier": {
+      "venue_id": "venue-rg-court-phillipe-chatrier",
+      "tournament_id": "RG",
+      "name": "Court Phillipe-Chatrier",
+      "surface": "clay",
+      "cpi_base": 25,
+      "bounce_height_base": 85,
+      "roof": true,
+      "roof_closed": false,
+      "stadium_capacity": 60000,
+      "price": 1,
+      "weather": {
+        "temp_c_min": 20,
+        "temp_c_max": 40,
+        "wind_kmh_min": 1,
+        "wind_kmh_max": 10,
+        "rain_chance_pct": 10
+      }
+    }
+  }
+}

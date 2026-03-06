@@ -1,0 +1,23 @@
+{
+  "coaches": {
+    "coach-6341": {
+      "id": "coach-6341",
+      "name": "Patrick Mouratoglou",
+      "weekly_wage": 20000,
+      "weekly_points": 10,
+      "created_at": "2026-02-12T18:38:05.880362+00:00"
+    }
+  },
+  "trainers": {
+    "trainer-8101": {
+      "id": "trainer-8101",
+      "name": "Trainer 1",
+      "weekly_wage": 100,
+      "weekly_stamina_boost": 2,
+      "created_at": "2026-02-12T18:39:23.528912+00:00"
+    }
+  },
+  "contracts": {
+    "1333962919536492607": {}
+  }
+}

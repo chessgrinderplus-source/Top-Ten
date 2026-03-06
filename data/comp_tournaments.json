@@ -1,0 +1,76 @@
+{
+  "tournaments": {
+    "T_e_CBEFE0": {
+      "id": "T_e_CBEFE0",
+      "guild_id": 1333962919536492607,
+      "name": "e",
+      "category_id": "slam",
+      "bracket_size": 2,
+      "duration": "1week",
+      "seeds": 1,
+      "wildcards": 1,
+      "best_of": 5,
+      "venues": {
+        "main_stage": "venue-rg-court-phillipe-chatrier",
+        "stage_3": "venue-rg-court-phillipe-chatrier"
+      },
+      "registration_start_date": "2026-03-05T02:32:00+00:00",
+      "registration_close_date": "2026-03-05T02:35:00+00:00",
+      "tournament_start_date": "2026-03-05T02:36:00+00:00",
+      "status": "active",
+      "registrations": [
+        1171999659527512104,
+        1279106601931899015
+      ],
+      "wildcard_entries": [],
+      "draw": [
+        1171999659527512104,
+        1279106601931899015
+      ],
+      "seeded_players": [
+        1171999659527512104
+      ],
+      "matches": [
+        {
+          "match_id": "F_001",
+          "round": "F",
+          "draw_pos_1": 0,
+          "draw_pos_2": 1,
+          "player1_id": 1171999659527512104,
+          "player2_id": 1279106601931899015,
+          "seed1": 1,
+          "seed2": null,
+          "status": "scheduled",
+          "winner_id": null,
+          "loser_id": null,
+          "score": null,
+          "day": 1,
+          "session": "day",
+          "court_key": "main_stage",
+          "court_venue_id": "venue-rg-court-phillipe-chatrier",
+          "scheduled_time": "11:00",
+          "timing_type": "session_start"
+        }
+      ],
+      "completed_at": null,
+      "champion_id": null,
+      "champion_name": null,
+      "sheet_url": null,
+      "sheets_config": {
+        "bg1": "#1a1a2e",
+        "bg2": "#16213e",
+        "bg3": "#0f3460",
+        "fc1": "#e94560",
+        "fc2": "#ffffff",
+        "fc3": "#a8dadc",
+        "sc1": "#e94560",
+        "sc2": "#f5a623",
+        "sc3": "#7ed321",
+        "font": "Roboto Mono",
+        "bg": "e"
+      },
+      "awarded_points": {},
+      "point_defense_applied": false
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "guilds": {
+    "1333962919536492607": {
+      "1279106601931899015": {
+        "academy_id": "academy-66e26cb2",
+        "academy_name": "Mouratoglou Academy",
+        "start_ts": 1770910207,
+        "days": 3,
+        "end_ts": 1771169407,
+        "leave_early_cost": 3000,
+        "min_points_per_day": 5,
+        "max_points_per_day": 10,
+        "next_award_ts": 1770996607,
+        "total_points_awarded": 0
+      }
+    }
+  }
+}

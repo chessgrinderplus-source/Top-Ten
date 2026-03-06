@@ -1,0 +1,52 @@
+{
+  "inv": {
+    "1333962919536492607": {
+      "1279106601931899015": {
+        "has_custom": true,
+        "custom_sliders": {
+          "fh_power": 50,
+          "fh_spin": 50,
+          "bh_power": 50,
+          "bh_spin": 50,
+          "serve_power": 50,
+          "serve_spin": 50,
+          "shot_dir_risk": 50,
+          "serve_variety": 50,
+          "drop_frequency": 50,
+          "deuce_spin": 50,
+          "deuce_place": 50,
+          "ad_spin": 50,
+          "ad_place": 50,
+          "pressure_play_risk": 50,
+          "return_position": 50,
+          "movement_aggression": 50,
+          "time_btwn_points": 50,
+          "slice_usage": 50
+        }
+      },
+      "1171999659527512104": {
+        "has_custom": true,
+        "custom_sliders": {
+          "fh_power": 50,
+          "fh_spin": 50,
+          "bh_power": 50,
+          "bh_spin": 50,
+          "serve_power": 50,
+          "serve_spin": 50,
+          "shot_dir_risk": 50,
+          "serve_variety": 50,
+          "drop_frequency": 50,
+          "deuce_spin": 50,
+          "deuce_place": 50,
+          "ad_spin": 50,
+          "ad_place": 50,
+          "pressure_play_risk": 50,
+          "return_position": 50,
+          "movement_aggression": 50,
+          "time_btwn_points": 50,
+          "slice_usage": 50
+        }
+      }
+    }
+  }
+}

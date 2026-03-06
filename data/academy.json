@@ -1,0 +1,22 @@
+{
+  "academies": {
+    "academy-akaza3-8176": {
+      "id": "academy-akaza3-8176",
+      "name": "Akaza3",
+      "min_days": 5,
+      "max_days": 10,
+      "cost_per_day": 2000000,
+      "leave_early_cost": 500000,
+      "points_min": 5,
+      "points_max": 10,
+      "created_at": "2026-02-12T20:18:57.785702+00:00",
+      "created_by": 1245352647402328137
+    }
+  },
+  "memberships": {
+    "1333962919536492607": {}
+  },
+  "last_daily_tick": {
+    "1333962919536492607": "2026-03-06"
+  }
+}

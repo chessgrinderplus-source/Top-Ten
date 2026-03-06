@@ -1,0 +1,25 @@
+{
+  "tournaments": {
+    "AO": {
+      "tournament_id": "AO",
+      "title": "Australian Open",
+      "location": "Melbourne, Australia",
+      "altitude_m": 7,
+      "altitude_unit": "FT",
+      "weather_unit": "F",
+      "humidity_pct_min": 50,
+      "humidity_pct_max": 80
+    },
+    "RG": {
+      "tournament_id": "RG",
+      "title": "French Open",
+      "location": "Paris, France",
+      "altitude_m": 35,
+      "weather_unit": "C",
+      "speed_unit": "KMH",
+      "altitude_unit": "M",
+      "humidity_pct_min": 50,
+      "humidity_pct_max": 80
+    }
+  }
+}

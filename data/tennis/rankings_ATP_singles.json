@@ -1,0 +1,4 @@
+[
+  {"rank": 1, "name": "Example Player 1", "country": "SRB", "points": 10000, "movement": 0},
+  {"rank": 2, "name": "Example Player 2", "country": "ESP", "points": 9500, "movement": 1}
+]

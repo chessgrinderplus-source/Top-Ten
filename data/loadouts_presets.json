@@ -1,0 +1,28 @@
+{
+  "preset-bal": {
+    "id": "preset-bal",
+    "title": "Balanced",
+    "description": "Safe, all-court baseline",
+    "is_default": true,
+    "sliders": {
+      "fh_power": 50,
+      "fh_consistency": 50,
+      "bh_power": 50,
+      "bh_consistency": 50,
+      "serve_power": 50,
+      "serve_consistency": 50,
+      "touch": 50,
+      "fitness": 50,
+      "shot_dir_risk": 50,
+      "serve_variety": 50,
+      "drop_effectivity": 50,
+      "deuce_spin": 50,
+      "deuce_place": 50,
+      "ad_spin": 50,
+      "ad_place": 50,
+      "pressure_play": 50
+      "time_btwn_points": 50,"
+    },
+    "created_at": "2026-02-18T00:00:00Z"
+  }
+}

@@ -1,0 +1,4 @@
+[
+  {"player_id": "w1", "name": "Example Player 1", "country": "POL", "age": 23, "hand": "R"},
+  {"player_id": "w2", "name": "Example Player 2", "country": "USA", "age": 26, "hand": "R"}
+]

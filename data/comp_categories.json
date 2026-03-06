@@ -1,0 +1,18 @@
+{
+  "categories": {
+    "slam": {
+      "id": "slam",
+      "name": "Grand Slam",
+      "champion_pts": 2000,
+      "finalist_pts": 1300,
+      "semi_pts": 800,
+      "quarter_pts": 400,
+      "r16_pts": 200,
+      "r32_pts": 100,
+      "r64_pts": 50,
+      "r128_pts": 10,
+      "created_by": 1279106601931899015,
+      "created_at": "2026-03-06T00:36:35.143608+00:00"
+    }
+  }
+}

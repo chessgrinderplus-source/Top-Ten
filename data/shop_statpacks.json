@@ -1,0 +1,5 @@
+{
+  "packs": {
+    "small": {"name":"Small Pack","price":10000,"points":3,"enabled":true,"desc":""}
+  }
+}

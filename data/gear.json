@@ -1,0 +1,2158 @@
+{
+  "rackets": {
+    "racket-8252": {
+      "id": "racket-8252",
+      "name": "Head Speed MP 2026",
+      "brand_emoji": "<:head:1334207860753567815>",
+      "power": 8.8,
+      "spin": 6.7,
+      "control": 9.5,
+      "weight": "326",
+      "price": 100,
+      "access_price": 100000
+    },
+    "racket-5458": {
+      "id": "racket-5458",
+      "name": "Head Speed MP 2026",
+      "brand_emoji": "<:head:1334207860753567815>",
+      "power": 8.8,
+      "spin": 6.7,
+      "control": 9.5,
+      "weight": "326",
+      "price": 100
+    },
+    "racket-5653": {
+      "id": "racket-5653",
+      "name": "RUBY RACKET",
+      "brand_emoji": "♦️",
+      "power": 10.0,
+      "spin": 10.0,
+      "control": 10.0,
+      "weight": "1",
+      "access_price": 10,
+      "frame_price": 10,
+      "string_price": 10
+    }
+  },
+  "shoes": {
+    "shoes-7657": {
+      "id": "shoes-7657",
+      "name": "RAW",
+      "brand_emoji": "DAMN",
+      "footwork_impact": 24.0,
+      "price": 1
+    },
+    "shoes-5614": {
+      "id": "shoes-5614",
+      "name": "RAW",
+      "brand_emoji": "DAMN",
+      "footwork_impact": 24.0,
+      "price": 1
+    }
+  },
+  "inv": {
+    "1333962919536492607": {
+      "1279106601931899015": {
+        "rackets": [
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458",
+          "racket-5458"
+        ],
+        "shoes": [
+          "shoes-5614",
+          "shoes-5614"
+        ],
+        "strung_rackets": [
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 36
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "18x19",
+            "tension": 35,
+            "weight": "326"
+          }
+        ],
+        "racket_access": {
+          "racket-8252": true,
+          "racket-1855": true,
+          "racket-5653": true,
+          "racket-5458": true
+        },
+        "equipped_racket": {
+          "frame_id": "racket-5458",
+          "pattern": "18x19",
+          "tension": 35,
+          "weight": "326"
+        },
+        "equipped_shoes": "shoes-5614"
+      },
+      "1171999659527512104": {
+        "rackets": [
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653",
+          "racket-5653"
+        ],
+        "shoes": [
+          "shoes-7657"
+        ],
+        "strung_rackets": [
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 55,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 55,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 55,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 55,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "16x19",
+            "tension": 70,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5458",
+            "pattern": "16x19",
+            "tension": 36,
+            "weight": "326"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          },
+          {
+            "frame_id": "racket-5653",
+            "pattern": "18x20",
+            "tension": 35,
+            "weight": "1"
+          }
+        ],
+        "racket_access": {
+          "racket-5458": true,
+          "racket-5653": true
+        },
+        "equipped_racket": {
+          "frame_id": "racket-5653",
+          "pattern": "16x19",
+          "tension": 70,
+          "weight": "1"
+        },
+        "equipped_shoes": "shoes-7657"
+      }
+    }
+  },
+  "equipped": {
+    "1333962919536492607": {
+      "1279106601931899015": {
+        "racket": "racket-5458",
+        "shoes": null
+      }
+    }
+  }
+}
