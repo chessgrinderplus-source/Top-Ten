@@ -1,0 +1,8 @@
+discord.py>=2.3.0
+flask
+gspread
+google-auth
+google-api-python-client
+requests
+aiohttp
+python-dotenv
