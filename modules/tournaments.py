@@ -1281,12 +1281,12 @@ async def _reply(i: discord.Interaction, content: str = None, embed: discord.Emb
               if v is not None}
     try:
         if i.response.is_done():
-            await _reply(i, **kwargs)
+            await i.followup.send(**kwargs)
         else:
-            await _reply(i, **kwargs)
+            await i.response.send_message(**kwargs)
     except discord.errors.HTTPException:
         try:
-            await _reply(i, **kwargs)
+            await i.followup.send(**kwargs)
         except Exception:
             pass
 
