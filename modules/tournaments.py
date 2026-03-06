@@ -1131,32 +1131,37 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
         print("[sheets] create_sheet: _sheets_ok() returned False, aborting")
         return None
     try:
-        gc = _gs_client(); s = _style(tourn)
+        s = _style(tourn)
         folder_id = getattr(config, "GOOGLE_DRIVE_FOLDER_ID", None)
         print(f"[sheets] GOOGLE_DRIVE_FOLDER_ID = {folder_id!r}")
 
-        # Create in service account Drive, then immediately move to user's folder
-        print(f"[sheets] calling gc.create…")
-        ss  = gc.create(f"[LIVE] {tourn.get('name','Tournament')}")
-        print(f"[sheets] spreadsheet created: {ss.id} — {ss.url}")
+        # Build Drive API client using same service account credentials
+        import googleapiclient.discovery as _gd
+        from google.oauth2.service_account import Credentials as _Creds
+        sa = getattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", None)
+        scopes = ["https://spreadsheets.google.com/feeds",
+                  "https://www.googleapis.com/auth/drive"]
+        creds = _Creds.from_service_account_file(sa, scopes=scopes)
+        drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
+
+        # Create the spreadsheet directly inside the user's Drive folder
+        # This never touches the service account's storage quota at all
+        print(f"[sheets] creating spreadsheet directly in folder {folder_id!r}…")
+        file_meta = {
+            "name": f"[LIVE] {tourn.get('name','Tournament')}",
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+        }
         if folder_id:
-            # Move file into the shared folder so it doesn't eat the service account quota
-            import googleapiclient.discovery as _gd
-            from google.oauth2.service_account import Credentials as _Creds
-            sa   = getattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", None)
-            scopes = ["https://spreadsheets.google.com/feeds",
-                      "https://www.googleapis.com/auth/drive"]
-            creds = _Creds.from_service_account_file(sa, scopes=scopes)
-            drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
-            # Get current parents then move
-            file_meta = drive.files().get(fileId=ss.id, fields="parents").execute()
-            prev_parents = ",".join(file_meta.get("parents", []))
-            drive.files().update(
-                fileId=ss.id,
-                addParents=folder_id,
-                removeParents=prev_parents,
-                fields="id, parents"
-            ).execute()
+            file_meta["parents"] = [folder_id]
+        created = drive.files().create(body=file_meta, fields="id").execute()
+        file_id = created["id"]
+        print(f"[sheets] spreadsheet created with id: {file_id}")
+
+        # Open with gspread using the file id
+        import gspread as _gs
+        gc = _gs.authorize(creds)
+        ss = gc.open_by_key(file_id)
+        print(f"[sheets] opened via gspread OK — {ss.url}")
 
         ws  = ss.get_worksheet(0); ws.update_title("Bracket")
         ws2 = ss.add_worksheet("Schedule", rows=500, cols=12)
