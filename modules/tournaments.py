@@ -416,6 +416,11 @@ def _get_cat(cid: str) -> Optional[dict]:
 def _get_comp(tid: str) -> Optional[dict]:
     return _comp_db().get("tournaments", {}).get(tid)
 
+def _all_active_tourns() -> dict:
+    """Return all non-cancelled tournaments, keyed by tid."""
+    return {tid: t for tid, t in _comp_db().get("tournaments", {}).items()
+            if t.get("status") in _ACTIVE_STATUSES}
+
 def _save_comp(tid: str, data: dict) -> None:
     db = _comp_db(); db.setdefault("tournaments", {})[tid] = data; _comp_save(db)
 
@@ -1442,13 +1447,17 @@ async def _reply(i: discord.Interaction, content: str = None, embed: discord.Emb
 # Autocomplete helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe_ac(fn):
-    """Decorator that silently returns [] if an autocomplete interaction has expired."""
-    import functools
+    """Decorator that returns [] if an autocomplete interaction has expired, but logs real errors."""
+    import functools, traceback
     @functools.wraps(fn)
     async def wrapper(i: discord.Interaction, cur: str):
         try:
             return await fn(i, cur)
-        except Exception:
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return []   # interaction expired — expected, drop silently
+        except Exception as e:
+            print(f"[ac] {fn.__name__} error: {e}")
+            traceback.print_exc()
             return []
     return wrapper
 
@@ -1461,13 +1470,16 @@ async def _ac_cat(i: discord.Interaction, cur: str) -> List[app_commands.Choice[
         if len(out)>=25: break
     return out
 
+_ACTIVE_STATUSES = {STATUS_UPCOMING, STATUS_REG, STATUS_ACTIVE, STATUS_COMPLETED}
+
 @_safe_ac
 async def _ac_comp_all(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
     c = cur.lower(); out = []
     for tid, t in _comp_db().get("tournaments",{}).items():
-        if t.get("status") == STATUS_CANCELLED: continue
+        st = t.get("status","")
+        if st not in _ACTIVE_STATUSES: continue   # hides cancelled + any other junk
         if c in tid.lower() or c in t.get("name","").lower() or not c:
-            out.append(app_commands.Choice(name=f"{t.get('name',tid)} [{t.get('status','?')}]"[:100], value=tid))
+            out.append(app_commands.Choice(name=f"{t.get('name',tid)} [{st}]"[:100], value=tid))
         if len(out)>=25: break
     return out
 
@@ -1475,7 +1487,7 @@ async def _ac_comp_all(i: discord.Interaction, cur: str) -> List[app_commands.Ch
 async def _ac_comp_open(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
     c = cur.lower(); out = []
     for tid, t in _comp_db().get("tournaments",{}).items():
-        if t.get("status") not in (STATUS_UPCOMING, STATUS_REG, STATUS_ACTIVE) or t.get("status") == STATUS_CANCELLED: continue
+        if t.get("status") not in (STATUS_UPCOMING, STATUS_REG, STATUS_ACTIVE): continue
         if c in tid.lower() or c in t.get("name","").lower() or not c:
             out.append(app_commands.Choice(name=f"{t.get('name',tid)} [{t.get('status','?')}]"[:100], value=tid))
         if len(out)>=25: break
@@ -3211,3 +3223,4 @@ class TournamentsCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TournamentsCog(bot))
+    
