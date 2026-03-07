@@ -2637,9 +2637,7 @@ class TournamentsCog(commands.Cog):
                     failed.append(f"{name}: {e}")
 
         emb = discord.Embed(title="🔄 Sheet Refresh Complete", color=discord.Color.green())
-        if updated: emb.add_field(name=f"✅ Updated ({len(updated)})",
-                                   value="\n".join(updated[:20]) or "—", inline=False)
-        if created: emb.add_field(name=f"🆕 Created ({len(created)})",
+        if created: emb.add_field(name=f"✅ Recreated ({len(created)})",
                                    value="\n".join(created[:20]) or "—", inline=False)
         if failed:  emb.add_field(name=f"❌ Failed ({len(failed)})",
                                    value="\n".join(failed[:10]) or "—", inline=False)
