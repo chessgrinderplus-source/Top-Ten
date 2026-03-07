@@ -700,6 +700,9 @@ class FantasyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    fantasy      = app_commands.Group(name="fantasy",       description="Fantasy tournament commands.")
+    f_admin      = app_commands.Group(name="fantasy-admin", description="Admin: manage fantasy tournaments & categories.")
+
     # ── Autocomplete helpers ──────────────────────────────────────────────────
 
     async def _ac_category(self, interaction: discord.Interaction, cur: str):
@@ -757,7 +760,7 @@ class FantasyCog(commands.Cog):
 
     # ── Categories ────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="fantasy-category-create", description="Admin: create a fantasy tournament category.")
+    @f_admin.command(name="category-create", description="Admin: create a fantasy tournament category.")
     async def fantasy_category_create(self, interaction: discord.Interaction, title: str):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
@@ -765,7 +768,7 @@ class FantasyCog(commands.Cog):
         data["categories"].append({"id": cid, "title": title.strip()}); _save(data)
         await interaction.response.send_message(f"✅ Category created: **{title.strip()}** (`{cid}`)")
 
-    @app_commands.command(name="fantasy-category-list", description="List fantasy tournament categories.")
+    @f_admin.command(name="category-list", description="List fantasy tournament categories.")
     async def fantasy_category_list(self, interaction: discord.Interaction):
         data = _load(); cats = data.get("categories", [])
         if not cats: return await interaction.response.send_message("ℹ️ No categories yet.")
@@ -774,7 +777,7 @@ class FantasyCog(commands.Cog):
         view = PagerView(_chunk_pages(lines), interaction.user.id, "Fantasy Categories")
         await interaction.response.send_message(embed=view._embed(), view=view)
 
-    @app_commands.command(name="fantasy-category-delete", description="Admin: delete a fantasy tournament category.")
+    @f_admin.command(name="category-delete", description="Admin: delete a fantasy tournament category.")
     @app_commands.autocomplete(category_id=_ac_category)
     async def fantasy_category_delete(self, interaction: discord.Interaction, category_id: str):
         if not _is_admin(interaction.user):
@@ -788,7 +791,7 @@ class FantasyCog(commands.Cog):
 
     # ── Tournaments (admin) ───────────────────────────────────────────────────
 
-    @app_commands.command(name="fantasy-create", description="Admin: create a fantasy tournament.")
+    @f_admin.command(name="tournament-create", description="Admin: create a fantasy tournament.")
     @app_commands.autocomplete(category_id=_ac_category)
     async def fantasy_create(self, interaction: discord.Interaction, tournament_name: str, category_id: str):
         if not _is_admin(interaction.user):
@@ -835,7 +838,7 @@ class FantasyCog(commands.Cog):
             content=f"✅ Fantasy tournament **confirmed**!\n**Name:** {t.get('name')}\n**ID:** `{t.get('id')}`",
             embed=None, view=None)
 
-    @app_commands.command(name="fantasy-close", description="Admin: close a fantasy (no more pick edits).")
+    @f_admin.command(name="tournament-close", description="Admin: close a fantasy (no more pick edits).")
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     async def fantasy_close(self, interaction: discord.Interaction, tournament_id: str):
         if not _is_admin(interaction.user):
@@ -846,7 +849,7 @@ class FantasyCog(commands.Cog):
         t["picks_open"] = False; t["closed_at"] = t.get("closed_at") or _now_unix(); _save(data)
         await interaction.response.send_message(f"✅ Closed: **{t.get('name')}** (`{t.get('id')}`)")
 
-    @app_commands.command(name="fantasy-cancel", description="Admin: permanently delete a fantasy tournament.")
+    @f_admin.command(name="tournament-cancel", description="Admin: permanently delete a fantasy tournament.")
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     async def fantasy_cancel(self, interaction: discord.Interaction, tournament_id: str):
         if not _is_admin(interaction.user):
@@ -865,7 +868,7 @@ class FantasyCog(commands.Cog):
         view = ConfirmDeleteTournamentView(self, interaction.user.id, tournament_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="fantasy-end", description="Admin: submit results and complete a fantasy tournament.")
+    @f_admin.command(name="tournament-end", description="Admin: submit results and complete a fantasy tournament.")
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     async def fantasy_end(self, interaction: discord.Interaction, tournament_id: str):
         if not _is_admin(interaction.user):
@@ -912,20 +915,20 @@ class FantasyCog(commands.Cog):
 
     # ── Leaderboard admin ─────────────────────────────────────────────────────
 
-    @app_commands.command(name="fantasy-ldb-clear", description="Admin: clear fantasy leaderboard blacklist.")
+    @f_admin.command(name="ldb-clear", description="Admin: clear fantasy leaderboard blacklist.")
     async def fantasy_ldb_clear(self, interaction: discord.Interaction):
         if not _is_admin(interaction.user): return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load(); data["ldb_blacklist"] = []; _save(data)
         await interaction.response.send_message("✅ Fantasy leaderboard blacklist cleared.")
 
-    @app_commands.command(name="fantasy-ldb-blacklist", description="Admin: blacklist a user from all fantasy leaderboards.")
+    @f_admin.command(name="ldb-blacklist", description="Admin: blacklist a user from all fantasy leaderboards.")
     async def fantasy_ldb_blacklist(self, interaction: discord.Interaction, user: discord.Member):
         if not _is_admin(interaction.user): return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load(); bl = set(int(x) for x in data.get("ldb_blacklist", [])); bl.add(int(user.id))
         data["ldb_blacklist"] = sorted(bl); _save(data)
         await interaction.response.send_message(f"✅ Blacklisted **{user.display_name}**.")
 
-    @app_commands.command(name="fantasy-ldb-blacklist-view", description="Admin: view fantasy leaderboard blacklist.")
+    @f_admin.command(name="ldb-blacklist-view", description="Admin: view fantasy leaderboard blacklist.")
     async def fantasy_ldb_blacklist_view(self, interaction: discord.Interaction):
         if not _is_admin(interaction.user): return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load(); bl = [int(x) for x in data.get("ldb_blacklist", [])]
@@ -934,7 +937,7 @@ class FantasyCog(commands.Cog):
                           interaction.user.id, "Fantasy Leaderboard Blacklist")
         await interaction.response.send_message(embed=view._embed(), view=view)
 
-    @app_commands.command(name="fantasy-leaderboard-whitelist", description="Admin: remove a user from the fantasy leaderboard blacklist.")
+    @f_admin.command(name="ldb-whitelist", description="Admin: remove a user from the fantasy leaderboard blacklist.")
     async def fantasy_leaderboard_whitelist(self, interaction: discord.Interaction, user: discord.Member):
         if not _is_admin(interaction.user): return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load(); bl = set(int(x) for x in data.get("ldb_blacklist", []))
@@ -950,7 +953,7 @@ class FantasyCog(commands.Cog):
         app_commands.Choice(name="Completed",               value="Completed"),
     ]
 
-    @app_commands.command(name="fantasy-list", description="List fantasy tournaments.")
+    @fantasy.command(name="list", description="List fantasy tournaments.")
     @app_commands.describe(status="Optional: filter by status")
     @app_commands.choices(status=_STATUS_CHOICES)
     async def fantasy_list(self, interaction: discord.Interaction,
@@ -970,7 +973,7 @@ class FantasyCog(commands.Cog):
         view = PagerView(_chunk_pages(lines), interaction.user.id, title)
         await interaction.response.send_message(embed=view._embed(), view=view)
 
-    @app_commands.command(name="fantasy-join", description="Join a fantasy tournament and pick your 5 players.")
+    @fantasy.command(name="join", description="Join a fantasy tournament and pick your 5 players.")
     @app_commands.autocomplete(tournament_id=_ac_open_tournament)
     async def fantasy_join(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
@@ -996,7 +999,7 @@ class FantasyCog(commands.Cog):
             lines.append(f"{i}. {_fmt_player(seed_map.get(_player_key(name)), name)}")
         await interaction.response.edit_message(content="\n".join(lines), view=None)
 
-    @app_commands.command(name="fantasy-roster-view", description="View a user's fantasy picks.")
+    @fantasy.command(name="roster-view", description="View a user's fantasy picks.")
     @app_commands.autocomplete(tournament_id=_ac_tournament)
     async def fantasy_roster_view(self, interaction: discord.Interaction, tournament_id: str,
                                    user: Optional[discord.Member] = None):
@@ -1030,7 +1033,7 @@ class FantasyCog(commands.Cog):
                                    f"{target.display_name}'s Picks")
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="fantasy-results", description="View sorted fantasy results for a tournament.")
+    @fantasy.command(name="results", description="View sorted fantasy results for a tournament.")
     @app_commands.autocomplete(tournament_id=_ac_tournament)
     async def fantasy_results(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
@@ -1049,7 +1052,7 @@ class FantasyCog(commands.Cog):
         view = PagerView(_chunk_pages(lines), interaction.user.id, "Fantasy Results")
         await interaction.response.send_message(embed=view._embed(), view=view)
 
-    @app_commands.command(name="fantasy-user-results", description="Show all users' total points for a completed tournament.")
+    @fantasy.command(name="user-results", description="Show all users' total points for a completed tournament.")
     @app_commands.autocomplete(tournament_id=_ac_tournament)
     async def fantasy_user_results(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
@@ -1075,7 +1078,7 @@ class FantasyCog(commands.Cog):
 
     # ── Leaderboards ──────────────────────────────────────────────────────────
 
-    @app_commands.command(name="fantasy-leaderboard-view", description="View fantasy user leaderboards.")
+    @fantasy.command(name="leaderboard", description="View fantasy user leaderboards.")
     @app_commands.describe(category_id="Optional: category ID for category leaderboards",
                             days_back="Optional: use for 'Last N days' leaderboards")
     @app_commands.autocomplete(category_id=_ac_category)
