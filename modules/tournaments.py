@@ -798,7 +798,7 @@ def _gs_client():
             with open(token_path, "w") as f: f.write(creds.to_json())
         client = gspread.authorize(creds)
         print("[sheets] _gs_client: authorized via OAuth2 OK")
-        return client
+        return client, creds
 
     # ── Fallback: service account ──
     sa = getattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", None)
@@ -810,7 +810,7 @@ def _gs_client():
     print("[sheets] _gs_client: credentials loaded, authorizing…")
     client = gspread.authorize(creds)
     print("[sheets] _gs_client: authorized via service account OK")
-    return client
+    return client, creds
 
 def _style(tourn: dict) -> dict:
     return tourn.get("sheets_config", {})
@@ -1155,7 +1155,7 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
         print("[sheets] create_sheet: _sheets_ok() returned False, aborting")
         return None
     try:
-        gc = _gs_client(); s = _style(tourn)
+        gc, creds = _gs_client(); s = _style(tourn)
         folder_id = getattr(config, "GOOGLE_DRIVE_FOLDER_ID", None)
         print(f"[sheets] GOOGLE_DRIVE_FOLDER_ID = {folder_id!r}")
 
@@ -1167,7 +1167,7 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
         if folder_id:
             import googleapiclient.discovery as _gd
             drive = _gd.build("drive", "v3",
-                               credentials=gc.auth, cache_discovery=False)
+                               credentials=creds, cache_discovery=False)
             file_meta = drive.files().get(fileId=ss.id, fields="parents").execute()
             prev = ",".join(file_meta.get("parents", []))
             drive.files().update(fileId=ss.id, addParents=folder_id,
@@ -1200,7 +1200,7 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
 def update_sheet(tourn: dict, guild=None) -> None:
     if not _sheets_ok() or not tourn.get("sheet_url"): return
     try:
-        gc  = _gs_client()
+        gc, _ = _gs_client()
         m   = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", tourn["sheet_url"])
         if not m: return
         ss  = gc.open_by_key(m.group(1)); s = _style(tourn)
@@ -1222,7 +1222,7 @@ def update_sheet(tourn: dict, guild=None) -> None:
 def archive_sheet(tourn: dict) -> None:
     if not _sheets_ok() or not tourn.get("sheet_url"): return
     try:
-        gc = _gs_client()
+        gc, _ = _gs_client()
         m  = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", tourn["sheet_url"])
         if not m: return
         ss = gc.open_by_key(m.group(1))
@@ -1915,7 +1915,7 @@ class TournamentsCog(commands.Cog):
                 "and set `GOOGLE_SERVICE_ACCOUNT_JSON` in config to generate live bracket sheets.",
                 ephemeral=True)
             return
-        await _reply(i, "⏳ Creating Google Sheet…", ephemeral=True)
+        await _reply(i, "⏳ **Creating Google Sheet…** (this should take around 2-6 minutes)", ephemeral=True)
         url = create_sheet(t, guild=i.guild)
         if url:
             t["sheet_url"] = url; _save_comp(tournament_id, t)
