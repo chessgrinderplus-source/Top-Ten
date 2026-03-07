@@ -3167,6 +3167,49 @@ class TournamentsCog(commands.Cog):
         await _reply(i, embed=emb)
 
 
+    # ── /tournament force-delete ─────────────────────────────────────────
+    @tournament.command(name="force-delete",
+                        description="(Admin) Force-delete any tournament by ID, regardless of status.")
+    @app_commands.guild_only()
+    async def tourn_force_delete(self, i: discord.Interaction, tournament_id: str, confirm: str = ""):
+        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
+            return await _reply(i, "❌ Admin only.", ephemeral=True)
+
+        db   = _comp_db()
+        all_t = db.get("tournaments", {})
+        t    = all_t.get(tournament_id)
+
+        if not t:
+            # Show all tournament IDs so admin can find the right one
+            lines = "\n".join(f"`{tid}` — {td.get('name','?')} [{td.get('status','?')}]"
+                              for tid, td in list(all_t.items())[:30])
+            return await _reply(i,
+                f"❌ No tournament with ID `{tournament_id}`.\n\n**All tournaments in DB:**\n{lines or '(empty)'}",
+                ephemeral=True)
+
+        name = t.get("name", tournament_id)
+        if confirm.strip().lower() != "delete":
+            return await _reply(i,
+                f"⚠️ Will permanently delete **{name}** (`{tournament_id}`, status: `{t.get('status','?')}`).\n"
+                f"Run again with `confirm: delete` to confirm.",
+                ephemeral=True)
+
+        # Delete sheet if present
+        if t.get("sheet_url") and _sheets_ok():
+            try:
+                gc, creds = _gs_client()
+                import googleapiclient.discovery as _gd
+                m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", t["sheet_url"])
+                if m:
+                    drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
+                    drive.files().delete(fileId=m.group(1)).execute()
+            except Exception as e:
+                print(f"[force-delete] sheet delete failed: {e}")
+
+        all_t.pop(tournament_id, None)
+        _comp_save(db)
+        await _reply(i, f"✅ Deleted **{name}** (`{tournament_id}`).")
+
     # ── /tournament purge-ghosts ─────────────────────────────────────────
     @tournament.command(name="purge-ghosts",
                         description="(Admin) Delete all cancelled/invalid ghost tournaments from the database.")
