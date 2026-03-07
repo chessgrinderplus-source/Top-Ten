@@ -93,10 +93,11 @@ COURT_DISPLAY: Dict[str, str] = {
 
 DEFAULT_DAY_SESSION   = "11:00"
 DEFAULT_NIGHT_SESSION = "19:00"
-STATUS_UPCOMING  = "upcoming"
-STATUS_REG       = "registration"
-STATUS_ACTIVE    = "active"
-STATUS_COMPLETED = "completed"
+STATUS_UPCOMING   = "upcoming"
+STATUS_REG        = "registration"
+STATUS_ACTIVE     = "active"
+STATUS_COMPLETED  = "completed"
+STATUS_CANCELLED  = "cancelled"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Rankings helpers
@@ -1308,21 +1309,29 @@ def update_sheet(tourn: dict, guild=None) -> None:
         gc, _ = _gs_client()
         m   = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", tourn["sheet_url"])
         if not m: return
+        print(f"[sheets] update_sheet: opening {m.group(1)}")
         ss  = gc.open_by_key(m.group(1)); s = _style(tourn)
-        ws  = ss.worksheet("Bracket")
 
-        # Full re-render bracket formatting + values
-        reqs = _build_bracket_requests(ws.id, tourn, guild)
+        # ── Bracket sheet ──
+        ws = ss.worksheet("Bracket")
+        # Clear all existing content and formatting first
+        ws.clear()
+        # Full re-render formatting + values
+        reqs = [_gridlines_req(ws.id, True)]
+        reqs += _build_bracket_requests(ws.id, tourn, guild)
         ss.batch_update({"requests": reqs})
         _write_bracket_values(ws, tourn, guild)
+        print(f"[sheets] update_sheet: bracket written OK")
 
-        # Refresh schedule
+        # ── Schedule sheet ──
         try:
             ws2 = ss.worksheet("Schedule")
             _setup_schedule_sheet(ss, ws2.id, tourn, s)
         except Exception: pass
     except Exception as e:
+        import traceback
         print(f"[sheets] update_sheet error: {e}")
+        traceback.print_exc()
 
 def archive_sheet(tourn: dict) -> None:
     if not _sheets_ok() or not tourn.get("sheet_url"): return
@@ -1438,6 +1447,7 @@ async def _ac_cat(i: discord.Interaction, cur: str) -> List[app_commands.Choice[
 async def _ac_comp_all(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
     c = cur.lower(); out = []
     for tid, t in _comp_db().get("tournaments",{}).items():
+        if t.get("status") == STATUS_CANCELLED: continue
         if c in tid.lower() or c in t.get("name","").lower() or not c:
             out.append(app_commands.Choice(name=f"{t.get('name',tid)} [{t.get('status','?')}]"[:100], value=tid))
         if len(out)>=25: break
@@ -1447,7 +1457,7 @@ async def _ac_comp_all(i: discord.Interaction, cur: str) -> List[app_commands.Ch
 async def _ac_comp_open(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
     c = cur.lower(); out = []
     for tid, t in _comp_db().get("tournaments",{}).items():
-        if t.get("status") not in (STATUS_UPCOMING, STATUS_REG, STATUS_ACTIVE): continue
+        if t.get("status") not in (STATUS_UPCOMING, STATUS_REG, STATUS_ACTIVE) or t.get("status") == STATUS_CANCELLED: continue
         if c in tid.lower() or c in t.get("name","").lower() or not c:
             out.append(app_commands.Choice(name=f"{t.get('name',tid)} [{t.get('status','?')}]"[:100], value=tid))
         if len(out)>=25: break
@@ -1469,12 +1479,17 @@ async def _ac_match(i: discord.Interaction, cur: str) -> List[app_commands.Choic
     if tid:
         t = _get_comp(tid)
         if t:
+            def _mn(uid):
+                if uid is None: return "TBD"
+                m = i.guild.get_member(uid) if i.guild else None
+                return m.display_name if m else f"UID:{uid}"
             for m in t.get("matches",[]):
                 mid = str(m.get("match_id",""))
-                if c in mid.lower() or not c:
-                    p1 = m.get("player1_id","?"); p2 = m.get("player2_id","?")
-                    out.append(app_commands.Choice(
-                        name=f"{mid} | {_rnd(m.get('round','?'))} | {p1} vs {p2}"[:100], value=mid))
+                rnd_label = _rnd(m.get("round","?"))
+                p1n = _mn(m.get("player1_id")); p2n = _mn(m.get("player2_id"))
+                label = f"{rnd_label}: {p1n} vs {p2n}"
+                if c in mid.lower() or c in label.lower() or not c:
+                    out.append(app_commands.Choice(name=f"{label}"[:100], value=mid))
                 if len(out)>=25: break
     return out
 
@@ -1502,6 +1517,20 @@ COMMON_FONTS = [
 async def _ac_font(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
     c = cur.lower()
     return [app_commands.Choice(name=f, value=f) for f in COMMON_FONTS if c in f.lower()][:25]
+
+@_safe_ac
+async def _ac_court_key(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
+    """Autocomplete court keys from the selected tournament's venues."""
+    tid = getattr(i.namespace, "tournament_id", None); c = cur.lower(); out = []
+    if tid:
+        t = _get_comp(tid)
+        if t:
+            for key, vid in t.get("venues", {}).items():
+                label = COURT_DISPLAY.get(key, key)
+                if c in key.lower() or c in label.lower() or not c:
+                    out.append(app_commands.Choice(name=label[:100], value=key))
+                if len(out) >= 25: break
+    return out
 
 @_safe_ac
 async def _ac_venue(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
@@ -2072,12 +2101,13 @@ class TournamentsCog(commands.Cog):
     # ── /tournament match-edit ────────────────────────────────────────────
     @tournament.command(name="match-edit", description="(Admin) Edit a match's time or court.")
     @app_commands.guild_only()
-    @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match)
+    @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match,
+                                new_court_key=_ac_court_key)
     async def tourn_match_edit(self, i: discord.Interaction,
                                tournament_id: str, match_id: str,
-                               new_time: Optional[str] = None,
-                               not_before: Optional[str] = None,
-                               next_on_court: Optional[str] = None,
+                               new_time:      Optional[str] = None,
+                               not_before:    Optional[str] = None,
+                               followed_by:   Optional[str] = None,
                                new_court_key: Optional[str] = None):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
@@ -2088,37 +2118,119 @@ class TournamentsCog(commands.Cog):
         if match.get("status") == "completed":
             return await _reply(i, "❌ Match already completed.", ephemeral=True)
 
+        def _mn(uid):
+            if uid is None: return "TBD"
+            mem = i.guild.get_member(uid) if i.guild else None
+            return mem.display_name if mem else f"UID:{uid}"
+
+        def _court_conflict(court_key, day, session, time_val, timing_type, exclude_id):
+            """Return conflicting match or None. Two matches conflict if same court,
+            same day, same session, and both are session_start at the same time."""
+            if timing_type != "session_start": return None
+            return next((m for m in t.get("matches", [])
+                         if m["match_id"] != exclude_id
+                         and m.get("status") != "completed"
+                         and m.get("court_key") == court_key
+                         and m.get("day") == day
+                         and m.get("session") == session
+                         and m.get("timing_type") == "session_start"
+                         and m.get("scheduled_time") == time_val), None)
+
         changes = []
+
+        # ── Court change ──
         if new_court_key:
-            if new_court_key not in t.get("venues",{}):
+            if new_court_key not in t.get("venues", {}):
                 return await _reply(i, f"❌ Court `{new_court_key}` not in this tournament.", ephemeral=True)
-            # Check no other scheduled match on same court at same time (basic check)
-            conflict = next((m for m in t.get("matches",[])
-                             if m["match_id"] != match_id
-                             and m.get("court_key") == new_court_key
-                             and m.get("day") == match.get("day")
-                             and m.get("session") == match.get("session")
-                             and m.get("timing_type") == "session_start"
-                             and m.get("scheduled_time") == match.get("scheduled_time")
-                             and m.get("status") != "completed"), None)
+            conflict = _court_conflict(new_court_key, match.get("day"), match.get("session"),
+                                       match.get("scheduled_time"), match.get("timing_type",""), match_id)
             if conflict:
-                return await _reply(i, 
-                    f"❌ Conflict: Match `{conflict['match_id']}` is already on that court at that time.", ephemeral=True)
+                p1n = _mn(conflict.get("player1_id")); p2n = _mn(conflict.get("player2_id"))
+                return await _reply(i,
+                    f"❌ Court conflict: **{p1n} vs {p2n}** (`{conflict['match_id']}`) "
+                    f"is already on {COURT_DISPLAY.get(new_court_key, new_court_key)} at that time.", ephemeral=True)
             match["court_key"]      = new_court_key
             match["court_venue_id"] = t["venues"].get(new_court_key)
             changes.append(f"Court → {COURT_DISPLAY.get(new_court_key, new_court_key)}")
+
+        # ── Time change ──
         if new_time:
+            court = match.get("court_key") or new_court_key
+            conflict = _court_conflict(court, match.get("day"), match.get("session"),
+                                       new_time.strip(), "session_start", match_id)
+            if conflict:
+                p1n = _mn(conflict.get("player1_id")); p2n = _mn(conflict.get("player2_id"))
+                return await _reply(i,
+                    f"❌ Time conflict: **{p1n} vs {p2n}** (`{conflict['match_id']}`) "
+                    f"is already on that court at {new_time}.", ephemeral=True)
             match["scheduled_time"] = new_time.strip()
-            match["timing_type"]    = "session_start"; changes.append(f"Time → {new_time}")
+            match["timing_type"]    = "session_start"
+            changes.append(f"Time → {new_time}")
+
         elif not_before:
             match["scheduled_time"] = not_before.strip()
-            match["timing_type"]    = "not_before";    changes.append(f"Not Before → {not_before}")
-        elif next_on_court:
-            match["scheduled_time"] = next_on_court.strip()
-            match["timing_type"]    = "next_on";       changes.append(f"Next on → {COURT_DISPLAY.get(next_on_court, next_on_court)}")
+            match["timing_type"]    = "not_before"
+            changes.append(f"Not Before → {not_before}")
 
-        _save_comp(tournament_id, t)
-        await _reply(i, f"✅ `{match_id}` updated: {', '.join(changes) or 'no changes.'}")
+        elif followed_by:
+            # Show a Select menu of matches on that court in that session
+            court = match.get("court_key") or new_court_key
+            if not court:
+                return await _reply(i, "❌ Set a court first before using followed_by.", ephemeral=True)
+            day     = match.get("day")
+            session = match.get("session")
+            # Gather all non-completed matches on same court+day+session except this one
+            candidates = [m for m in t.get("matches", [])
+                          if m["match_id"] != match_id
+                          and m.get("court_key") == court
+                          and m.get("day") == day
+                          and m.get("session") == session
+                          and m.get("status") != "completed"]
+            if not candidates:
+                return await _reply(i,
+                    f"❌ No other matches on {COURT_DISPLAY.get(court, court)} "
+                    f"Day {day} {session} session to follow.", ephemeral=True)
+
+            # Build Select view
+            options = []
+            for cm in candidates[:25]:
+                p1n = _mn(cm.get("player1_id")); p2n = _mn(cm.get("player2_id"))
+                rnd_l = _rnd(cm.get("round","?"))
+                options.append(discord.SelectOption(
+                    label=f"{p1n} vs {p2n}"[:100],
+                    description=f"{rnd_l} · {cm['match_id']}"[:100],
+                    value=cm["match_id"]
+                ))
+
+            class FollowedByView(discord.ui.View):
+                def __init__(self_v):
+                    super().__init__(timeout=60)
+                    self_v.chosen = None
+                @discord.ui.select(placeholder="Choose the match this should follow…", options=options)
+                async def select_cb(self_v, inter: discord.Interaction, sel: discord.ui.Select):
+                    self_v.chosen = sel.values[0]
+                    chosen_m = next((m for m in candidates if m["match_id"] == self_v.chosen), None)
+                    match["scheduled_time"] = self_v.chosen
+                    match["timing_type"]    = "next_on"
+                    _save_comp(tournament_id, t)
+                    p1n2 = _mn(chosen_m.get("player1_id") if chosen_m else None)
+                    p2n2 = _mn(chosen_m.get("player2_id") if chosen_m else None)
+                    await inter.response.edit_message(
+                        content=f"✅ `{match_id}` will follow **{p1n2} vs {p2n2}** on "
+                                f"{COURT_DISPLAY.get(court, court)}.",
+                        view=None)
+                    self_v.stop()
+
+            p1n = _mn(match.get("player1_id")); p2n = _mn(match.get("player2_id"))
+            await _reply(i, content=f"Select which match **{p1n} vs {p2n}** should follow on "
+                                    f"{COURT_DISPLAY.get(court, court)}:",
+                         view=FollowedByView())
+            return  # early return — save happens inside select callback
+
+        if changes:
+            _save_comp(tournament_id, t)
+        p1n = _mn(match.get("player1_id")); p2n = _mn(match.get("player2_id"))
+        await _reply(i, f"✅ **{p1n} vs {p2n}** updated: {', '.join(changes) or 'no changes.'}")
 
     # ── /tournament match-result ──────────────────────────────────────────
     @tournament.command(name="match-result", description="(Admin) Record a match result and award points.")
@@ -2263,6 +2375,44 @@ class TournamentsCog(commands.Cog):
         emb = discord.Embed(title=f"🏆 Tournament Complete: {t.get('name')}", color=discord.Color.gold())
         emb.add_field(name="Champion", value=f"**{champ_name}** (+{champ_pts}pts)", inline=False)
         if finalist_score: emb.add_field(name="Final Score", value=finalist_score, inline=False)
+        await _reply(i, embed=emb)
+
+    # ── /tournament refresh-sheets ───────────────────────────────────────
+    @tournament.command(name="refresh-sheets",
+                        description="(Admin) Regenerate ALL tournament bracket sheets with latest formatting.")
+    @app_commands.guild_only()
+    async def tourn_refresh_sheets(self, i: discord.Interaction):
+        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
+            return await _reply(i, "❌ Admin only.", ephemeral=True)
+        if not _sheets_ok():
+            return await _reply(i, "❌ Google Sheets not configured.", ephemeral=True)
+
+        if not i.response.is_done():
+            await i.response.defer()
+
+        all_t = _comp_db().get("tournaments", {})
+        updated = []; failed = []; skipped = []
+
+        for tid, t in all_t.items():
+            if not t.get("sheet_url"):
+                skipped.append(t.get("name", tid))
+                continue
+            try:
+                update_sheet(t, guild=i.guild)
+                updated.append(t.get("name", tid))
+            except Exception as e:
+                failed.append(f"{t.get('name', tid)}: {e}")
+
+        emb = discord.Embed(title="🔄 Sheet Refresh Complete", color=discord.Color.green())
+        if updated:
+            emb.add_field(name=f"✅ Updated ({len(updated)})",
+                          value="\n".join(updated[:20]) or "—", inline=False)
+        if failed:
+            emb.add_field(name=f"❌ Failed ({len(failed)})",
+                          value="\n".join(failed[:10]) or "—", inline=False)
+        if skipped:
+            emb.add_field(name=f"⏭️ No sheet ({len(skipped)})",
+                          value="\n".join(skipped[:10]) or "—", inline=False)
         await _reply(i, embed=emb)
 
     # ── /tournament set-style ─────────────────────────────────────────────
@@ -2868,7 +3018,7 @@ class TournamentsCog(commands.Cog):
             except Exception: pass
 
         # Reset tournament to clean slate
-        t["status"]            = STATUS_UPCOMING
+        t["status"]            = STATUS_CANCELLED
         t["draw"]              = []
         t["matches"]           = []
         t["seeded_players"]    = []
