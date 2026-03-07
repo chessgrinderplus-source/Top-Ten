@@ -1483,13 +1483,15 @@ async def _ac_match(i: discord.Interaction, cur: str) -> List[app_commands.Choic
                 if uid is None: return "TBD"
                 m = i.guild.get_member(uid) if i.guild else None
                 return m.display_name if m else f"UID:{uid}"
-            for m in t.get("matches",[]):
+            for m in sorted(t.get("matches",[]),
+                            key=lambda mx: (mx.get("status","") == "completed", mx.get("match_id",""))):
                 mid = str(m.get("match_id",""))
                 rnd_label = _rnd(m.get("round","?"))
                 p1n = _mn(m.get("player1_id")); p2n = _mn(m.get("player2_id"))
-                label = f"{rnd_label}: {p1n} vs {p2n}"
+                status_icon = "✅ " if m.get("status") == "completed" else ""
+                label = f"{status_icon}{rnd_label}: {p1n} vs {p2n}"
                 if c in mid.lower() or c in label.lower() or not c:
-                    out.append(app_commands.Choice(name=f"{label}"[:100], value=mid))
+                    out.append(app_commands.Choice(name=label[:100], value=mid))
                 if len(out)>=25: break
     return out
 
@@ -2022,6 +2024,10 @@ class TournamentsCog(commands.Cog):
         if not t: return await _reply(i, "❌ Not found.", ephemeral=True)
         if t.get("status") == STATUS_COMPLETED:
             return await _reply(i, "❌ Already completed.", ephemeral=True)
+        if t.get("draw"):
+            return await _reply(i,
+                "❌ Draw already generated. Use `/tournament cancel` to wipe and start over.",
+                ephemeral=True)
         bracket = int(t["bracket_size"]); seeds = int(t.get("seeds",0))
         regs    = list(t.get("registrations",[])); wcs = list(t.get("wildcard_entries",[]))
         all_p   = regs + [u for u in wcs if u not in regs]
@@ -3012,10 +3018,18 @@ class TournamentsCog(commands.Cog):
         # We can't easily un-record individual match stats, so we just note it
         # Full stats wipe requires /admin history-wipe
 
-        # Archive or delete the sheet
+        # Delete the sheet entirely when cancelling
         if t.get("sheet_url") and _sheets_ok():
-            try: archive_sheet(t)
-            except Exception: pass
+            try:
+                gc, creds = _gs_client()
+                import googleapiclient.discovery as _gd
+                m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", t["sheet_url"])
+                if m:
+                    drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
+                    drive.files().delete(fileId=m.group(1)).execute()
+                    print(f"[sheets] deleted sheet {m.group(1)} for cancelled tournament")
+            except Exception as e:
+                print(f"[sheets] could not delete sheet: {e}")
 
         # Reset tournament to clean slate
         t["status"]            = STATUS_CANCELLED
