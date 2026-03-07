@@ -91,6 +91,14 @@ COURT_DISPLAY: Dict[str, str] = {
     **{f"other_{i}": f"Other Court {i}" for i in range(1, 11)},
 }
 
+def _court_name(tourn: dict, court_key: str) -> str:
+    """Return the actual venue name for a court_key (e.g. 'Rod Laver Arena'),
+    falling back to COURT_DISPLAY label, then the raw key."""
+    venues = tourn.get("venues", {}) if tourn else {}
+    name   = venues.get(court_key)   # stored as the user-entered venue name
+    if name: return name
+    return COURT_DISPLAY.get(court_key, court_key)
+
 DEFAULT_DAY_SESSION   = "11:00"
 DEFAULT_NIGHT_SESSION = "19:00"
 STATUS_UPCOMING   = "upcoming"
@@ -734,10 +742,12 @@ def schedule_text(tourn: dict, guild: discord.Guild, day_filter: Optional[int] =
     import datetime as _dt
     matches = tourn.get("matches", [])
 
-    def _name(uid):
-        if uid is None: return "BYE/TBD"
-        m = guild.get_member(uid)
-        return m.display_name if m else f"UID:{uid}"
+    def _name(uid, seed=None):
+        if uid is None: return "BYE"
+        m = guild.get_member(uid) if guild else None
+        name = m.display_name if m else f"<@{uid}>"
+        if seed: return f"[{seed}] {name}"
+        return name
 
     # Compute base date for day 1
     ts_iso = tourn.get("tournament_start_date")
@@ -786,9 +796,10 @@ def schedule_text(tourn: dict, guild: discord.Guild, day_filter: Optional[int] =
                 default_t = "11:00" if sess == "day" else "19:00"
                 sess_ts   = _session_ts(day, sess, default_t)
                 lines.append(f"  {'🌞 Day Session' if sess=='day' else '🌙 Night Session'} · {sess_ts}")
-            p1 = _name(m.get("player1_id")); p2 = _name(m.get("player2_id"))
-            s1 = m.get("seed1"); s2 = m.get("seed2")
-            rnd = _rnd(m.get("round","?")); ct = COURT_DISPLAY.get(m.get("court_key",""),"?")
+            p1 = _name(m.get("player1_id"), m.get("seed1"))
+            p2 = _name(m.get("player2_id"), m.get("seed2"))
+            rnd = _rnd(m.get("round","?"))
+            ct  = _court_name(tourn, m.get("court_key",""))
             tt  = m.get("timing_type","session_start"); st = m.get("scheduled_time","?")
             mid = m.get("match_id","?")
             if tt == "session_start":
@@ -800,9 +811,8 @@ def schedule_text(tourn: dict, guild: discord.Guild, day_filter: Optional[int] =
             icon  = "✅" if m.get("status") == "completed" else ("🎾" if m.get("player1_id") else "⏳")
             score = f" · **{m['score']}**" if m.get("score") else ""
             win   = f" → **{_name(m.get('winner_id'))}** wins" if m.get("winner_id") else ""
-            p1t   = f"({s1}) " if s1 else ""; p2t = f"({s2}) " if s2 else ""
             lines.append(f"  {icon} `{mid}` | **{rnd}** | {ct} | {timing}")
-            lines.append(f"       {p1t}**{p1}** vs {p2t}**{p2}**{score}{win}")
+            lines.append(f"       **{p1}** vs **{p2}**{score}{win}")
     return lines
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -991,8 +1001,8 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
     total_rows = _BK_DATA_ROW + total_data_rows + 6
     total_cols = (n_rnds + 1) * _bk_cpr(max_sets) + 4
 
-    # ── 1. Sheet-wide background ──
-    reqs.append(_fmt_req(ws_id, 0, 0, total_rows, total_cols,
+    # ── 1. Sheet-wide background (use large range to cover all visible cells) ──
+    reqs.append(_fmt_req(ws_id, 0, 0, max(total_rows + 20, 200), max(total_cols + 10, 60),
                          {"backgroundColor": bg,
                           "textFormat": {"fontFamily": fn, "foregroundColor": fc1}}))
 
@@ -1078,20 +1088,13 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                                             top=LINE, bottom=LINE, left=LINE, right=LINE))
 
             # ── Connector column ──
-            # Right border of last set col = horizontal arm to connector
-            last_sc = score_col + max_sets - 1
-            reqs.append(_border_req(ws_id, p1_r, last_sc,
-                                    p2_r + _BK_NAME_H, last_sc + 1,
-                                    right=LINE))
-            # Vertical bar in connector column spanning both players
+            # Vertical bar: left border on connector col, spans full match height
             reqs.append(_border_req(ws_id, p1_r, conn_col,
                                     p2_r + _BK_NAME_H, conn_col + 1,
-                                    top=LINE, bottom=LINE, left=LINE))
-            # Horizontal arm exits at midpoint
-            mid_top = p1_r + _BK_NAME_H - 1
-            mid_bot = p2_r
-            reqs.append(_border_req(ws_id, mid_top, conn_col,
-                                    mid_bot + 1, conn_col + 1,
+                                    left=LINE))
+            # Horizontal arm out: right border at rows spanning P1/P2 boundary
+            reqs.append(_border_req(ws_id, p1_r + _BK_NAME_H - 1, conn_col,
+                                    p2_r + 1, conn_col + 1,
                                     right=LINE))
 
         # ── Column widths for this round ──
@@ -1230,19 +1233,20 @@ def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict) -> None:
     fc2 = _hex_rgb(s.get("fc2", "#00e676"))
     fc3 = _hex_rgb(s.get("fc3", "#ff5252"))
 
-    hdrs = ["Day","Session","Round","Court","Time","P1","S1","P2","S2","Status","Score","Winner"]
+    hdrs = ["Day","Session","Round","Court","Timing","Player 1","Seed 1","Player 2","Seed 2","Status","Score","Winner"]
     srows: List[List] = []
     for m in sorted(tourn.get("matches",[]),
                     key=lambda x: (int(x.get("day") or 0), x.get("session","day"))):
         tt = m.get("timing_type",""); st = m.get("scheduled_time","")
         timing = st if tt=="session_start" else (f"NB {st}" if tt=="not_before" else f"→{st}")
+        def _sn(uid): return str(uid) if uid else ""
         srows.append([
-            m.get("day",""), m.get("session",""), m.get("round",""),
-            COURT_DISPLAY.get(m.get("court_key",""),""), timing,
-            str(m.get("player1_id","")), str(m.get("seed1","")),
-            str(m.get("player2_id","")), str(m.get("seed2","")),
+            m.get("day",""), m.get("session",""), _rnd(m.get("round","")),
+            _court_name(tourn, m.get("court_key","")), timing,
+            _sn(m.get("player1_id")), str(m.get("seed1","")),
+            _sn(m.get("player2_id")), str(m.get("seed2","")),
             m.get("status",""), m.get("score",""),
-            str(m["winner_id"]) if m.get("winner_id") else "",
+            _sn(m.get("winner_id")),
         ])
 
     ws2 = ss.worksheet("Schedule")
@@ -1340,22 +1344,21 @@ def update_sheet(tourn: dict, guild=None) -> None:
         ss = gc.open_by_key(m.group(1))
         s  = _style(tourn)
 
-        # ── Delete and recreate Bracket sheet for clean slate ──
+        # ── Delete and recreate Bracket sheet for clean slate (no stale merges) ──
         try:
-            old_ws = ss.worksheet("Bracket")
-            old_id = old_ws.id
-            # Add new sheet first so spreadsheet always has at least 1 sheet
-            new_ws = ss.add_worksheet("Bracket_new", rows=500, cols=100)
-            ss.batch_update({"requests": [
-                {"deleteSheet": {"sheetId": old_id}}
-            ]})
-            ss.batch_update({"requests": [
-                {"updateSheetProperties": {
-                    "properties": {"sheetId": new_ws.id, "title": "Bracket", "index": 0},
-                    "fields": "title,index"
-                }}
-            ]})
-            ws = ss.worksheet("Bracket")
+            all_wss  = ss.worksheets()
+            old_ws   = next((w for w in all_wss if w.title == "Bracket"), None)
+            if old_ws:
+                if len(all_wss) == 1:
+                    # Can't delete the only sheet — add Schedule first
+                    tmp = ss.add_worksheet("Schedule", rows=500, cols=12)
+                ss.del_worksheet(old_ws)
+            ws = ss.add_worksheet("Bracket", rows=600, cols=120)
+            # Move Bracket to index 0
+            ss.batch_update({"requests": [{"updateSheetProperties": {
+                "properties": {"sheetId": ws.id, "index": 0},
+                "fields": "index"
+            }}]})
         except Exception as e:
             print(f"[sheets] update_sheet: bracket sheet recreate failed ({e}), using existing")
             ws = ss.worksheet("Bracket")
@@ -1363,7 +1366,9 @@ def update_sheet(tourn: dict, guild=None) -> None:
         # Full re-render formatting + values
         reqs = [_gridlines_req(ws.id, True)]
         reqs += _build_bracket_requests(ws.id, tourn, guild)
-        ss.batch_update({"requests": reqs})
+        print(f"[sheets] update_sheet: sending {len(reqs)} bracket format requests…")
+        for chunk_start in range(0, len(reqs), 100):
+            ss.batch_update({"requests": reqs[chunk_start:chunk_start+100]})
         _write_bracket_values(ws, tourn, guild)
         print(f"[sheets] update_sheet: bracket written OK")
 
@@ -1580,7 +1585,7 @@ async def _ac_court_key(i: discord.Interaction, cur: str) -> List[app_commands.C
         t = _get_comp(tid)
         if t:
             for key, vid in t.get("venues", {}).items():
-                label = COURT_DISPLAY.get(key, key)
+                label = t.get("venues", {}).get(key) or COURT_DISPLAY.get(key, key)
                 if c in key.lower() or c in label.lower() or not c:
                     out.append(app_commands.Choice(name=label[:100], value=key))
                 if len(out) >= 25: break
@@ -1789,8 +1794,7 @@ class TournamentsCog(commands.Cog):
         emb.add_field(name="Seeds",     value=str(seeds),            inline=True)
         emb.add_field(name="Wildcards", value=str(wildcards),        inline=True)
         emb.add_field(name="Best Of",   value=f"Bo{best_of}",        inline=True)
-        emb.add_field(name="Courts",    value=", ".join(
-            COURT_DISPLAY.get(k, k) for k in venues), inline=False)
+        emb.add_field(name="Courts",    value=", ".join(venues.values()), inline=False)
         emb.add_field(name="Reg Opens",  value=_fmt_dt(rs.isoformat()), inline=True)
         emb.add_field(name="Reg Closes", value=_fmt_dt(rc.isoformat()), inline=True)
         emb.add_field(name="T. Start",   value=_fmt_dt(ts.isoformat()), inline=True)
