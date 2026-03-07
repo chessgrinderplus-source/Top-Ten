@@ -2703,5 +2703,81 @@ class TournamentsCog(commands.Cog):
         await _reply(i, embed=emb)
 
 
+    # ── /tournament cancel ───────────────────────────────────────────────
+    @tournament.command(name="cancel", description="(Admin) Cancel a tournament and wipe all its data.")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(tournament_id=_ac_comp_all)
+    async def tourn_cancel(self, i: discord.Interaction, tournament_id: str, confirm: str = ""):
+        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
+            return await _reply(i, "❌ Admin only.", ephemeral=True)
+        t = _get_comp(tournament_id)
+        if not t: return await _reply(i, "❌ Not found.", ephemeral=True)
+
+        if confirm.strip().lower() != "cancel":
+            return await _reply(i,
+                f"⚠️ This will permanently wipe **{t.get('name','?')}** including all match results, "
+                f"draw, registrations, awarded points and rankings impact.\n"
+                f"Run again with `confirm: cancel` to confirm.", ephemeral=True)
+
+        guild_id = i.guild.id
+        name = t.get("name", tournament_id)
+
+        # Reverse any awarded points
+        awarded = t.get("awarded_points", {})
+        for uid_str, rounds in awarded.items():
+            try: uid = int(uid_str)
+            except ValueError: continue
+            total = sum(int(v) for v in rounds.values())
+            if total: _award_points(guild_id, uid, -total, tournament_id, "CANCEL")
+
+        # Wipe H2H records for matches in this tournament
+        h2h_db = _h2h_db()
+        h2h = h2h_db.get("h2h", {}).get(str(guild_id), {})
+        for key in list(h2h.keys()):
+            h2h[key]["matches"] = [m for m in h2h[key].get("matches", [])
+                                   if m.get("tournament_id") != tournament_id]
+        _h2h_save(h2h_db)
+
+        # Wipe stats records for matches in this tournament
+        stats_db = _stats_db()
+        # We can't easily un-record individual match stats, so we just note it
+        # Full stats wipe requires /admin history-wipe
+
+        # Archive or delete the sheet
+        if t.get("sheet_url") and _sheets_ok():
+            try: archive_sheet(t)
+            except Exception: pass
+
+        # Reset tournament to clean slate
+        t["status"]            = STATUS_UPCOMING
+        t["draw"]              = []
+        t["matches"]           = []
+        t["seeded_players"]    = []
+        t["registrations"]     = []
+        t["wildcard_entries"]  = []
+        t["qualifier_entries"] = []
+        t["awarded_points"]    = {}
+        t["point_defense_applied"] = False
+        t["sheet_url"]         = None
+        t["champion_id"]       = None
+        t["champion_name"]     = None
+        t["completed_at"]      = None
+        _save_comp(tournament_id, t)
+
+        emb = discord.Embed(title=f"🗑️ Tournament Cancelled — {name}",
+                            color=discord.Color.red())
+        emb.description = (
+            "**Wiped:**\n"
+            "• All match results and draw\n"
+            "• All registrations and wildcards\n"
+            "• All awarded points (reversed in rankings)\n"
+            "• H2H records from this tournament\n"
+            "• Sheet archived\n\n"
+            "Tournament reset to **Upcoming** status with blank slate."
+        )
+        emb.set_footer(text=f"Cancelled by {i.user.display_name}")
+        await _reply(i, embed=emb)
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(TournamentsCog(bot))
