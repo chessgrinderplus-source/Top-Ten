@@ -906,7 +906,15 @@ def _range(sid, r1, c1, r2, c2) -> dict:
             "startColumnIndex": c1, "endColumnIndex": c2}
 
 def _fmt_req(sid, r1, c1, r2, c2, fmt: dict) -> dict:
-    fields = ",".join(f"userEnteredFormat.{k}" for k in fmt)
+    # Build fields list — for nested dicts (e.g. padding, textFormat) expand one level
+    field_parts = []
+    for k, v in fmt.items():
+        if isinstance(v, dict):
+            for sub_k in v:
+                field_parts.append(f"userEnteredFormat.{k}.{sub_k}")
+        else:
+            field_parts.append(f"userEnteredFormat.{k}")
+    fields = ",".join(field_parts)
     return {"repeatCell": {"range": _range(sid, r1, c1, r2, c2),
                            "cell": {"userEnteredFormat": fmt}, "fields": fields}}
 
@@ -981,7 +989,7 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
     n_r0 = bracket // 2
     total_data_rows = _bk_match_start(0, n_r0 - 1) + _BK_MATCH_H + _BK_GAP * 4
     total_rows = _BK_DATA_ROW + total_data_rows + 6
-    total_cols = (n_rnds + 1) * _BK_CPR + 4
+    total_cols = (n_rnds + 1) * _bk_cpr(max_sets) + 4
 
     # ── 1. Sheet-wide background ──
     reqs.append(_fmt_req(ws_id, 0, 0, total_rows, total_cols,
@@ -997,8 +1005,8 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
 
     # ── 3. Round header row (row 1) ──
     for ridx, rnd in enumerate(rnds):
-        col = _bk_round_col(ridx)
-        span = _BK_NAME_W + _BK_SCORE_W
+        col = _bk_round_col(ridx, max_sets)
+        span = _BK_NAME_W + max_sets
         reqs.append(_fmt_req(ws_id, 1, col, 2, col + span,
                              {"backgroundColor": sc2,
                               "textFormat": {"bold": True, "fontSize": 9,
@@ -1017,7 +1025,7 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
 
     for ridx, rnd in enumerate(rnds):
         n_matches = bracket // (2 ** (ridx + 1))
-        name_col  = _bk_round_col(ridx)
+        name_col  = _bk_round_col(ridx, max_sets)
         score_col = name_col + _BK_NAME_W    # first set col
         conn_col  = name_col + _BK_NAME_W + max_sets  # after all set cols
 
@@ -1290,16 +1298,28 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
         ws  = ss.get_worksheet(0); ws.update_title("Bracket")
         ws2 = ss.add_worksheet("Schedule", rows=500, cols=12)
 
-        # Build all formatting requests for bracket sheet
-        reqs = [_gridlines_req(ws.id, True)]
-        reqs += _build_bracket_requests(ws.id, tourn, guild)
+        # Build bracket formatting — split into chunks to stay under API limits
+        bracket_reqs = [_gridlines_req(ws.id, True)]
+        bracket_reqs += _build_bracket_requests(ws.id, tourn, guild)
+        print(f"[sheets] sending {len(bracket_reqs)} bracket format requests…")
+        # Send in chunks of 100 to avoid request-size limits
+        for chunk_start in range(0, len(bracket_reqs), 100):
+            chunk = bracket_reqs[chunk_start:chunk_start+100]
+            try:
+                ss.batch_update({"requests": chunk})
+            except Exception as chunk_e:
+                print(f"[sheets] batch chunk {chunk_start//100} failed: {chunk_e}")
+                # Log which request caused the issue
+                for idx, req in enumerate(chunk):
+                    print(f"  req[{chunk_start+idx}]: {list(req.keys())}")
+                raise  # re-raise so caller logs full traceback
+
+        # Write text values into bracket sheet
+        _write_bracket_values(ws, tourn, guild)
 
         # Schedule sheet setup
-        reqs.append(_gridlines_req(ws2.id, True))
-        ss.batch_update({"requests": reqs})
-
-        # Write text values
-        _write_bracket_values(ws, tourn, guild)
+        sched_reqs = [_gridlines_req(ws2.id, True)]
+        ss.batch_update({"requests": sched_reqs})
         _setup_schedule_sheet(ss, ws2.id, tourn, s)
 
         ss.share(None, perm_type="anyone", role="reader")
@@ -1846,7 +1866,7 @@ class TournamentsCog(commands.Cog):
         status = t.get("status","?").upper()
         emb = discord.Embed(title=f"🏆 {t.get('name','Tournament')}",
                             color=discord.Color.gold(),
-                            description=f"**{status}**")
+                            description=f"**{status}** · ID: `{tournament_id}`")
         emb.add_field(name="Category",  value=cat.get("name","?"),           inline=True)
         emb.add_field(name="Draw",      value=str(t.get("bracket_size","?")),inline=True)
         emb.add_field(name="Duration",  value=t.get("duration","?"),         inline=True)
@@ -1892,7 +1912,7 @@ class TournamentsCog(commands.Cog):
                    f"🎾 Starts: {ts} {tsr}")
             if t.get("champion_name"): val += f"\n🏆 Champion: **{t['champion_name']}**"
             if t.get("sheet_url"): val += f"\n📊 [Live Bracket]({t['sheet_url']})"
-            emb.add_field(name=t.get("name","?"), value=val, inline=False)
+            emb.add_field(name=f"{t.get('name','?')} · `{tid}`", value=val, inline=False)
         await _reply(i, embed=emb)
 
     # ── /tournament join ──────────────────────────────────────────────────
@@ -2256,9 +2276,22 @@ class TournamentsCog(commands.Cog):
                           day: Optional[int] = None):
         t = _get_comp(tournament_id)
         if not t: return await _reply(i, "❌ Not found.", ephemeral=True)
-        if not t.get("matches"):
+        matches = t.get("matches") or []
+        if not matches:
             return await _reply(i, "❌ No schedule yet — generate the draw first.", ephemeral=True)
-        lines = schedule_text(t, i.guild, day)
+        # Check if any matches have day assigned (some may be pending)
+        scheduled = [m for m in matches if m.get("day") is not None]
+        if not scheduled:
+            return await _reply(i,
+                "⚠️ Draw exists but no matches have been scheduled yet. "
+                "Try regenerating with `/tournament draw-generate`.", ephemeral=True)
+        try:
+            lines = schedule_text(t, i.guild, day)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            return await _reply(i, f"❌ Error building schedule: `{e}`", ephemeral=True)
+        if not lines:
+            return await _reply(i, "❌ Schedule is empty.", ephemeral=True)
         pv = PageView(lines, per=20)
         await _reply(i, content=pv.content(), view=pv)
 
