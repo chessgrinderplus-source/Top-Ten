@@ -793,8 +793,15 @@ def schedule_text(tourn: dict, guild: discord.Guild, day_filter: Optional[int] =
             sess = m.get("session","day")
             if sess != cur_sess:
                 cur_sess = sess
-                default_t = "11:00" if sess == "day" else "19:00"
-                sess_ts   = _session_ts(day, sess, default_t)
+                # Use actual scheduled_time of first session_start match, not hardcoded default
+                first_time = next(
+                    (mx.get("scheduled_time") for mx in day_m
+                     if mx.get("session") == sess
+                     and mx.get("timing_type") == "session_start"
+                     and mx.get("scheduled_time")),
+                    "11:00" if sess == "day" else "19:00"
+                )
+                sess_ts = _session_ts(day, sess, first_time)
                 lines.append(f"  {'🌞 Day Session' if sess=='day' else '🌙 Night Session'} · {sess_ts}")
             p1 = _name(m.get("player1_id"), m.get("seed1"))
             p2 = _name(m.get("player2_id"), m.get("seed2"))
@@ -2619,22 +2626,29 @@ class TournamentsCog(commands.Cog):
             name = t.get("name", tid)
             if not t.get("draw"):
                 skipped.append(f"{name} (no draw yet)"); continue
-            if t.get("sheet_url"):
+            # Always delete old sheet and recreate from scratch
+            old_url = t.get("sheet_url")
+            if old_url:
                 try:
-                    update_sheet(t, guild=i.guild)
-                    updated.append(name)
-                except Exception as e:
-                    failed.append(f"{name}: {e}")
-            else:
-                try:
-                    url = create_sheet(t, guild=i.guild)
-                    if url:
-                        t["sheet_url"] = url; _save_comp(tid, t)
-                        created.append(name)
-                    else:
-                        failed.append(f"{name}: sheet creation returned nothing")
-                except Exception as e:
-                    failed.append(f"{name}: {e}")
+                    gc2, creds2 = _gs_client()
+                    import googleapiclient.discovery as _gd2
+                    m2 = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", old_url)
+                    if m2:
+                        drv = _gd2.build("drive", "v3", credentials=creds2, cache_discovery=False)
+                        drv.files().delete(fileId=m2.group(1)).execute()
+                        print(f"[refresh] deleted old sheet for {name}")
+                except Exception as de:
+                    print(f"[refresh] could not delete old sheet for {name}: {de}")
+            t["sheet_url"] = None
+            try:
+                url = create_sheet(t, guild=i.guild)
+                if url:
+                    t["sheet_url"] = url; _save_comp(tid, t)
+                    created.append(name)
+                else:
+                    failed.append(f"{name}: create_sheet returned None (check Railway logs)")
+            except Exception as e:
+                failed.append(f"{name}: {e}")
 
         emb = discord.Embed(title="🔄 Sheet Refresh Complete", color=discord.Color.green())
         if created: emb.add_field(name=f"✅ Recreated ({len(created)})",
