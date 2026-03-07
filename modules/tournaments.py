@@ -98,6 +98,7 @@ STATUS_REG        = "registration"
 STATUS_ACTIVE     = "active"
 STATUS_COMPLETED  = "completed"
 STATUS_CANCELLED  = "cancelled"
+_ACTIVE_STATUSES  = {STATUS_UPCOMING, STATUS_REG, STATUS_ACTIVE, STATUS_COMPLETED}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Rankings helpers
@@ -1470,8 +1471,6 @@ async def _ac_cat(i: discord.Interaction, cur: str) -> List[app_commands.Choice[
         if len(out)>=25: break
     return out
 
-_ACTIVE_STATUSES = {STATUS_UPCOMING, STATUS_REG, STATUS_ACTIVE, STATUS_COMPLETED}
-
 @_safe_ac
 async def _ac_comp_all(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
     c = cur.lower(); out = []
@@ -2330,7 +2329,18 @@ class TournamentsCog(commands.Cog):
                     f"is already on that court at {new_time}.", ephemeral=True)
             match["scheduled_time"] = new_time.strip()
             match["timing_type"]    = "session_start"
-            changes.append(f"Time → {new_time}")
+            # Sync all other session_start matches in the same day+session to the same time
+            # so the whole session has a consistent start time
+            day = match.get("day"); session = match.get("session")
+            synced = 0
+            for m2 in t.get("matches", []):
+                if (m2["match_id"] != match_id
+                        and m2.get("day") == day
+                        and m2.get("session") == session
+                        and m2.get("timing_type") == "session_start"):
+                    m2["scheduled_time"] = new_time.strip()
+                    synced += 1
+            changes.append(f"Time → {new_time}" + (f" (synced {synced} other match{'es' if synced!=1 else ''})" if synced else ""))
 
         elif not_before:
             match["scheduled_time"] = not_before.strip()
@@ -2544,9 +2554,11 @@ class TournamentsCog(commands.Cog):
 
     # ── /tournament refresh-sheets ───────────────────────────────────────
     @tournament.command(name="refresh-sheets",
-                        description="(Admin) Regenerate ALL tournament bracket sheets with latest formatting.")
+                        description="(Admin) Regenerate bracket sheets. Leave tournament blank to refresh all.")
     @app_commands.guild_only()
-    async def tourn_refresh_sheets(self, i: discord.Interaction):
+    @app_commands.autocomplete(tournament_id=_ac_comp_all)
+    async def tourn_refresh_sheets(self, i: discord.Interaction,
+                                   tournament_id: Optional[str] = None):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         if not _sheets_ok():
@@ -2556,28 +2568,46 @@ class TournamentsCog(commands.Cog):
             await i.response.defer()
 
         all_t = _comp_db().get("tournaments", {})
-        updated = []; failed = []; skipped = []
+        if tournament_id:
+            t = all_t.get(tournament_id)
+            if not t: return await _reply(i, "❌ Tournament not found.", ephemeral=True)
+            all_t = {tournament_id: t}
+        else:
+            # Only include active tournaments with a draw
+            all_t = {tid: t for tid, t in all_t.items() if t.get("status") in _ACTIVE_STATUSES}
+
+        updated = []; created = []; failed = []; skipped = []
 
         for tid, t in all_t.items():
-            if not t.get("sheet_url"):
-                skipped.append(t.get("name", tid))
-                continue
-            try:
-                update_sheet(t, guild=i.guild)
-                updated.append(t.get("name", tid))
-            except Exception as e:
-                failed.append(f"{t.get('name', tid)}: {e}")
+            name = t.get("name", tid)
+            if not t.get("draw"):
+                skipped.append(f"{name} (no draw yet)"); continue
+            if t.get("sheet_url"):
+                try:
+                    update_sheet(t, guild=i.guild)
+                    updated.append(name)
+                except Exception as e:
+                    failed.append(f"{name}: {e}")
+            else:
+                try:
+                    url = create_sheet(t, guild=i.guild)
+                    if url:
+                        t["sheet_url"] = url; _save_comp(tid, t)
+                        created.append(name)
+                    else:
+                        failed.append(f"{name}: sheet creation returned nothing")
+                except Exception as e:
+                    failed.append(f"{name}: {e}")
 
         emb = discord.Embed(title="🔄 Sheet Refresh Complete", color=discord.Color.green())
-        if updated:
-            emb.add_field(name=f"✅ Updated ({len(updated)})",
-                          value="\n".join(updated[:20]) or "—", inline=False)
-        if failed:
-            emb.add_field(name=f"❌ Failed ({len(failed)})",
-                          value="\n".join(failed[:10]) or "—", inline=False)
-        if skipped:
-            emb.add_field(name=f"⏭️ No sheet ({len(skipped)})",
-                          value="\n".join(skipped[:10]) or "—", inline=False)
+        if updated: emb.add_field(name=f"✅ Updated ({len(updated)})",
+                                   value="\n".join(updated[:20]) or "—", inline=False)
+        if created: emb.add_field(name=f"🆕 Created ({len(created)})",
+                                   value="\n".join(created[:20]) or "—", inline=False)
+        if failed:  emb.add_field(name=f"❌ Failed ({len(failed)})",
+                                   value="\n".join(failed[:10]) or "—", inline=False)
+        if skipped: emb.add_field(name=f"⏭️ Skipped ({len(skipped)})",
+                                   value="\n".join(skipped[:10]) or "—", inline=False)
         await _reply(i, embed=emb)
 
     # ── /tournament set-style ─────────────────────────────────────────────
@@ -3137,6 +3167,37 @@ class TournamentsCog(commands.Cog):
         await _reply(i, embed=emb)
 
 
+    # ── /tournament purge-ghosts ─────────────────────────────────────────
+    @tournament.command(name="purge-ghosts",
+                        description="(Admin) Delete all cancelled/invalid ghost tournaments from the database.")
+    @app_commands.guild_only()
+    async def tourn_purge_ghosts(self, i: discord.Interaction):
+        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
+            return await _reply(i, "❌ Admin only.", ephemeral=True)
+
+        db = _comp_db()
+        tournaments = db.get("tournaments", {})
+        removed = []; kept = []
+
+        for tid, t in list(tournaments.items()):
+            st = t.get("status", "")
+            name = t.get("name", tid)
+            if st not in _ACTIVE_STATUSES:
+                removed.append(f"**{name}** (status: `{st or 'none'}`)")
+                del tournaments[tid]
+            else:
+                kept.append(name)
+
+        if removed:
+            _comp_save(db)
+
+        emb = discord.Embed(title="🧹 Ghost Purge Complete", color=discord.Color.orange())
+        emb.add_field(name=f"🗑️ Removed ({len(removed)})",
+                      value="\n".join(removed[:20]) or "None", inline=False)
+        emb.add_field(name=f"✅ Kept ({len(kept)})",
+                      value="\n".join(kept[:20]) or "None", inline=False)
+        await _reply(i, embed=emb)
+
     # ── /tournament cancel ───────────────────────────────────────────────
     @tournament.command(name="cancel", description="(Admin) Cancel a tournament and wipe all its data.")
     @app_commands.guild_only()
@@ -3190,23 +3251,12 @@ class TournamentsCog(commands.Cog):
             except Exception as e:
                 print(f"[sheets] could not delete sheet: {e}")
 
-        # Reset tournament to clean slate
-        t["status"]            = STATUS_CANCELLED
-        t["draw"]              = []
-        t["matches"]           = []
-        t["seeded_players"]    = []
-        t["registrations"]     = []
-        t["wildcard_entries"]  = []
-        t["qualifier_entries"] = []
-        t["awarded_points"]    = {}
-        t["point_defense_applied"] = False
-        t["sheet_url"]         = None
-        t["champion_id"]       = None
-        t["champion_name"]     = None
-        t["completed_at"]      = None
-        _save_comp(tournament_id, t)
+        # Fully remove tournament from database
+        db = _comp_db()
+        db.get("tournaments", {}).pop(tournament_id, None)
+        _comp_save(db)
 
-        emb = discord.Embed(title=f"🗑️ Tournament Cancelled — {name}",
+        emb = discord.Embed(title=f"🗑️ Tournament Deleted — {name}",
                             color=discord.Color.red())
         emb.description = (
             "**Wiped:**\n"
@@ -3214,8 +3264,8 @@ class TournamentsCog(commands.Cog):
             "• All registrations and wildcards\n"
             "• All awarded points (reversed in rankings)\n"
             "• H2H records from this tournament\n"
-            "• Sheet archived\n\n"
-            "Tournament reset to **Upcoming** status with blank slate."
+            "• Sheet deleted from Drive\n\n"
+            "Tournament has been fully removed."
         )
         emb.set_footer(text=f"Cancelled by {i.user.display_name}")
         await _reply(i, embed=emb)
