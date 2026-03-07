@@ -774,18 +774,42 @@ def _sheets_ok() -> bool:
         return False
 
 def _gs_client():
-    import gspread; from google.oauth2.service_account import Credentials
+    import gspread, os, json, tempfile
+    scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+
+    # ── Prefer OAuth2 user token (works with free Google accounts) ──
+    token_path    = os.getenv("GOOGLE_TOKEN_JSON", "keys/google_token.json")
+    token_content = os.getenv("GOOGLE_TOKEN_CONTENT", "")
+
+    if token_content and not os.path.exists(token_path):
+        # Write token from env var to temp file
+        _tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        _tmp.write(token_content); _tmp.close()
+        token_path = _tmp.name
+
+    if os.path.exists(token_path):
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        print(f"[sheets] _gs_client: using OAuth2 token from {token_path!r}")
+        creds = Credentials.from_authorized_user_file(token_path, scopes)
+        if creds.expired and creds.refresh_token:
+            print("[sheets] _gs_client: refreshing expired token…")
+            creds.refresh(Request())
+            with open(token_path, "w") as f: f.write(creds.to_json())
+        client = gspread.authorize(creds)
+        print("[sheets] _gs_client: authorized via OAuth2 OK")
+        return client
+
+    # ── Fallback: service account ──
     sa = getattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", None)
     print(f"[sheets] _gs_client: GOOGLE_SERVICE_ACCOUNT_JSON = {sa!r}")
-    if not sa: raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON not set in config.")
-    import os
-    if not os.path.exists(sa):
-        raise FileNotFoundError(f"Service account JSON not found at path: {sa!r}")
-    scopes = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+    if not sa: raise RuntimeError("No Google credentials found. Set GOOGLE_TOKEN_CONTENT or GOOGLE_SERVICE_ACCOUNT_JSON.")
+    if not os.path.exists(sa): raise FileNotFoundError(f"Service account JSON not found: {sa!r}")
+    from google.oauth2.service_account import Credentials
     creds = Credentials.from_service_account_file(sa, scopes=scopes)
-    print(f"[sheets] _gs_client: credentials loaded, authorizing…")
+    print("[sheets] _gs_client: credentials loaded, authorizing…")
     client = gspread.authorize(creds)
-    print(f"[sheets] _gs_client: authorized OK")
+    print("[sheets] _gs_client: authorized via service account OK")
     return client
 
 def _style(tourn: dict) -> dict:
@@ -1131,37 +1155,24 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
         print("[sheets] create_sheet: _sheets_ok() returned False, aborting")
         return None
     try:
-        s = _style(tourn)
+        gc = _gs_client(); s = _style(tourn)
         folder_id = getattr(config, "GOOGLE_DRIVE_FOLDER_ID", None)
         print(f"[sheets] GOOGLE_DRIVE_FOLDER_ID = {folder_id!r}")
 
-        # Build Drive API client using same service account credentials
-        import googleapiclient.discovery as _gd
-        from google.oauth2.service_account import Credentials as _Creds
-        sa = getattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", None)
-        scopes = ["https://spreadsheets.google.com/feeds",
-                  "https://www.googleapis.com/auth/drive"]
-        creds = _Creds.from_service_account_file(sa, scopes=scopes)
-        drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
+        # Create spreadsheet via gspread, then move to user's folder
+        print(f"[sheets] calling gc.create…")
+        ss = gc.create(f"[LIVE] {tourn.get('name','Tournament')}")
+        print(f"[sheets] spreadsheet created: {ss.id}")
 
-        # Create the spreadsheet directly inside the user's Drive folder
-        # This never touches the service account's storage quota at all
-        print(f"[sheets] creating spreadsheet directly in folder {folder_id!r}…")
-        file_meta = {
-            "name": f"[LIVE] {tourn.get('name','Tournament')}",
-            "mimeType": "application/vnd.google-apps.spreadsheet",
-        }
         if folder_id:
-            file_meta["parents"] = [folder_id]
-        created = drive.files().create(body=file_meta, fields="id").execute()
-        file_id = created["id"]
-        print(f"[sheets] spreadsheet created with id: {file_id}")
-
-        # Open with gspread using the file id
-        import gspread as _gs
-        gc = _gs.authorize(creds)
-        ss = gc.open_by_key(file_id)
-        print(f"[sheets] opened via gspread OK — {ss.url}")
+            import googleapiclient.discovery as _gd
+            drive = _gd.build("drive", "v3",
+                               credentials=gc.auth, cache_discovery=False)
+            file_meta = drive.files().get(fileId=ss.id, fields="parents").execute()
+            prev = ",".join(file_meta.get("parents", []))
+            drive.files().update(fileId=ss.id, addParents=folder_id,
+                                 removeParents=prev, fields="id").execute()
+            print(f"[sheets] moved to folder {folder_id}")
 
         ws  = ss.get_worksheet(0); ws.update_title("Bracket")
         ws2 = ss.add_worksheet("Schedule", rows=500, cols=12)
