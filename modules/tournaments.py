@@ -459,45 +459,77 @@ def _seed_of(draw: List, seeded: List[int], uid: Optional[int]) -> Optional[int]
     try: return seeded.index(uid) + 1
     except ValueError: return None
 
+def _seeded_draw_positions(n: int) -> List[int]:
+    """Return the standard seeded positions for a bracket of size n, in order S1..Sn.
+    Each tier is randomly shuffled into top/bottom halves of their section."""
+    positions: List[int] = []
+    used: set = set()
+    # Tier 1 and 2
+    positions.append(0); used.add(0)
+    if n >= 2: positions.append(n - 1); used.add(n - 1)
+    # Subsequent tiers: each tier has 2x as many seeds as the previous
+    section = n // 2
+    while section >= 2 and len(positions) < n:
+        tier_size = len(positions)  # number of seeds so far = number of sections to fill
+        new_slots: List[int] = []
+        for i in range(tier_size):
+            # The "end" of the sub-section that doesn't already have a seed
+            mid = (section // 2) - 1 + i * section
+            end = mid + section // 2
+            for p in [mid, end]:
+                if 0 <= p < n and p not in used:
+                    new_slots.append(p)
+        # Shuffle into top/bottom halves for randomness within constraints
+        half = n // 2
+        top_slots = [p for p in new_slots if p < half]
+        bot_slots  = [p for p in new_slots if p >= half]
+        random.shuffle(top_slots); random.shuffle(bot_slots)
+        merged = []
+        ti, bi = 0, 0
+        for i in range(len(new_slots)):
+            if i % 2 == 0 and ti < len(top_slots): merged.append(top_slots[ti]); ti += 1
+            elif bi < len(bot_slots):               merged.append(bot_slots[bi]);  bi += 1
+            elif ti < len(top_slots):               merged.append(top_slots[ti]);  ti += 1
+        for p in merged:
+            positions.append(p); used.add(p)
+        section //= 2
+    return positions
+
+
 def generate_draw(bracket_size: int, ranked_players: List[int], num_seeds: int) -> Tuple[List, List[int]]:
-    """Returns (draw: list of uid|None, seeded_players: list of uid)."""
+    """Returns (draw: list of uid|None, seeded_players: list of uid).
+    Seeds are placed at standard separated positions; top seeds get BYEs if
+    there are fewer players than bracket slots."""
     n        = bracket_size
     draw     = [None] * n
-    taken    : set = set()
     seeded   = ranked_players[:min(num_seeds, len(ranked_players))]
     unseeded = list(ranked_players[min(num_seeds, len(ranked_players)):])
     random.shuffle(unseeded)
 
-    def place(pos, player): draw[pos] = player; taken.add(pos)
+    seed_positions = _seeded_draw_positions(n)
 
-    if len(seeded) >= 1: place(0, seeded[0])
-    if len(seeded) >= 2: place(n - 1, seeded[1])
+    # Place seeds at their designated positions
+    for idx, player in enumerate(seeded):
+        if idx < len(seed_positions):
+            draw[seed_positions[idx]] = player
 
-    tier_start = 3; num_sections = 4
-    while tier_start <= len(seeded):
-        tier_end     = min(len(seeded), tier_start + num_sections // 2 - 1)
-        tier_players = list(seeded[tier_start - 1: tier_end])
-        if not tier_players: break
+    # Fill remaining slots with unseeded players — prefer slots NOT adjacent to seeds
+    # so that top seeds are more likely to get BYEs if players are short
+    taken = {p for p in seed_positions[:len(seeded)]}
+    seed_adj = set()
+    for pos in list(taken):
+        match_partner = pos ^ 1  # toggle last bit to find R1 opponent slot
+        if 0 <= match_partner < n and match_partner not in taken:
+            seed_adj.add(match_partner)
 
-        section_size = n // num_sections; half = n // 2
-        top_pos: List[int] = []; bottom_pos: List[int] = []
-        for sec in range(num_sections):
-            ss = sec * section_size; se = ss + section_size - 1
-            pos = se if sec < num_sections // 2 else ss
-            if pos not in taken:
-                (top_pos if pos < half else bottom_pos).append(pos)
-
-        num_each = max(1, len(tier_players) // 2)
-        random.shuffle(top_pos); random.shuffle(bottom_pos); random.shuffle(tier_players)
-        for p, pos in zip(tier_players[:num_each], top_pos[:num_each]): place(pos, p)
-        for p, pos in zip(tier_players[num_each:], bottom_pos[:len(tier_players[num_each:])]): place(pos, p)
-
-        tier_start += num_sections // 2; num_sections *= 2
+    # Fill non-seed-adjacent slots first, then seed-adjacent
+    free_normal = [i for i in range(n) if draw[i] is None and i not in seed_adj]
+    free_adj    = [i for i in range(n) if draw[i] is None and i in seed_adj]
 
     it = iter(unseeded)
-    for i in range(n):
-        if draw[i] is None:
-            try: draw[i] = next(it)
+    for slot_list in [free_normal, free_adj]:
+        for pos in slot_list:
+            try: draw[pos] = next(it)
             except StopIteration: break
 
     return draw, seeded
@@ -509,12 +541,25 @@ def _build_all_match_slots(bracket_size: int, draw: List, seeded: List[int]) -> 
     rounds_list = _rounds(bracket_size)
     matches: List[dict] = []
 
-    # First round from draw
+    # First round from draw — handle BYEs (None opponents)
     r1 = rounds_list[0]
+    bye_winners: List[int] = []  # players who auto-advance due to BYE
     for i in range(0, bracket_size, 2):
         p1 = draw[i]; p2 = draw[i + 1] if i + 1 < bracket_size else None
         mid = f"{r1}_{i // 2 + 1:03d}"
-        matches.append(_match_stub(mid, r1, p1, p2, _seed_of(draw, seeded, p1), _seed_of(draw, seeded, p2), i, i + 1))
+        stub = _match_stub(mid, r1, p1, p2, _seed_of(draw, seeded, p1), _seed_of(draw, seeded, p2), i, i + 1)
+        # Auto-advance if one player is BYE
+        if p1 is not None and p2 is None:
+            stub["winner_id"] = p1; stub["loser_id"] = None
+            stub["score"] = "BYE"; stub["status"] = "completed"
+            bye_winners.append(p1)
+        elif p2 is not None and p1 is None:
+            stub["winner_id"] = p2; stub["loser_id"] = None
+            stub["score"] = "BYE"; stub["status"] = "completed"
+            bye_winners.append(p2)
+        elif p1 is None and p2 is None:
+            stub["status"] = "pending"
+        matches.append(stub)
 
     # Stub slots for all later rounds
     for ridx in range(1, len(rounds_list)):
@@ -523,6 +568,24 @@ def _build_all_match_slots(bracket_size: int, draw: List, seeded: List[int]) -> 
         for i in range(prev_cnt // 2):
             mid = f"{rnd}_{i + 1:03d}"
             matches.append(_match_stub(mid, rnd, None, None, None, None, None, None))
+
+    # Propagate BYE winners into round 2
+    if bye_winners and len(rounds_list) > 1:
+        r2 = rounds_list[1]
+        r1_matches = sorted([m for m in matches if m["round"] == r1], key=lambda m: m["match_id"])
+        r2_matches = sorted([m for m in matches if m["round"] == r2], key=lambda m: m["match_id"])
+        for mi, r1m in enumerate(r1_matches):
+            if r1m.get("score") != "BYE": continue
+            r2_mi = mi // 2
+            if r2_mi >= len(r2_matches): continue
+            r2m = r2_matches[r2_mi]
+            winner = r1m["winner_id"]
+            if r1m == r1_matches[mi // 2 * 2]:  # even index = P1 of R2 match
+                r2m["player1_id"] = winner
+                r2m["seed1"] = _seed_of(draw, seeded, winner)
+            else:
+                r2m["player2_id"] = winner
+                r2m["seed2"] = _seed_of(draw, seeded, winner)
 
     return matches
 
@@ -739,18 +802,21 @@ def schedule_text(tourn: dict, guild: discord.Guild, day_filter: Optional[int] =
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Bracket layout constants
-_BK_ROWS_PER_PLAYER = 2   # name row + score row
-_BK_MATCH_H  = 4          # rows per match (2 players × 2 rows)
-_BK_GAP      = 2          # gap rows between matches in R0
-_BK_STRIDE   = 6          # _BK_MATCH_H + _BK_GAP
-_BK_NAME_W   = 3          # merged columns for player name
+# Each match: P1 box (2 rows) + P2 box (2 rows) + GAP rows
+# Standard formula: start(r,mi) = mi * 6 * 2^r + 3 * (2^r - 1)
+_BK_NAME_H   = 2          # rows per player box
+_BK_GAP      = 2          # empty rows between matches in R0
+_BK_MATCH_H  = 4          # total player rows per match (2 players × 2 rows)
+_BK_STRIDE   = 6          # full stride in R0 (match + gap)
+_BK_NAME_W   = 5          # merged columns for player name
 _BK_SCORE_W  = 1          # column for score
 _BK_CONN_W   = 1          # connector column
-_BK_CPR      = _BK_NAME_W + _BK_SCORE_W + _BK_CONN_W  # = 5 cols per round
-_BK_DATA_ROW = 2          # row index (0-based) where bracket data starts (row 0=title, 1=headers)
+_BK_CPR      = _BK_NAME_W + _BK_SCORE_W + _BK_CONN_W  # = 7 cols per round
+_BK_DATA_ROW = 2          # row index (0-based) where bracket data starts
 
 def _bk_match_start(round_idx: int, match_idx: int) -> int:
-    """0-based row index of a match's first player row, relative to DATA_ROW."""
+    """0-based row index of a match's P1 first row, relative to DATA_ROW."""
+    # Verified: r=0→[0,6,12...], r=1→[3,15...], r=2→[9...] etc.
     return match_idx * _BK_STRIDE * (2 ** round_idx) + 3 * (2 ** round_idx - 1)
 
 def _bk_round_col(round_idx: int) -> int:
@@ -871,226 +937,244 @@ def _player_display(uid, draw, seeded, guild) -> str:
 
 def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
     """Return all batchUpdate requests to render the bracket."""
-    s       = _style(tourn)
-    bg      = _hex_rgb(s.get("bg",  "#1a1a2e"))
-    fc1     = _hex_rgb(s.get("fc1", "#ffffff"))   # regular name
-    fc2     = _hex_rgb(s.get("fc2", "#00e676"))   # winner
-    fc3     = _hex_rgb(s.get("fc3", "#ff5252"))   # loser
-    sc1     = _hex_rgb(s.get("sc1", "#2a2a4a"))   # name-row bg
-    sc2     = _hex_rgb(s.get("sc2", "#1a1a2e"))   # score-row bg (slightly darker)
-    line_c  = _hex_rgb(s.get("fc1", "#ffffff"))   # bracket line color = fc1
-    fn      = s.get("font", "Roboto Mono")
+    s      = _style(tourn)
+    bg     = _hex_rgb(s.get("bg",  "#1a1a2e"))
+    fc1    = _hex_rgb(s.get("fc1", "#ffffff"))
+    fc2    = _hex_rgb(s.get("fc2", "#00e676"))
+    fc3    = _hex_rgb(s.get("fc3", "#ff5252"))
+    sc1    = _hex_rgb(s.get("sc1", "#2a2a4a"))
+    sc2    = _hex_rgb(s.get("sc2", "#16213e"))
+    line_c = _hex_rgb(s.get("fc1", "#ffffff"))
+    fn     = s.get("font", "Roboto Mono")
+    best_of = int(tourn.get("best_of", 3))
+    # Score col width: Bo3 ≈ "6-3 6-4" = 9 chars, Bo5 ≈ "7-6 3-6 6-4 6-3" = 16 chars
+    score_px = 75 if best_of <= 3 else 120
 
-    bracket = int(tourn.get("bracket_size", 8))
-    rnds    = _rounds(bracket)
-    n_rnds  = len(rnds)
-    draw    = tourn.get("draw", [])
-    seeded  = tourn.get("seeded_players", [])
+    bracket  = int(tourn.get("bracket_size", 8))
+    rnds     = _rounds(bracket)
+    n_rnds   = len(rnds)
+    draw     = tourn.get("draw", [])
+    seeded   = tourn.get("seeded_players", [])
+    matches  = tourn.get("matches", [])
 
-    # Build winner/loser lookup per player per round
-    # match_result[uid] = {round: "W"|"L", score: str}
-    match_result: dict = {}
-    for m in tourn.get("matches", []):
-        wid = m.get("winner_id"); lid = m.get("loser_id"); rnd = m.get("round",""); sc = m.get("score","")
-        if wid: match_result.setdefault(wid, {})[rnd] = ("W", sc)
-        if lid: match_result.setdefault(lid, {})[rnd] = ("L", sc)
-
-    # Pre-compute which player appears at which (round, row) in the bracket
-    # round_player[r][match_i] = (p1_uid, p2_uid)
-    rounds_by_match: dict = {}
-    for m in tourn.get("matches", []):
-        rnd = m.get("round","")
-        if rnd in rnds:
-            ridx = rnds.index(rnd)
-            prev_matches = sorted([mx for mx in tourn.get("matches",[]) if mx.get("round")==rnd],
-                                   key=lambda mx: mx.get("match_id",""))
-            for mi, mx in enumerate(prev_matches):
-                rounds_by_match.setdefault(ridx, {})[mi] = mx
+    # winner/loser per (uid, round)
+    match_wl: dict = {}
+    for m in matches:
+        wid = m.get("winner_id"); lid = m.get("loser_id"); rnd = m.get("round","")
+        if wid: match_wl[(wid, rnd)] = "W"
+        if lid: match_wl[(lid, rnd)] = "L"
 
     reqs: List[dict] = []
 
-    # Total rows and cols
-    n_r0_matches = bracket // 2
-    total_data_rows = _bk_match_start(0, n_r0_matches - 1) + _BK_MATCH_H + _BK_GAP + 4
-    total_rows = _BK_DATA_ROW + total_data_rows + 4
-    total_cols = (n_rnds + 1) * _BK_CPR + 4  # +1 for champion col
+    n_r0 = bracket // 2
+    total_data_rows = _bk_match_start(0, n_r0 - 1) + _BK_MATCH_H + _BK_GAP * 4
+    total_rows = _BK_DATA_ROW + total_data_rows + 6
+    total_cols = (n_rnds + 1) * _BK_CPR + 4
 
-    # 1. Fill entire sheet with bg color
+    # ── 1. Sheet-wide background ──
     reqs.append(_fmt_req(ws_id, 0, 0, total_rows, total_cols,
                          {"backgroundColor": bg,
                           "textFormat": {"fontFamily": fn, "foregroundColor": fc1}}))
 
-    # 2. Title row (row 0)
-    title_col_span = min(total_cols, 20)
-    reqs.append(_fmt_req(ws_id, 0, 0, 1, title_col_span,
+    # ── 2. Title row (row 0) ──
+    reqs.append(_fmt_req(ws_id, 0, 0, 1, min(total_cols, 24),
                          {"backgroundColor": sc1,
-                          "textFormat": {"bold": True, "fontSize": 14,
+                          "textFormat": {"bold": True, "fontSize": 13,
                                          "fontFamily": fn, "foregroundColor": fc2}}))
+    reqs.append(_merge_req(ws_id, 0, 0, 1, min(total_cols, 24)))
 
-    # 3. Round header row (row 1)
+    # ── 3. Round header row (row 1) ──
     for ridx, rnd in enumerate(rnds):
         col = _bk_round_col(ridx)
-        reqs.append(_fmt_req(ws_id, 1, col, 2, col + _BK_NAME_W + _BK_SCORE_W,
-                             {"backgroundColor": sc1,
-                              "textFormat": {"bold": True, "fontSize": 10,
+        span = _BK_NAME_W + _BK_SCORE_W
+        reqs.append(_fmt_req(ws_id, 1, col, 2, col + span,
+                             {"backgroundColor": sc2,
+                              "textFormat": {"bold": True, "fontSize": 9,
                                              "fontFamily": fn, "foregroundColor": fc1}}))
-        reqs.append(_merge_req(ws_id, 1, col, 2, col + _BK_NAME_W + _BK_SCORE_W))
+        reqs.append(_merge_req(ws_id, 1, col, 2, col + span))
     # Champion header
     champ_col = _bk_round_col(n_rnds)
-    reqs.append(_fmt_req(ws_id, 1, champ_col, 2, champ_col + _BK_NAME_W,
-                         {"backgroundColor": sc1,
-                          "textFormat": {"bold": True, "fontSize": 10,
+    reqs.append(_fmt_req(ws_id, 1, champ_col, 2, champ_col + _BK_NAME_W + _BK_SCORE_W,
+                         {"backgroundColor": sc2,
+                          "textFormat": {"bold": True, "fontSize": 9,
                                          "fontFamily": fn, "foregroundColor": fc2}}))
-    reqs.append(_merge_req(ws_id, 1, champ_col, 2, champ_col + _BK_NAME_W))
+    reqs.append(_merge_req(ws_id, 1, champ_col, 2, champ_col + _BK_NAME_W + _BK_SCORE_W))
 
-    # 4. For each round, draw all matches
+    # ── 4. Each match in each round ──
+    LINE = _solid(line_c)
+
     for ridx, rnd in enumerate(rnds):
         n_matches = bracket // (2 ** (ridx + 1))
-        col       = _bk_round_col(ridx)
-        name_col  = col
-        score_col = col + _BK_NAME_W
-        conn_col  = col + _BK_NAME_W + _BK_SCORE_W
+        name_col  = _bk_round_col(ridx)
+        score_col = name_col + _BK_NAME_W
+        conn_col  = name_col + _BK_NAME_W + _BK_SCORE_W
 
-        # Get match data for this round
-        rnd_matches = sorted([m for m in tourn.get("matches",[]) if m.get("round") == rnd],
-                              key=lambda m: m.get("match_id",""))
+        rnd_matches = sorted([m for m in matches if m.get("round") == rnd],
+                              key=lambda m: m.get("match_id", ""))
 
         for mi in range(n_matches):
-            start = _BK_DATA_ROW + _bk_match_start(ridx, mi)
-            p1_row = start;     p1_score_row = start + 1
-            p2_row = start + 2; p2_score_row = start + 3
+            s_row = _BK_DATA_ROW + _bk_match_start(ridx, mi)
+            p1_r  = s_row                    # P1 box rows: s_row, s_row+1
+            p2_r  = s_row + _BK_NAME_H       # P2 box rows: s_row+2, s_row+3
 
-            # Get player info
-            match_data = rnd_matches[mi] if mi < len(rnd_matches) else {}
-            p1_uid = match_data.get("player1_id"); p2_uid = match_data.get("player2_id")
-            wid    = match_data.get("winner_id");  lid    = match_data.get("loser_id")
-            score  = match_data.get("score") or ""
+            m_data = rnd_matches[mi] if mi < len(rnd_matches) else {}
+            p1_uid = m_data.get("player1_id")
+            p2_uid = m_data.get("player2_id")
+            wid    = m_data.get("winner_id")
+            lid    = m_data.get("loser_id")
 
-            for player_row, score_row, uid in [(p1_row, p1_score_row, p1_uid),
-                                               (p2_row, p2_score_row, p2_uid)]:
-                is_winner = uid is not None and uid == wid
-                is_loser  = uid is not None and uid == lid
-                txt_color = fc2 if is_winner else (fc3 if is_loser else fc1)
+            for p_row, uid in [(p1_r, p1_uid), (p2_r, p2_uid)]:
+                is_w  = uid is not None and uid == wid
+                is_l  = uid is not None and uid == lid
+                txt   = fc2 if is_w else (fc3 if is_l else fc1)
+                is_bye = m_data.get("score") == "BYE" and uid is None
 
-                # Name row bg = sc1
-                reqs.append(_fmt_req(ws_id, player_row, name_col,
-                                     player_row + 1, score_col + 1,
-                                     {"backgroundColor": sc1,
-                                      "textFormat": {"fontFamily": fn, "bold": is_winner,
-                                                     "foregroundColor": txt_color},
+                # ── Name box (merged, sc1 background) ──
+                reqs.append(_fmt_req(ws_id, p_row, name_col,
+                                     p_row + _BK_NAME_H, score_col,
+                                     {"backgroundColor": sc1 if not is_bye else bg,
+                                      "textFormat": {"fontFamily": fn, "bold": is_w,
+                                                     "fontSize": 10, "foregroundColor": txt},
                                       "verticalAlignment": "MIDDLE",
-                                      "horizontalAlignment": "LEFT"}))
-                # Score row bg = sc2
-                reqs.append(_fmt_req(ws_id, score_row, name_col,
-                                     score_row + 1, score_col + 1,
-                                     {"backgroundColor": sc2,
-                                      "textFormat": {"fontFamily": fn, "italic": True,
-                                                     "foregroundColor": txt_color},
+                                      "horizontalAlignment": "LEFT",
+                                      "paddingLeft": 6}))
+                reqs.append(_merge_req(ws_id, p_row, name_col,
+                                       p_row + _BK_NAME_H, score_col))
+
+                # ── Score box (sc2 background) ──
+                reqs.append(_fmt_req(ws_id, p_row, score_col,
+                                     p_row + _BK_NAME_H, score_col + 1,
+                                     {"backgroundColor": sc2 if not is_bye else bg,
+                                      "textFormat": {"fontFamily": fn, "bold": is_w,
+                                                     "fontSize": 9, "foregroundColor": txt},
                                       "verticalAlignment": "MIDDLE",
                                       "horizontalAlignment": "CENTER"}))
 
-                # Merge name cells
-                reqs.append(_merge_req(ws_id, player_row, name_col,
-                                       player_row + 1, name_col + _BK_NAME_W))
-                reqs.append(_merge_req(ws_id, score_row, name_col,
-                                       score_row + 1, name_col + _BK_NAME_W))
+                # ── Box borders (all 4 sides visible) ──
+                if not is_bye:
+                    reqs.append(_border_req(ws_id, p_row, name_col,
+                                            p_row + _BK_NAME_H, score_col + 1,
+                                            top=LINE, bottom=LINE, left=LINE, right=LINE))
 
-                # Right border on score col cells (horizontal bracket arm)
-                reqs.append(_border_req(ws_id, player_row, score_col,
-                                        score_row + 1, score_col + 1,
-                                        right=_solid(line_c)))
+            # ── Connector column ──
+            # Vertical bar from top of P1 to bottom of P2
+            reqs.append(_border_req(ws_id, p1_r, conn_col,
+                                    p2_r + _BK_NAME_H, conn_col + 1,
+                                    top=LINE, bottom=LINE, left=LINE))
+            # Horizontal arm at midpoint rows (p1 last row → p2 first row boundary)
+            # arm exits from midpoint: right border on rows p1_r+1 and p2_r
+            mid_top = p1_r + _BK_NAME_H - 1   # last row of P1 box
+            mid_bot = p2_r                      # first row of P2 box
+            reqs.append(_border_req(ws_id, mid_top, conn_col,
+                                    mid_bot + 1, conn_col + 1,
+                                    right=LINE))
 
-            # Connector column borders (vertical bracket line + horizontal to next round)
-            # Left border spanning full match height
-            reqs.append(_border_req(ws_id, start, conn_col, start + _BK_MATCH_H, conn_col + 1,
-                                    left=_solid(line_c),
-                                    top=_solid(line_c),
-                                    bottom=_solid(line_c)))
-            # Right border on middle 2 rows (horizontal line → next round)
-            reqs.append(_border_req(ws_id, p1_score_row, conn_col,
-                                    p2_row + 1, conn_col + 1,
-                                    right=_solid(line_c)))
+        # ── Column widths for this round ──
+        reqs.append(_col_width_req(ws_id, name_col, name_col + _BK_NAME_W, 160))
+        reqs.append(_col_width_req(ws_id, score_col, score_col + 1, score_px))
+        reqs.append(_col_width_req(ws_id, conn_col, conn_col + 1, 18))
 
-        # 5. Column widths for this round
-        reqs.append(_col_width_req(ws_id, name_col, name_col + _BK_NAME_W, 140))
-        reqs.append(_col_width_req(ws_id, score_col, score_col + 1, 70))
-        reqs.append(_col_width_req(ws_id, conn_col, conn_col + 1, 24))
-
-    # 6. Champion column
-    champ_uid = tourn.get("champion_id")
-    champ_col = _bk_round_col(n_rnds)
-    champ_row = _BK_DATA_ROW + _bk_match_start(n_rnds - 1, 0)  # center of final match
-    reqs.append(_fmt_req(ws_id, champ_row, champ_col, champ_row + _BK_ROWS_PER_PLAYER,
-                         champ_col + _BK_NAME_W,
+    # ── 5. Champion box ──
+    final_start = _BK_DATA_ROW + _bk_match_start(n_rnds - 1, 0)
+    champ_row   = final_start + _BK_NAME_H - 1   # midpoint of final match
+    champ_h     = _BK_MATCH_H
+    reqs.append(_fmt_req(ws_id, champ_row, champ_col,
+                         champ_row + champ_h, champ_col + _BK_NAME_W + _BK_SCORE_W,
                          {"backgroundColor": fc2,
-                          "textFormat": {"bold": True, "fontSize": 11,
+                          "textFormat": {"bold": True, "fontSize": 12,
                                          "fontFamily": fn, "foregroundColor": bg},
                           "verticalAlignment": "MIDDLE",
                           "horizontalAlignment": "CENTER"}))
     reqs.append(_merge_req(ws_id, champ_row, champ_col,
-                           champ_row + _BK_ROWS_PER_PLAYER, champ_col + _BK_NAME_W))
-    reqs.append(_col_width_req(ws_id, champ_col, champ_col + _BK_NAME_W, 160))
+                           champ_row + champ_h, champ_col + _BK_NAME_W + _BK_SCORE_W))
+    reqs.append(_border_req(ws_id, champ_row, champ_col,
+                            champ_row + champ_h, champ_col + _BK_NAME_W + _BK_SCORE_W,
+                            top=LINE, bottom=LINE, left=LINE, right=LINE))
+    reqs.append(_col_width_req(ws_id, champ_col, champ_col + _BK_NAME_W + 1, 180))
 
-    # 7. Row heights
-    reqs.append(_row_height_req(ws_id, 0, 1, 30))       # title
-    reqs.append(_row_height_req(ws_id, 1, 2, 22))       # headers
-    reqs.append(_row_height_req(ws_id, 2, total_rows, 20))  # data rows
+    # ── 6. Row heights ──
+    reqs.append(_row_height_req(ws_id, 0, 1, 28))
+    reqs.append(_row_height_req(ws_id, 1, 2, 20))
+    reqs.append(_row_height_req(ws_id, _BK_DATA_ROW, total_rows, 20))
 
     return reqs
-
 def _write_bracket_values(ws, tourn: dict, guild) -> None:
-    """Write cell text values for the bracket (separate from formatting)."""
-    rnds   = _rounds(int(tourn.get("bracket_size", 8)))
-    draw   = tourn.get("draw", [])
-    seeded = tourn.get("seeded_players", [])
+    """Write cell text values for the bracket."""
+    bracket = int(tourn.get("bracket_size", 8))
+    rnds    = _rounds(bracket)
+    draw    = tourn.get("draw", [])
+    seeded  = tourn.get("seeded_players", [])
+    matches = tourn.get("matches", [])
 
     updates = []
-    # Title
-    updates.append({"range": "A1", "values": [[f"🏆 {tourn.get('name','Tournament')}"]]})
+
+    # Title (no emoji)
+    updates.append({"range": "A1", "values": [[f"{tourn.get('name','Tournament')} — Live Bracket"]]})
+
     # Round headers
     for ridx, rnd in enumerate(rnds):
-        col_letter = _col_letter(_bk_round_col(ridx))
-        updates.append({"range": f"{col_letter}2", "values": [[rnd]]})
-    champ_letter = _col_letter(_bk_round_col(len(rnds)))
-    updates.append({"range": f"{champ_letter}2", "values": [["🏆 CHAMPION"]]})
+        cl = _col_letter(_bk_round_col(ridx))
+        updates.append({"range": f"{cl}2", "values": [[_rnd(rnd)]]})
+    cl = _col_letter(_bk_round_col(len(rnds)))
+    updates.append({"range": f"{cl}2", "values": [["CHAMPION"]]})
 
-    # Player names + scores per round
+    # Build sorted match lookup per round
+    rnd_match_map: dict = {}
+    for rnd in rnds:
+        rnd_ms = sorted([m for m in matches if m.get("round") == rnd],
+                        key=lambda m: m.get("match_id", ""))
+        for mi, m in enumerate(rnd_ms):
+            rnd_match_map[(rnd, mi)] = m
+
     for ridx, rnd in enumerate(rnds):
-        n_matches = int(tourn["bracket_size"]) // (2 ** (ridx + 1))
-        rnd_matches = sorted([m for m in tourn.get("matches",[]) if m.get("round") == rnd],
-                              key=lambda m: m.get("match_id",""))
+        n_matches = bracket // (2 ** (ridx + 1))
         name_col  = _bk_round_col(ridx)
         score_col = name_col + _BK_NAME_W
 
         for mi in range(n_matches):
-            start = _BK_DATA_ROW + _bk_match_start(ridx, mi)
-            match_data = rnd_matches[mi] if mi < len(rnd_matches) else {}
-            p1_uid = match_data.get("player1_id"); p2_uid = match_data.get("player2_id")
-            wid    = match_data.get("winner_id");  score  = match_data.get("score") or ""
+            s_row = _BK_DATA_ROW + _bk_match_start(ridx, mi)
+            m     = rnd_match_map.get((rnd, mi), {})
 
-            for offset, uid in [(0, p1_uid), (2, p2_uid)]:
-                row       = start + offset
-                score_row = row + 1
-                name_str  = _player_display(uid, draw, seeded, guild) if uid else ("BYE" if ridx == 0 else "")
-                score_str = score if uid and uid == wid else ("" if not wid else score)
-                if name_str:
-                    nc = _col_letter(name_col); sc = _col_letter(score_col)
-                    updates.append({"range": f"{nc}{row+1}", "values": [[name_str]]})
-                    if score_str:
-                        updates.append({"range": f"{sc}{score_row+1}", "values": [[score_str]]})
+            p1_uid = m.get("player1_id")
+            p2_uid = m.get("player2_id")
+            wid    = m.get("winner_id")
+            score  = m.get("score") or ""
+
+            # For round 0, read directly from draw array (guaranteed accurate)
+            if ridx == 0:
+                p1_uid = draw[mi * 2]     if len(draw) > mi * 2     else p1_uid
+                p2_uid = draw[mi * 2 + 1] if len(draw) > mi * 2 + 1 else p2_uid
+
+            for offset, uid in [(0, p1_uid), (_BK_NAME_H, p2_uid)]:
+                row = s_row + offset
+                nc  = _col_letter(name_col)
+                if uid:
+                    name_str = _player_display(uid, draw, seeded, guild)
+                    updates.append({"range": f"{nc}{row + 1}", "values": [[name_str]]})
+                elif ridx == 0 and score != "BYE":
+                    # Empty slot (not a BYE match) — show TBD
+                    updates.append({"range": f"{nc}{row + 1}", "values": [["TBD"]]})
+
+            # Score next to winner
+            if score and score != "BYE" and wid:
+                for offset, uid in [(0, p1_uid), (_BK_NAME_H, p2_uid)]:
+                    if uid == wid:
+                        row = s_row + offset
+                        sc  = _col_letter(score_col)
+                        updates.append({"range": f"{sc}{row + 1}", "values": [[score]]})
 
     # Champion
     champ_uid = tourn.get("champion_id")
     if champ_uid:
-        champ_col = _bk_round_col(len(rnds))
-        champ_row = _BK_DATA_ROW + _bk_match_start(len(rnds) - 1, 0)
-        champ_name = _player_display(champ_uid, draw, seeded, guild)
-        cl = _col_letter(champ_col)
-        updates.append({"range": f"{cl}{champ_row+1}", "values": [[f"🏆 {champ_name}"]]})
+        champ_col   = _bk_round_col(len(rnds))
+        final_start = _BK_DATA_ROW + _bk_match_start(len(rnds) - 1, 0)
+        champ_row   = final_start + _BK_NAME_H - 1
+        cl          = _col_letter(champ_col)
+        champ_name  = _player_display(champ_uid, draw, seeded, guild)
+        updates.append({"range": f"{cl}{champ_row + 1}", "values": [[champ_name]]})
 
     if updates:
         ws.batch_update(updates)
-
 def _col_letter(col_idx: int) -> str:
     """Convert 0-based column index to A1-notation letter(s)."""
     result = ""
@@ -1915,7 +1999,7 @@ class TournamentsCog(commands.Cog):
                 "and set `GOOGLE_SERVICE_ACCOUNT_JSON` in config to generate live bracket sheets.",
                 ephemeral=True)
             return
-        await _reply(i, "⏳ **Creating Google Sheet…** (this should take around 2-6 minutes)", ephemeral=True)
+        await _reply(i, "⏳ Creating Google Sheet…", ephemeral=True)
         url = create_sheet(t, guild=i.guild)
         if url:
             t["sheet_url"] = url; _save_comp(tournament_id, t)
