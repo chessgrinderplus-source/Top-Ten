@@ -1942,34 +1942,160 @@ class TournamentsCog(commands.Cog):
         await _reply(i, f"✅ **{i.user.display_name}** withdrew from **{t.get('name')}**.")
 
     # ── /tournament register-user ─────────────────────────────────────────
-    @tournament.command(name="register-user", description="(Admin) Register any user into a tournament.")
+    @tournament.command(name="register-user",
+                        description="(Admin) Register one or more users via a searchable menu.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all)
-    async def tourn_register_user(self, i: discord.Interaction,
-                                   tournament_id: str, user: discord.Member):
+    async def tourn_register_user(self, i: discord.Interaction, tournament_id: str):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         t = _get_comp(tournament_id)
         if not t: return await _reply(i, "❌ Tournament not found.", ephemeral=True)
         if t.get("status") == STATUS_COMPLETED:
             return await _reply(i, "❌ Tournament already completed.", ephemeral=True)
-        if user.bot:
-            return await _reply(i, "❌ Cannot register bots.", ephemeral=True)
+
         regs = t.setdefault("registrations", [])
         wcs  = t.setdefault("wildcard_entries", [])
-        if user.id in regs or user.id in wcs:
-            return await _reply(i, f"❌ **{user.display_name}** is already registered.", ephemeral=True)
-        regs.append(user.id)
-        if t.get("status") == STATUS_UPCOMING:
-            t["status"] = STATUS_REG
-        _save_comp(tournament_id, t)
-        db = _rank_db(); g = _rank_guild(db, i.guild.id)
-        e = _player_entry(g, user.id, user.display_name); e["name"] = user.display_name
-        _rank_save(db)
-        total = len(regs) + len(wcs)
-        await _reply(i, 
-            f"✅ **{user.display_name}** registered in **{t.get('name')}** by admin. "
-            f"({total}/{t.get('bracket_size','?')} spots filled)")
+        bracket_size = int(t.get("bracket_size", 8))
+        spots_left = bracket_size - len(regs) - len(wcs)
+
+        # Build member options — exclude bots and already-registered
+        members = [m for m in i.guild.members
+                   if not m.bot and m.id not in regs and m.id not in wcs]
+        if not members:
+            return await _reply(i, "❌ No eligible members to register.", ephemeral=True)
+
+        # Discord Select menus max 25 options per page
+        # We'll show pages of 25 and let admin pick multiple and confirm
+        PAGE_SIZE = 25
+
+        def make_options(page: int):
+            start = page * PAGE_SIZE
+            chunk = members[start:start + PAGE_SIZE]
+            return [
+                discord.SelectOption(
+                    label=m.display_name[:100],
+                    value=str(m.id),
+                    description=f"@{m.name}"[:100]
+                ) for m in chunk
+            ]
+
+        total_pages = max(1, (len(members) + PAGE_SIZE - 1) // PAGE_SIZE)
+        registered_this_session: List[int] = []
+
+        class RegisterView(discord.ui.View):
+            def __init__(self_v, page: int = 0):
+                super().__init__(timeout=120)
+                self_v.page = page
+                self_v.selected: List[int] = []
+                self_v._build()
+
+            def _build(self_v):
+                self_v.clear_items()
+                opts = make_options(self_v.page)
+                sel = discord.ui.Select(
+                    placeholder=f"Select players to register (page {self_v.page+1}/{total_pages})",
+                    min_values=1,
+                    max_values=min(len(opts), 25),
+                    options=opts
+                )
+                async def on_select(inter: discord.Interaction, s=sel):
+                    self_v.selected = [int(v) for v in s.values]
+                    await inter.response.defer()
+                sel.callback = on_select
+                self_v.add_item(sel)
+
+                if total_pages > 1:
+                    prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary,
+                                                  disabled=self_v.page == 0)
+                    next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary,
+                                                  disabled=self_v.page >= total_pages - 1)
+                    async def on_prev(inter: discord.Interaction):
+                        self_v.page -= 1
+                        self_v._build()
+                        await inter.response.edit_message(
+                            content=_status_line(), view=self_v)
+                    async def on_next(inter: discord.Interaction):
+                        self_v.page += 1
+                        self_v._build()
+                        await inter.response.edit_message(
+                            content=_status_line(), view=self_v)
+                    prev_btn.callback = on_prev
+                    next_btn.callback = on_next
+                    self_v.add_item(prev_btn)
+                    self_v.add_item(next_btn)
+
+                confirm_btn = discord.ui.Button(label="✅ Register Selected",
+                                                 style=discord.ButtonStyle.success)
+                done_btn    = discord.ui.Button(label="🔒 Done",
+                                                 style=discord.ButtonStyle.danger)
+
+                async def on_confirm(inter: discord.Interaction):
+                    if not self_v.selected:
+                        await inter.response.send_message(
+                            "⚠️ Select at least one player first.", ephemeral=True)
+                        return
+                    added = []; skipped = []
+                    for uid in self_v.selected:
+                        member = i.guild.get_member(uid)
+                        if not member: continue
+                        if uid in regs or uid in wcs:
+                            skipped.append(member.display_name); continue
+                        regs.append(uid)
+                        registered_this_session.append(uid)
+                        db = _rank_db(); g = _rank_guild(db, i.guild.id)
+                        e = _player_entry(g, uid, member.display_name)
+                        e["name"] = member.display_name
+                        _rank_save(db)
+                        added.append(member.display_name)
+                    if t.get("status") == STATUS_UPCOMING and regs:
+                        t["status"] = STATUS_REG
+                    _save_comp(tournament_id, t)
+                    self_v.selected = []
+                    # Rebuild with updated member list (remove newly registered)
+                    for uid in added:
+                        pass  # members list already excludes them on next rebuild
+                    msg = ""
+                    if added:   msg += f"✅ Registered: {', '.join(added)}\n"
+                    if skipped: msg += f"⚠️ Already in: {', '.join(skipped)}\n"
+                    total = len(regs) + len(wcs)
+                    msg += f"**{total}/{bracket_size}** spots filled."
+                    await inter.response.send_message(msg, ephemeral=True)
+                    # Refresh view with updated members
+                    new_members = [m for m in i.guild.members
+                                   if not m.bot and m.id not in regs and m.id not in wcs]
+                    members.clear(); members.extend(new_members)
+                    self_v.page = min(self_v.page, max(0, (len(members)-1)//PAGE_SIZE))
+                    self_v._build()
+                    try:
+                        await inter.message.edit(content=_status_line(), view=self_v)
+                    except Exception: pass
+
+                async def on_done(inter: discord.Interaction):
+                    total = len(regs) + len(wcs)
+                    summary = (f"**{t.get('name')}** — Registration closed by admin.\n"
+                               f"**{total}/{bracket_size}** spots filled.\n")
+                    if registered_this_session:
+                        names = [i.guild.get_member(u).display_name
+                                 if i.guild.get_member(u) else str(u)
+                                 for u in registered_this_session]
+                        summary += f"Added this session: {', '.join(names)}"
+                    await inter.response.edit_message(content=summary, view=None)
+                    self_v.stop()
+
+                confirm_btn.callback = on_confirm
+                done_btn.callback    = on_done
+                self_v.add_item(confirm_btn)
+                self_v.add_item(done_btn)
+
+        def _status_line():
+            total = len(regs) + len(wcs)
+            return (f"**Register players — {t.get('name')}**\n"
+                    f"{total}/{bracket_size} spots filled · "
+                    f"{len(members)} eligible members\n"
+                    f"Select players then click ✅ Register Selected. Click 🔒 Done when finished.")
+
+        await _reply(i, content=_status_line(), view=RegisterView())
 
     # ── /tournament unregister-user ───────────────────────────────────────
     @tournament.command(name="unregister-user", description="(Admin) Remove any user from a tournament.")
