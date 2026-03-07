@@ -1048,7 +1048,7 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                                                      "fontSize": 10, "foregroundColor": txt},
                                       "verticalAlignment": "MIDDLE",
                                       "horizontalAlignment": "LEFT",
-                                      "paddingLeft": 6}))
+                                      "padding": {"left": 6}}))
                 reqs.append(_merge_req(ws_id, p_row, name_col,
                                        p_row + _BK_NAME_H, score_col))
 
@@ -3223,4 +3223,3 @@ class TournamentsCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TournamentsCog(bot))
-    
