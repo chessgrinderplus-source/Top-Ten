@@ -461,40 +461,41 @@ def _seed_of(draw: List, seeded: List[int], uid: Optional[int]) -> Optional[int]
     except ValueError: return None
 
 def _seeded_draw_positions(n: int) -> List[int]:
-    """Return the standard seeded positions for a bracket of size n, in order S1..Sn.
-    Each tier is randomly shuffled into top/bottom halves of their section."""
-    positions: List[int] = []
-    used: set = set()
-    # Tier 1 and 2
-    positions.append(0); used.add(0)
-    if n >= 2: positions.append(n - 1); used.add(n - 1)
-    # Subsequent tiers: each tier has 2x as many seeds as the previous
-    section = n // 2
-    while section >= 2 and len(positions) < n:
-        tier_size = len(positions)  # number of seeds so far = number of sections to fill
-        new_slots: List[int] = []
-        for i in range(tier_size):
-            # The "end" of the sub-section that doesn't already have a seed
-            mid = (section // 2) - 1 + i * section
-            end = mid + section // 2
-            for p in [mid, end]:
-                if 0 <= p < n and p not in used:
-                    new_slots.append(p)
-        # Shuffle into top/bottom halves for randomness within constraints
-        half = n // 2
-        top_slots = [p for p in new_slots if p < half]
-        bot_slots  = [p for p in new_slots if p >= half]
-        random.shuffle(top_slots); random.shuffle(bot_slots)
-        merged = []
-        ti, bi = 0, 0
-        for i in range(len(new_slots)):
-            if i % 2 == 0 and ti < len(top_slots): merged.append(top_slots[ti]); ti += 1
-            elif bi < len(bot_slots):               merged.append(bot_slots[bi]);  bi += 1
-            elif ti < len(top_slots):               merged.append(top_slots[ti]);  ti += 1
-        for p in merged:
-            positions.append(p); used.add(p)
-        section //= 2
-    return positions
+    """ATP-style seeded positions for a bracket of size n (0-indexed), in seed order.
+
+    S1=0 (top), S2=n-1 (bottom).
+    S3/S4 at the inner boundary of the two halves (n/2-1 and n/2), randomly assigned.
+    S5-S8 at inner boundaries of quarters, randomly assigned 2 per half.
+    Continues doubling each tier.
+
+    8-draw:  S1=0, S2=7, S3/S4={3,4}, S5-S8={1,2,5,6}
+    16-draw: S1=0, S2=15, S3/S4={7,8}, S5-S8={3,4,11,12}, S9-16={1,2,5,6,9,10,13,14}
+    """
+    tiers: List[List[int]] = [[0], [n - 1]]
+    used: set = {0, n - 1}
+    block = n
+    while block >= 4:
+        half_block = block // 2
+        new_pos: List[int] = []
+        for start in range(0, n, block):
+            p1 = start + half_block - 1   # last slot of first half of this block
+            p2 = start + half_block        # first slot of second half of this block
+            if p1 not in used: new_pos.append(p1)
+            if p2 not in used: new_pos.append(p2)
+        half_n = n // 2
+        top = [p for p in new_pos if p < half_n]
+        bot = [p for p in new_pos if p >= half_n]
+        random.shuffle(top); random.shuffle(bot)
+        tier: List[int] = []
+        for a, b in zip(top, bot):
+            tier.extend([a, b])
+        tier.extend(top[len(bot):] + bot[len(top):])
+        tiers.append(tier)
+        for p in tier: used.add(p)
+        block //= 2
+    result: List[int] = []
+    for t in tiers: result.extend(t)
+    return result
 
 
 def generate_draw(bracket_size: int, ranked_players: List[int], num_seeds: int) -> Tuple[List, List[int]]:
@@ -1307,15 +1308,32 @@ def update_sheet(tourn: dict, guild=None) -> None:
     if not _sheets_ok() or not tourn.get("sheet_url"): return
     try:
         gc, _ = _gs_client()
-        m   = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", tourn["sheet_url"])
+        m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", tourn["sheet_url"])
         if not m: return
         print(f"[sheets] update_sheet: opening {m.group(1)}")
-        ss  = gc.open_by_key(m.group(1)); s = _style(tourn)
+        ss = gc.open_by_key(m.group(1))
+        s  = _style(tourn)
 
-        # ── Bracket sheet ──
-        ws = ss.worksheet("Bracket")
-        # Clear all existing content and formatting first
-        ws.clear()
+        # ── Delete and recreate Bracket sheet for clean slate ──
+        try:
+            old_ws = ss.worksheet("Bracket")
+            old_id = old_ws.id
+            # Add new sheet first so spreadsheet always has at least 1 sheet
+            new_ws = ss.add_worksheet("Bracket_new", rows=500, cols=100)
+            ss.batch_update({"requests": [
+                {"deleteSheet": {"sheetId": old_id}}
+            ]})
+            ss.batch_update({"requests": [
+                {"updateSheetProperties": {
+                    "properties": {"sheetId": new_ws.id, "title": "Bracket", "index": 0},
+                    "fields": "title,index"
+                }}
+            ]})
+            ws = ss.worksheet("Bracket")
+        except Exception as e:
+            print(f"[sheets] update_sheet: bracket sheet recreate failed ({e}), using existing")
+            ws = ss.worksheet("Bracket")
+
         # Full re-render formatting + values
         reqs = [_gridlines_req(ws.id, True)]
         reqs += _build_bracket_requests(ws.id, tourn, guild)
@@ -1481,8 +1499,11 @@ async def _ac_match(i: discord.Interaction, cur: str) -> List[app_commands.Choic
         if t:
             def _mn(uid):
                 if uid is None: return "TBD"
-                m = i.guild.get_member(uid) if i.guild else None
-                return m.display_name if m else f"UID:{uid}"
+                try:
+                    mem = i.guild.get_member(int(uid)) if i.guild and uid else None
+                    return mem.display_name if mem else f"Player{uid}"
+                except Exception:
+                    return f"Player{uid}"
             for m in sorted(t.get("matches",[]),
                             key=lambda mx: (mx.get("status","") == "completed", mx.get("match_id",""))):
                 mid = str(m.get("match_id",""))
