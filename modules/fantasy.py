@@ -364,7 +364,9 @@ class ConfirmPicksButton(discord.ui.Button):
             return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
         if len(view.picks) != 5:
             return await interaction.response.send_message("❌ Pick 5 players.", ephemeral=True)
-        await view.cog._save_user_roster(interaction, view.tournament_id, interaction.user.id, view.picks)
+        await view.cog._save_user_roster(interaction, view.tournament_id,
+                                          view.target_user_id, view.picks,
+                                          force_save=view.force_save)
 
 # ============================================================
 # Admin create flow
@@ -988,65 +990,51 @@ class FantasyCog(commands.Cog):
         bl.remove(int(user.id)); data["ldb_blacklist"] = sorted(bl); _save(data)
         await interaction.response.send_message(f"✅ Whitelisted **{user.display_name}**.")
 
-    @f_admin.command(name="set-roster", description="Admin: set a user's fantasy roster on their behalf.")
+    @f_admin.command(name="set-roster", description="Admin: set a user's fantasy roster using the pick menu.")
     @app_commands.autocomplete(tournament_id=_ac_tournament)
-    @app_commands.describe(
-        tournament_id="Fantasy tournament ID",
-        user="The user to set the roster for",
-        pick1="Player name #1 (required)",
-        pick2="Player name #2 (required)",
-        pick3="Player name #3 (required)",
-        pick4="Player name #4 (required)",
-        pick5="Player name #5 (required)",
-    )
+    @app_commands.describe(tournament_id="Fantasy tournament ID", user="The user to set the roster for")
     async def fantasy_set_roster(self, interaction: discord.Interaction,
-                                  tournament_id: str, user: discord.Member,
-                                  pick1: str, pick2: str, pick3: str,
-                                  pick4: str, pick5: str):
+                                  tournament_id: str, user: discord.Member):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
         t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        pool = [PlayerEntry(name=p["name"], seed=p.get("seed")) for p in t.get("players", [])]
+        if not pool:
+            return await interaction.response.send_message("❌ No players in this tournament yet.", ephemeral=True)
+        view = JoinFantasyView(
+            self, interaction.user.id, tournament_id, pool,
+            target_user_id=user.id,
+            force_save=True,
+            header=f"**Setting roster for {user.display_name} — Pick 5 players**"
+        )
+        await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
 
-        pool = {_player_key(p["name"]): p for p in t.get("players", [])}
-        picks: List[PlayerEntry] = []
-        errors: List[str] = []
-
-        for raw in [pick1, pick2, pick3, pick4, pick5]:
-            key = _player_key(raw)
-            found = next((p for k, p in pool.items() if k == key or raw.lower() in k), None)
-            if not found:
-                # fuzzy: try partial match
-                found = next((p for k, p in pool.items() if raw.lower() in k), None)
-            if not found:
-                errors.append(f"❌ `{raw}` not found in player pool")
-            elif _player_key(found["name"]) in [_player_key(p.name) for p in picks]:
-                errors.append(f"❌ `{found['name']}` picked twice")
-            else:
-                picks.append(PlayerEntry(name=found["name"], seed=found.get("seed")))
-
-        if errors:
-            return await interaction.response.send_message("\n".join(errors), ephemeral=True)
-
-        # Validate seed rules
-        top5_used = sum(1 for p in picks if _seed_bucket(p.seed) == "top5")
-        top20_used = sum(1 for p in picks if _seed_bucket(p.seed) in ("top5", "top20"))
-        if top5_used > 1:
-            return await interaction.response.send_message("❌ Only 1 player from seeds 1–5.", ephemeral=True)
-        if top20_used > 3:
-            return await interaction.response.send_message("❌ Only 3 players from seeds 1–20.", ephemeral=True)
-
-        t.setdefault("rosters", {})[str(user.id)] = [p.name for p in picks]
-        _save(data)
-
-        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
-        lines = [f"✅ Roster set for **{user.display_name}** in **{t.get('name')}**", ""]
-        for idx, p in enumerate(picks, 1):
-            lines.append(f"{idx}. {_fmt_player(seed_map.get(_player_key(p.name)), p.name)}")
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
+    @f_admin.command(name="edit-roster", description="Admin: edit a user's existing roster (bypasses closed picks).")
+    @app_commands.autocomplete(tournament_id=_ac_tournament)
+    @app_commands.describe(tournament_id="Fantasy tournament ID", user="The user whose roster to edit")
+    async def fantasy_edit_roster(self, interaction: discord.Interaction,
+                                   tournament_id: str, user: discord.Member):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        pool = [PlayerEntry(name=p["name"], seed=p.get("seed")) for p in t.get("players", [])]
+        if not pool:
+            return await interaction.response.send_message("❌ No players in this tournament yet.", ephemeral=True)
+        existing = (t.get("rosters") or {}).get(str(user.id))
+        note = f" (currently has {len(existing)} picks)" if existing else " (no existing roster)"
+        view = JoinFantasyView(
+            self, interaction.user.id, tournament_id, pool,
+            target_user_id=user.id,
+            force_save=True,
+            header=f"**Editing roster for {user.display_name}{note} — Pick 5 players**"
+        )
+        await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
     # ── User commands ─────────────────────────────────────────────────────────
 
     _STATUS_CHOICES = [
@@ -1089,14 +1077,17 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
 
     async def _save_user_roster(self, interaction: discord.Interaction, tournament_id: str,
-                                 user_id: int, picks: List[PlayerEntry]):
+                                 user_id: int, picks: List[PlayerEntry],
+                                 force_save: bool = False):
         data = _load()
         t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
         if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
-        if not t.get("picks_open", True): return await interaction.response.send_message("❌ Closed.", ephemeral=True)
+        if not force_save and not t.get("picks_open", True):
+            return await interaction.response.send_message("❌ Picks are closed for this tournament.", ephemeral=True)
         t.setdefault("rosters", {})[str(user_id)] = [p.name for p in picks]; _save(data)
         seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
-        lines = ["✅ Roster saved.", "", f"**Tournament:** {t.get('name')}", "**Your picks:**"]
+        saved_for = f" (for <@{user_id}>)" if user_id != interaction.user.id else ""
+        lines = [f"✅ Roster saved{saved_for}.", "", f"**Tournament:** {t.get('name')}", "**Picks:**"]
         for i, name in enumerate([p.name for p in picks], 1):
             lines.append(f"{i}. {_fmt_player(seed_map.get(_player_key(name)), name)}")
         await interaction.response.edit_message(content="\n".join(lines), view=None)
