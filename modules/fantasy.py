@@ -1042,6 +1042,44 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
     # ── User commands ─────────────────────────────────────────────────────────
 
+    @f_admin.command(name="overview", description="Admin: see every entrant and their picks at a glance.")
+    @app_commands.autocomplete(tournament_id=_ac_tournament)
+    async def fantasy_overview(self, interaction: discord.Interaction, tournament_id: str):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+
+        rosters = t.get("rosters") or {}
+        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
+
+        if not rosters:
+            return await interaction.response.send_message(
+                f"ℹ️ No entries yet for **{t.get('name')}**.", ephemeral=True)
+
+        lines = [f"**Fantasy Overview — {t.get('name')}**",
+                 f"*{len(rosters)} entrant(s)*", ""]
+
+        for uid_str, picks in rosters.items():
+            member = interaction.guild.get_member(int(uid_str)) if interaction.guild else None
+            name = member.display_name if member else f"<@{uid_str}>"
+            formatted = []
+            for pick in (picks or [])[:5]:
+                seed = seed_map.get(_player_key(pick))
+                formatted.append(_fmt_player(seed, pick))
+            picks_str = ",  ".join(formatted) if formatted else "—"
+            lines.append(f"**{name}:** {picks_str}")
+
+        # Paginate if needed (Discord message limit)
+        pages = _chunk_pages(lines[3:], page_size=20)  # chunk entrant lines
+        header = "\n".join(lines[:3])
+        full_pages = [header + "\n" + p for p in pages] if pages else [header + "\n*No entries.*"]
+
+        view = PagerView(full_pages, interaction.user.id, f"Fantasy Overview — {t.get('name')}")
+        await interaction.response.send_message(embed=view._embed(), view=view, ephemeral=True)
+
     _STATUS_CHOICES = [
         app_commands.Choice(name="Open",                    value="Open"),
         app_commands.Choice(name="Closed & Results Pending", value="Closed & Results Pending"),
@@ -1105,8 +1143,19 @@ class FantasyCog(commands.Cog):
         t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
         msg = _require_created_or_admin(interaction, t)
         if msg: return await interaction.response.send_message(msg, ephemeral=True)
+
+        rosters = t.get("rosters") or {}
+        is_admin = isinstance(interaction.user, discord.Member) and _is_admin(interaction.user)
+        viewer_has_roster = str(interaction.user.id) in rosters
+
+        # Non-admins can only view others' picks if they've submitted their own
+        if user and user.id != interaction.user.id and not is_admin and not viewer_has_roster:
+            return await interaction.response.send_message(
+                "❌ You need to submit your own roster before viewing others' picks.",
+                ephemeral=True)
+
         target = user or interaction.user
-        roster = (t.get("rosters", {}) or {}).get(str(target.id))
+        roster = rosters.get(str(target.id))
         if not roster:
             return await interaction.response.send_message(
                 f"ℹ️ {'That user has' if user else 'You have'} no roster for this tournament.")

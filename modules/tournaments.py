@@ -1913,7 +1913,7 @@ class TournamentsCog(commands.Cog):
     # ═══════════════════════════════════════════════════════════════════════
     # /category commands
     # ═══════════════════════════════════════════════════════════════════════
-    @category.command(name="create", description="(Admin) Create a points category.")
+    @tournament.command(name="category-create", description="(Admin) Create a points category.")
     @app_commands.guild_only()
     async def cat_create(self, i: discord.Interaction, category_id: str, name: str,
                          champion_pts: int, finalist_pts: int, semi_pts: int,
@@ -1940,7 +1940,7 @@ class TournamentsCog(commands.Cog):
             emb.add_field(name=lbl, value=str(val), inline=True)
         await _reply(i, embed=emb)
 
-    @category.command(name="edit", description="(Admin) Edit a category.")
+    @tournament.command(name="category-edit", description="(Admin) Edit a category.")
     @app_commands.guild_only()
     @app_commands.autocomplete(category_id=_ac_cat)
     async def cat_edit(self, i: discord.Interaction, category_id: str,
@@ -1960,7 +1960,7 @@ class TournamentsCog(commands.Cog):
         db["categories"][category_id] = row; _cats_save(db)
         await _reply(i, f"✅ Category `{category_id}` updated.")
 
-    @category.command(name="delete", description="(Admin) Delete a category.")
+    @tournament.command(name="category-delete", description="(Admin) Delete a category.")
     @app_commands.guild_only()
     @app_commands.autocomplete(category_id=_ac_cat)
     async def cat_delete(self, i: discord.Interaction, category_id: str):
@@ -1974,7 +1974,7 @@ class TournamentsCog(commands.Cog):
         del cats[category_id]; _cats_save(db)
         await _reply(i, f"🗑️ Category `{category_id}` deleted.")
 
-    @category.command(name="list", description="List all categories.")
+    @tournament.command(name="category-list", description="List all categories.")
     @app_commands.guild_only()
     async def cat_list(self, i: discord.Interaction):
         cats = list(_cats_db().get("categories",{}).values())
