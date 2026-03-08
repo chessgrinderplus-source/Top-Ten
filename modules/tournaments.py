@@ -1749,7 +1749,10 @@ async def _ac_venue(i: discord.Interaction, cur: str) -> List[app_commands.Choic
 # ─────────────────────────────────────────────────────────────────────────────
 class TournamentsCog(commands.Cog):
     tournament = app_commands.Group(name="tournament", description="Competition tournament system")
-    category   = app_commands.Group(name="category",   description="Tournament point categories")
+    # Nested subgroup: /tournament category create|edit|delete|list
+    # Counts as 1 slot in tournament (not 4), keeping us under Discord's 25 limit
+    category   = app_commands.Group(name="category",   description="Tournament point categories",
+                                    parent=tournament)
     rankings   = app_commands.Group(name="rankings",   description="Player rankings and leaderboards")
     stats      = app_commands.Group(name="stats",      description="Player match and career statistics")
     admin      = app_commands.Group(name="admin",      description="Admin-only server management tools")
@@ -1913,7 +1916,7 @@ class TournamentsCog(commands.Cog):
     # ═══════════════════════════════════════════════════════════════════════
     # /category commands
     # ═══════════════════════════════════════════════════════════════════════
-    @tournament.command(name="category-create", description="(Admin) Create a points category.")
+    @category.command(name="create", description="(Admin) Create a points category.")
     @app_commands.guild_only()
     async def cat_create(self, i: discord.Interaction, category_id: str, name: str,
                          champion_pts: int, finalist_pts: int, semi_pts: int,
@@ -1940,7 +1943,7 @@ class TournamentsCog(commands.Cog):
             emb.add_field(name=lbl, value=str(val), inline=True)
         await _reply(i, embed=emb)
 
-    @tournament.command(name="category-edit", description="(Admin) Edit a category.")
+    @category.command(name="edit", description="(Admin) Edit a category.")
     @app_commands.guild_only()
     @app_commands.autocomplete(category_id=_ac_cat)
     async def cat_edit(self, i: discord.Interaction, category_id: str,
@@ -1960,7 +1963,7 @@ class TournamentsCog(commands.Cog):
         db["categories"][category_id] = row; _cats_save(db)
         await _reply(i, f"✅ Category `{category_id}` updated.")
 
-    @tournament.command(name="category-delete", description="(Admin) Delete a category.")
+    @category.command(name="delete", description="(Admin) Delete a category.")
     @app_commands.guild_only()
     @app_commands.autocomplete(category_id=_ac_cat)
     async def cat_delete(self, i: discord.Interaction, category_id: str):
@@ -1974,7 +1977,7 @@ class TournamentsCog(commands.Cog):
         del cats[category_id]; _cats_save(db)
         await _reply(i, f"🗑️ Category `{category_id}` deleted.")
 
-    @tournament.command(name="category-list", description="List all categories.")
+    @category.command(name="list", description="List all categories.")
     @app_commands.guild_only()
     async def cat_list(self, i: discord.Interaction):
         cats = list(_cats_db().get("categories",{}).values())

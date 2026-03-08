@@ -1073,7 +1073,7 @@ class FantasyCog(commands.Cog):
             lines.append(f"**{name}:** {picks_str}")
 
         # Paginate if needed (Discord message limit)
-        pages = _chunk_pages(lines[3:], page_size=20)  # chunk entrant lines
+        pages = _chunk_pages(lines[3:])  # chunk entrant lines
         header = "\n".join(lines[:3])
         full_pages = [header + "\n" + p for p in pages] if pages else [header + "\n*No entries.*"]
 
