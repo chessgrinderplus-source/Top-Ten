@@ -40,6 +40,10 @@ H2H_PATH      = os.path.join(_data_dir(), "comp_h2h.json")
 STATS_PATH    = os.path.join(_data_dir(), "comp_stats.json")
 ARCHIVE_PATH  = os.path.join(_data_dir(), "yearly_archive.json")
 
+# ── Easy-to-change tournament sim speed ──────────────────────────────────────
+# 1.0 = real-time (slow, authentic), 0.5 = 2× faster, 0.25 = 4× faster
+TOURN_SIM_SPEED_MULT: float = 1.0
+
 OWNER_ID = 1279106601931899015  # Only this user may run /history-wipe
 
 def _cats_db():      return _load_json(CATS_PATH,     {"categories": {}})
@@ -53,30 +57,6 @@ def _h2h_save(db):   _save_json(H2H_PATH, db)
 def _archive_db():   return _load_json(ARCHIVE_PATH,  {"archives": {}})
 def _archive_save(db): _save_json(ARCHIVE_PATH, db)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Score parsing helpers (supports tiebreak annotation e.g. 7-6(4))
-# ─────────────────────────────────────────────────────────────────────────────
-def _parse_set(s: str):
-    """Parse a single set string like '6-3', '7-6', '7-6(4)', '7-6(11)'.
-    Returns (p1_games: int, p2_games: int, tb_loser_score: int|None).
-    tb_loser_score is the loser's tiebreak score (the number in parentheses).
-    """
-    import re as _re
-    m = _re.match(r'^(\d+)-(\d+)(?:\((\d+)\))?$', s.strip())
-    if not m:
-        return (0, 0, None)
-    g1, g2, tb_raw = int(m.group(1)), int(m.group(2)), m.group(3)
-    tb = int(tb_raw) if tb_raw is not None else None
-    return (g1, g2, tb)
-
-def _normalise_score(score: str) -> str:
-    """Strip whitespace/commas and return canonical space-separated score string.
-    Preserves tiebreak annotations: '6-3, 7-6(4), 6-1' → '6-3 7-6(4) 6-1'."""
-    return " ".join(score.replace(",", " ").split())
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Yearly archive helpers
-# ─────────────────────────────────────────────────────────────────────────────
 def get_yearly_archive_url(year: int, guild_id: int) -> Optional[str]:
     db = _archive_db()
     return db.get("archives", {}).get(str(year), {}).get(str(guild_id))
@@ -85,6 +65,9 @@ def _set_yearly_archive_url(year: int, guild_id: int, url: str) -> None:
     db = _archive_db()
     db.setdefault("archives", {}).setdefault(str(year), {})[str(guild_id)] = url
     _archive_save(db)
+
+# In-flight tournament sim tasks: match_id → asyncio.Task
+_ACTIVE_SIMS: Dict[str, "asyncio.Task[None]"] = {}
 
 def _del_comp(tid: str) -> bool:
     """Atomically delete a tournament from the DB. Returns True if it existed."""
@@ -159,12 +142,43 @@ COURT_DISPLAY: Dict[str, str] = {
     **{f"other_{i}": f"Other Court {i}" for i in range(1, 11)},
 }
 
+def _venue_name_from_id(venue_id: Optional[str]) -> Optional[str]:
+    """Look up a venue's display name from venues.json using its ID."""
+    if not venue_id:
+        return None
+    try:
+        from modules.venues import _get_venue as _gv
+        v = _gv(venue_id)
+        if v:
+            return v.get("name") or v.get("title") or None
+    except Exception:
+        pass
+    # Fallback: try reading venues.json directly
+    try:
+        vpath = os.path.join(_data_dir(), "venues.json")
+        vdata = _load_json(vpath, {}).get("venues", {})
+        v = vdata.get(venue_id)
+        if v:
+            return v.get("name") or v.get("title") or None
+    except Exception:
+        pass
+    return None
+
 def _court_name(tourn: dict, court_key: str) -> str:
-    """Return the actual venue name for a court_key (e.g. 'Rod Laver Arena'),
-    falling back to COURT_DISPLAY label, then the raw key."""
-    venues = tourn.get("venues", {}) if tourn else {}
-    name   = venues.get(court_key)   # stored as the user-entered venue name
-    if name: return name
+    """Return the display name for a court_key.
+    The venues dict stores {court_key: venue_id}. We resolve venue_id → name."""
+    if not tourn or not court_key:
+        return COURT_DISPLAY.get(court_key, court_key)
+    venues = tourn.get("venues", {})
+    venue_id = venues.get(court_key)
+    if venue_id:
+        # Try resolving the venue ID to a real name
+        name = _venue_name_from_id(venue_id)
+        if name:
+            return name
+        # venue_id might itself already be a display name (legacy behaviour)
+        if not re.match(r'^[a-f0-9-]{8,}$', venue_id, re.I):
+            return venue_id  # looks like a plain name, not a UUID
     return COURT_DISPLAY.get(court_key, court_key)
 
 DEFAULT_DAY_SESSION   = "11:00"
@@ -501,218 +515,7 @@ def _all_active_tourns() -> dict:
 def _save_comp(tid: str, data: dict) -> None:
     db = _comp_db(); db.setdefault("tournaments", {})[tid] = data; _comp_save(db)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Live-sim registry  (match_id → asyncio.Task)
-# ─────────────────────────────────────────────────────────────────────────────
-_ACTIVE_SIMS: Dict[str, asyncio.Task] = {}
-
-
-async def _run_tournament_match_sim(
-    bot: "commands.Bot",
-    channel: discord.TextChannel,
-    match_id: str,
-    t_id: str,
-    p1_id: int,
-    p2_id: int,
-    best_of: int,
-    guild: discord.Guild,
-    seed1: Optional[int],
-    seed2: Optional[int],
-) -> None:
-    """Run the real matchsim engine for a tournament match, then persist the result."""
-    try:
-        from modules.matchsim import (
-            _to_profile_user,
-            MatchState,
-            build_score_text,
-            _roll_conditions_for_venue,
-            balanced_sliders,
-            apply_loadout_to_profile,
-            build_pre_match_multipliers,
-        )
-    except Exception as e:
-        await channel.send(f"❌ Could not import matchsim engine: `{e}`")
-        _ACTIVE_SIMS.pop(match_id, None)
-        return
-
-    sim_cog = bot.cogs.get("MatchSimCog")
-    if sim_cog is None:
-        await channel.send("❌ MatchSimCog not loaded — cannot run live sim.")
-        _ACTIVE_SIMS.pop(match_id, None)
-        return
-
-    p1_m = guild.get_member(p1_id)
-    p2_m = guild.get_member(p2_id)
-
-    if not p1_m or not p2_m:
-        missing = ([f"<@{p1_id}>"] if not p1_m else []) + ([f"<@{p2_id}>"] if not p2_m else [])
-        await channel.send(f"⚠️ Cannot sim match `{match_id}` — member(s) not in server: {', '.join(missing)}")
-        _ACTIVE_SIMS.pop(match_id, None)
-        return
-
-    p1 = _to_profile_user(guild, p1_m)
-    p2 = _to_profile_user(guild, p2_m)
-
-    state = MatchState(p1=p1, p2=p2, best_of=best_of)
-    state.bots_sim = True  # type: ignore[attr-defined]  # suppress stat-point reward spam
-
-    # Balanced loadouts for both sides (players pick their own in live /match-sim)
-    sl = balanced_sliders()
-    apply_loadout_to_profile(state.p1, sl)
-    apply_loadout_to_profile(state.p2, sl)
-    state.p1._match_sliders = sl  # type: ignore[attr-defined]
-    state.p2._match_sliders = sl  # type: ignore[attr-defined]
-
-    # Roll conditions with no venue (uses tournament defaults)
-    try:
-        state.conditions = _roll_conditions_for_venue(guild.id, None)
-    except Exception:
-        pass
-
-    state.server_idx = random.randint(0, 1)
-
-    # ── Post opening message ──────────────────────────────────────────────────
-    s1_tag = f"({seed1}) " if seed1 else ""
-    s2_tag = f"({seed2}) " if seed2 else ""
-    header = (
-        f"🎾 **Tournament Live Sim** — `{match_id}`\n"
-        f"{s1_tag}**{p1.name}** vs {s2_tag}**{p2.name}** *(Best of {best_of})*\n"
-    )
-    try:
-        msg = await channel.send(header + "\n" + build_score_text(state))
-    except Exception as e:
-        print(f"[tourn-sim] could not post match message: {e}")
-        _ACTIVE_SIMS.pop(match_id, None)
-        return
-
-    # ── Run the real match engine ─────────────────────────────────────────────
-    try:
-        await sim_cog._run_match_loop(msg, state, guild=guild)
-    except asyncio.CancelledError:
-        try:
-            await msg.edit(content=f"{header}⚠️ **Simulation cancelled** — result recorded by admin.")
-        except Exception:
-            pass
-        _ACTIVE_SIMS.pop(match_id, None)
-        return
-    except Exception as e:
-        print(f"[tourn-sim] _run_match_loop error for {match_id}: {e}")
-        _ACTIVE_SIMS.pop(match_id, None)
-        return
-    finally:
-        _ACTIVE_SIMS.pop(match_id, None)
-
-    # ── Extract result from completed state ───────────────────────────────────
-    won1 = sum(1 for a, b in state.sets if a > b)
-    won2 = sum(1 for a, b in state.sets if b > a)
-    wid  = p1_id if won1 > won2 else p2_id
-    lid  = p2_id if won1 > won2 else p1_id
-    score_str = " ".join(f"{a}-{b}" for a, b in state.sets)
-
-    # ── Persist result in tournament DB ──────────────────────────────────────
-    try:
-        t = _get_comp(t_id)
-        if not t:
-            print(f"[tourn-sim] tournament {t_id} gone after sim, skipping persist")
-            return
-
-        match_obj = next((m for m in t.get("matches", []) if m["match_id"] == match_id), None)
-        if not match_obj or match_obj.get("status") == "completed":
-            # Admin recorded a result while sim was running — don't overwrite
-            print(f"[tourn-sim] {match_id} already completed by admin, skipping persist")
-            return
-
-        match_obj["winner_id"] = wid
-        match_obj["loser_id"]  = lid
-        match_obj["walkover"]  = False
-        match_obj["score"]     = score_str
-        match_obj["status"]    = "completed"
-
-        # Propagate winner into next round
-        rnd  = match_obj.get("round", "")
-        rnds = _rounds(int(t.get("bracket_size", 8)))
-        ridx = rnds.index(rnd) if rnd in rnds else -1
-        if ridx >= 0 and ridx + 1 < len(rnds):
-            next_rnd     = rnds[ridx + 1]
-            prev_sorted  = sorted([mx for mx in t.get("matches", []) if mx["round"] == rnd],
-                                   key=lambda mx: mx["match_id"])
-            match_pos    = next((idx for idx, mx in enumerate(prev_sorted)
-                                 if mx["match_id"] == match_id), None)
-            if match_pos is not None:
-                next_sorted = sorted([mx for mx in t.get("matches", []) if mx["round"] == next_rnd],
-                                      key=lambda mx: mx["match_id"])
-                slot_idx = match_pos // 2
-                if slot_idx < len(next_sorted):
-                    slot = next_sorted[slot_idx]
-                    w_seed = seed1 if wid == p1_id else seed2
-                    if match_pos % 2 == 0:
-                        slot["player1_id"] = wid
-                        slot["seed1"]      = w_seed
-                    else:
-                        slot["player2_id"] = wid
-                        slot["seed2"]      = w_seed
-                    if slot.get("player1_id") and slot.get("player2_id"):
-                        slot["status"] = "scheduled"
-
-        # Track loser's round-exit points — NOT awarded until /tournament complete
-        cat       = _get_cat(t.get("category_id", "")) or {}
-        cat_key   = ROUND_TO_CAT_KEY.get(rnd)
-        loser_pts = int(cat.get(cat_key, 0)) if cat_key else 0
-        guild_id  = guild.id
-        if lid and loser_pts > 0:
-            t.setdefault("pending_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
-
-        # Record H2H + stats
-        try:
-            from modules.venues import _get_venue as _gv
-            venue_id = match_obj.get("court_venue_id")
-            surface  = "hard"
-            if venue_id:
-                v = _gv(venue_id)
-                surface = v.get("surface", "hard") if v else "hard"
-            record_h2h(guild_id, wid, lid, score_str, t_id, rnd, venue_id, surface)
-            w_rank = get_player_rank(guild_id, wid)
-            l_rank = get_player_rank(guild_id, lid) if lid else 99999
-            if lid:
-                record_match_stats(guild_id, wid, lid, True,  rnd, surface, t_id, l_rank)
-                record_match_stats(guild_id, lid, wid, False, rnd, surface, t_id, w_rank)
-        except Exception as e:
-            print(f"[tourn-sim] h2h/stats record failed: {e}")
-
-        _save_comp(t_id, t)
-        _snapshot_rankings(guild_id)
-
-        try:
-            update_sheet(t, guild=guild)
-        except Exception as e:
-            print(f"[tourn-sim] sheet update failed: {e}")
-
-        # ── Post result embed ─────────────────────────────────────────────────
-        def _mn(uid: int, seed: Optional[int]) -> str:
-            mb = guild.get_member(uid) if uid else None
-            n  = mb.display_name if mb else f"User:{uid}"
-            return f"({seed}) {n}" if seed else n
-
-        w_seed = seed1 if wid == p1_id else seed2
-        l_seed = seed2 if wid == p1_id else seed1
-        emb = discord.Embed(
-            title=f"🏁 {_rnd(rnd)} Result — {t.get('name', '')}",
-            color=discord.Color.green())
-        emb.add_field(name="✅ Winner",      value=f"**{_mn(wid, w_seed)}**",   inline=True)
-        emb.add_field(name="❌ Eliminated",  value=_mn(lid, l_seed),             inline=True)
-        emb.add_field(name="Score",          value=score_str,                    inline=True)
-        if t.get("sheet_url"):
-            emb.add_field(name="📊 Bracket", value=f"[Live Sheet]({t['sheet_url']})", inline=False)
-        await channel.send(embed=emb)
-
-    except Exception as e:
-        print(f"[tourn-sim] persist/embed failed for {match_id}: {e}")
-
-
-def _del_comp(tid: str) -> bool:
-    db = _comp_db(); t = db.get("tournaments", {})
-    if tid in t: del t[tid]; _comp_save(db); return True
-    return False
+# _del_comp is defined near the top of the file (verbose version with logging)
 
 def _is_admin(m: discord.Member) -> bool:
     return bool(getattr(m.guild_permissions, "administrator", False))
@@ -1143,12 +946,7 @@ def _sheets_ok() -> bool:
 
 def _gs_client():
     import gspread, os, json, tempfile
-    scopes = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive.file",
-    ]
+    scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
     # ── Prefer OAuth2 user token (works with free Google accounts) ──
     token_path    = os.getenv("GOOGLE_TOKEN_JSON", "keys/google_token.json")
@@ -1443,21 +1241,15 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
     reqs.append(_row_height_req(ws_id, _BK_DATA_ROW, total_rows, 24))  # taller rows since 1/player
 
     return reqs
-def _write_bracket_values(ws, tourn: dict, guild, ss=None) -> None:
-    """Write cell text values for the bracket.
-    If `ss` (the gspread Spreadsheet object) is provided, tiebreak scores are
-    written with rich-text formatting: the loser's tiebreak number is rendered
-    at ~70% font size so it looks like the superscript on a real scoreboard.
-    """
+def _write_bracket_values(ws, tourn: dict, guild) -> None:
+    """Write cell text values for the bracket."""
     bracket = int(tourn.get("bracket_size", 8))
     rnds    = _rounds(bracket)
     draw    = tourn.get("draw", [])
     seeded  = tourn.get("seeded_players", [])
     matches = tourn.get("matches", [])
 
-    updates   = []   # plain value updates  → ws.batch_update(updates)
-    tb_reqs   = []   # rich-text requests   → ss.batch_update({"requests": tb_reqs})
-    ws_id     = ws.id
+    updates = []
 
     # Title (no emoji)
     updates.append({"range": "A1", "values": [[f"{tourn.get('name','Tournament')} — Live Bracket"]]})
@@ -1489,6 +1281,7 @@ def _write_bracket_values(ws, tourn: dict, guild, ss=None) -> None:
 
             p1_uid = m.get("player1_id")
             p2_uid = m.get("player2_id")
+            wid    = m.get("winner_id")
             score  = m.get("score") or ""
 
             # For round 0, read directly from draw array (guaranteed accurate)
@@ -1503,56 +1296,27 @@ def _write_bracket_values(ws, tourn: dict, guild, ss=None) -> None:
                     name_str = _player_display(uid, draw, seeded, guild)
                     updates.append({"range": f"{nc}{row + 1}", "values": [[name_str]]})
                 elif ridx == 0 and score != "BYE":
+                    # Empty slot (not a BYE match) — show TBD
                     updates.append({"range": f"{nc}{row + 1}", "values": [["TBD"]]})
 
-            # Per-set scores: skip if walkover or BYE
+            # Per-set scores: skip if walkover or BYE (leave score cols blank)
             if score and score != "BYE" and not m.get("walkover") and (p1_uid or p2_uid):
-                sets = _normalise_score(score).split()
+                sets = score.replace(",", " ").split()
                 for offset, uid in [(0, p1_uid), (_BK_NAME_H, p2_uid)]:
                     row = s_row + offset
                     for si, s_val in enumerate(sets[:max_sets]):
-                        g1, g2, tb = _parse_set(s_val)
-                        my_g = g1 if uid == p1_uid else g2
-                        is_tb_set  = (max(g1, g2) == 7 and min(g1, g2) == 6)
-                        has_tb_num = is_tb_set and tb is not None
-                        is_loser   = has_tb_num and my_g == 6
-                        col        = score_col + si
-
-                        if is_loser and ss is not None:
-                            # Rich-text: "6" normal size + TB-score superscript
-                            tb_str  = str(tb)
-                            full    = f"6{tb_str}"
-                            tb_reqs.append({"updateCells": {
-                                "rows": [{"values": [{
-                                    "userEnteredValue": {"stringValue": full},
-                                    "textFormatRuns": [
-                                        {"startIndex": 0,
-                                         "format": {"fontSize": 10, "fontFamily": "Roboto Mono"}},
-                                        {"startIndex": 1,
-                                         "format": {"fontSize": 7,  "fontFamily": "Roboto Mono",
-                                                    "baselineOffset": "SUPERSCRIPT"}},
-                                    ]
-                                }]}],
-                                "fields": "userEnteredValue,textFormatRuns",
-                                "range": {"sheetId": ws_id,
-                                          "startRowIndex": row,  "endRowIndex": row + 1,
-                                          "startColumnIndex": col, "endColumnIndex": col + 1},
-                            }})
+                        # Parse the score from the perspective of this player
+                        parts = s_val.split("-")
+                        if len(parts) == 2:
+                            p1_games, p2_games = parts[0], parts[1]
+                            cell_val = p1_games if uid == p1_uid else p2_games
                         else:
-                            # Plain value — winner shows just "7", non-TB sets show games normally
-                            sc = _col_letter(col)
-                            updates.append({"range": f"{sc}{row + 1}",
-                                            "values": [[str(my_g)]]})
+                            cell_val = s_val
+                        sc = _col_letter(score_col + si)
+                        updates.append({"range": f"{sc}{row + 1}", "values": [[cell_val]]})
 
     if updates:
         ws.batch_update(updates)
-
-    if tb_reqs and ss is not None:
-        try:
-            for chunk_start in range(0, len(tb_reqs), 100):
-                ss.batch_update({"requests": tb_reqs[chunk_start:chunk_start + 100]})
-        except Exception as e:
-            print(f"[sheets] tiebreak rich-text batch failed: {e}")
 def _col_letter(col_idx: int) -> str:
     """Convert 0-based column index to A1-notation letter(s)."""
     result = ""
@@ -1722,7 +1486,7 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
                 # Don't raise — continue so values still get written
 
         # Write text values into bracket sheet
-        _write_bracket_values(ws, tourn, guild, ss=ss)
+        _write_bracket_values(ws, tourn, guild)
 
         # Schedule sheet setup
         sched_reqs = [_gridlines_req(ws2.id, True)]
@@ -1777,7 +1541,7 @@ def update_sheet(tourn: dict, guild=None) -> None:
         print(f"[sheets] update_sheet: sending {len(reqs)} bracket format requests…")
         for chunk_start in range(0, len(reqs), 100):
             ss.batch_update({"requests": reqs[chunk_start:chunk_start+100]})
-        _write_bracket_values(ws, tourn, guild, ss=ss)
+        _write_bracket_values(ws, tourn, guild)
         print(f"[sheets] update_sheet: bracket written OK")
 
         # ── Schedule sheet ──
@@ -1791,21 +1555,35 @@ def update_sheet(tourn: dict, guild=None) -> None:
         traceback.print_exc()
 
 def archive_sheet(tourn: dict) -> None:
-    if not _sheets_ok() or not tourn.get("sheet_url"): return
-    try:
-        gc, _ = _gs_client()
-        m  = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", tourn["sheet_url"])
-        if not m: return
-        ss = gc.open_by_key(m.group(1))
-        ss.update_title(f"[ARCHIVE] {tourn.get('name','Tournament')}")
-        try:
-            aw = ss.add_worksheet("Archive Info", rows=5, cols=2)
-            aw.update("A1", [["Tournament", tourn.get("name","")],
-                              ["Completed", tourn.get("completed_at","")],
-                              ["Champion",  tourn.get("champion_name","")]])
+    """On tournament completion: add a tab to the Master Archive, then delete the individual sheet."""
+    if not _sheets_ok(): return
+    year = datetime.now(timezone.utc).year
+    ts_iso = tourn.get("tournament_start_date") or tourn.get("created_at") or ""
+    if ts_iso:
+        try: year = datetime.fromisoformat(ts_iso).year
         except Exception: pass
-    except Exception as e:
-        print(f"[sheets] archive_sheet error: {e}")
+
+    guild_id = tourn.get("guild_id")
+    if guild_id:
+        try:
+            _add_tourn_to_master_archive(year, int(guild_id), tourn)
+        except Exception as e:
+            import traceback
+            print(f"[archive] add_to_master_archive failed: {e}"); traceback.print_exc()
+
+    # Delete the individual bracket sheet
+    if tourn.get("sheet_url"):
+        try:
+            gc, creds = _gs_client()
+            m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", tourn["sheet_url"])
+            if m:
+                import googleapiclient.discovery as _gd
+                drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
+                drive.files().delete(fileId=m.group(1)).execute()
+                print(f"[archive] deleted bracket sheet {m.group(1)}")
+        except Exception as e:
+            print(f"[archive] could not delete individual sheet: {e}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Master Yearly Archive sheet
@@ -1815,15 +1593,11 @@ _MA_HDR   = {"red": 0.12, "green": 0.22, "blue": 0.38}
 _MA_GOLD  = {"red": 1.00, "green": 0.84, "blue": 0.00}
 _MA_WHITE = {"red": 1.00, "green": 1.00, "blue": 1.00}
 _MA_GREEN = {"red": 0.00, "green": 0.88, "blue": 0.42}
-_MA_DIM   = {"red": 0.65, "green": 0.65, "blue": 0.65}
 
 def _ma_fmt(ws_id, r1, c1, r2, c2, bg=None, bold=False, fg=None,
             font="Roboto Mono", size=10, halign="LEFT") -> dict:
-    fmt: dict = {
-        "textFormat":           {"fontFamily": font, "bold": bold, "fontSize": size},
-        "horizontalAlignment":  halign,
-        "verticalAlignment":    "MIDDLE",
-    }
+    fmt: dict = {"textFormat": {"fontFamily": font, "bold": bold, "fontSize": size},
+                 "horizontalAlignment": halign, "verticalAlignment": "MIDDLE"}
     if fg: fmt["textFormat"]["foregroundColor"] = fg
     if bg: fmt["backgroundColor"] = bg
     fields = "userEnteredFormat.textFormat,userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment"
@@ -1831,226 +1605,218 @@ def _ma_fmt(ws_id, r1, c1, r2, c2, bg=None, bold=False, fg=None,
     return {"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": r1, "endRowIndex": r2,
                   "startColumnIndex": c1, "endColumnIndex": c2},
-        "cell": {"userEnteredFormat": fmt},
-        "fields": fields,
-    }}
+        "cell": {"userEnteredFormat": fmt}, "fields": fields}}
 
 def _ma_col(ws_id, ci, px) -> dict:
     return {"updateDimensionProperties": {
-        "range": {"sheetId": ws_id, "dimension": "COLUMNS",
-                  "startIndex": ci, "endIndex": ci + 1},
+        "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": ci, "endIndex": ci+1},
         "properties": {"pixelSize": px}, "fields": "pixelSize"}}
 
 def _ma_row(ws_id, ri, px) -> dict:
     return {"updateDimensionProperties": {
-        "range": {"sheetId": ws_id, "dimension": "ROWS",
-                  "startIndex": ri, "endIndex": ri + 1},
+        "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": ri, "endIndex": ri+1},
         "properties": {"pixelSize": px}, "fields": "pixelSize"}}
 
-def _ma_gridlines(ws_id, hide=True) -> dict:
-    return {"updateSheetProperties": {
-        "properties": {"sheetId": ws_id, "gridProperties": {"hideGridlines": hide}},
-        "fields": "gridProperties.hideGridlines"}}
-
-def _ma_member_name(uid: int, guild) -> str:
-    if not uid: return "?"
-    if guild:
-        try:
-            mb = guild.get_member(uid)
-            if mb: return mb.display_name
-        except Exception: pass
-    return f"User:{uid}"
-
-def _yearly_archive_sheet_title(year: int) -> str:
-    return f"Master Archive {year}"
-
-def _build_yearly_archive_content(year: int, guild_id: int, guild) -> Tuple[List[List], List[List], List[dict]]:
-    """Return (overview_rows, points_rows, tourn_list) for the given year.
-
-    overview_rows — one row per tournament: name, dates, surface, champion, category, bracket link
-    points_rows   — header + one row per player: name, total, then pts per tournament
-    tourn_list    — list of tournament dicts for the year (completed or active, not cancelled)
-    """
-    all_t = _comp_db().get("tournaments", {})
-    year_tourneys = []
-    for tid, t in all_t.items():
-        if str(t.get("guild_id", "")) != str(guild_id): continue
-        if t.get("status") == STATUS_CANCELLED: continue
-        ts = t.get("tournament_start_date") or t.get("created_at") or ""
-        try:
-            t_year = datetime.fromisoformat(ts).year
-        except Exception:
-            continue
-        if t_year != year: continue
-        year_tourneys.append((tid, t))
-    year_tourneys.sort(key=lambda x: x[1].get("tournament_start_date") or "")
-
-    # Overview rows
-    overview_hdrs = ["Tournament", "Start", "End", "Surface", "Champion", "Category", "Bracket"]
-    overview_rows = [overview_hdrs]
-    for tid, t in year_tourneys:
-        start = t.get("tournament_start_date", "")[:10]
-        end   = (t.get("completed_at") or "")[:10] or "—"
-        # surface: read from first venue in venues dict
-        surface = "—"
-        venues = t.get("venues", {}) or {}
-        if venues:
-            first_vid = next(iter(venues.values()), None)
-            if first_vid:
-                try:
-                    from modules.venues import _get_venue as _gv2
-                    v = _gv2(first_vid)
-                    if v: surface = v.get("surface", "—")
-                except Exception: pass
-        champ = t.get("champion_name") or ("TBD" if t.get("status") != STATUS_COMPLETED else "?")
-        cat_id = t.get("category_id", "")
-        cat    = _get_cat(cat_id)
-        cat_name = cat.get("name", cat_id) if cat else cat_id or "—"
-        link   = t.get("sheet_url") or "—"
-        overview_rows.append([t.get("name", tid), start, end, surface, champ, cat_name, link])
-
-    # Points table: collect all awarded_points across year's tournaments
-    # uid → {tournament_id: pts}
-    player_pts: Dict[int, Dict[str, int]] = {}
-    for tid, t in year_tourneys:
-        awarded = t.get("awarded_points", {})
-        for uid_str, rounds in awarded.items():
-            try: uid = int(uid_str)
-            except ValueError: continue
-            total_for_t = sum(int(v) for v in rounds.values())
-            player_pts.setdefault(uid, {})[tid] = total_for_t
-
-    # Build column order: player name, total, then one col per tournament
-    t_ids   = [tid for tid, _ in year_tourneys]
-    t_names = {tid: t.get("name", tid)[:20] for tid, t in year_tourneys}
-    pts_hdr = ["Player", "Total"] + [t_names.get(tid, tid) for tid in t_ids]
-    pts_rows = [pts_hdr]
-
-    # Sort by total desc
-    def _total(uid): return sum(player_pts.get(uid, {}).values())
-    all_uids = sorted(player_pts.keys(), key=lambda u: -_total(u))
-    for uid in all_uids:
-        name  = _ma_member_name(uid, guild)
-        total = _total(uid)
-        row   = [name, total] + [player_pts.get(uid, {}).get(tid, "") for tid in t_ids]
-        pts_rows.append(row)
-
-    return overview_rows, pts_rows, [t for _, t in year_tourneys]
-
-def create_yearly_archive(year: int, guild_id: int, guild=None) -> Optional[str]:
-    """Create a fresh Master Archive sheet for the given year. Returns the sheet URL."""
-    if not _sheets_ok():
-        print("[archive] create_yearly_archive: sheets not configured")
-        return None
-    existing = get_yearly_archive_url(year, guild_id)
-    if existing:
-        print(f"[archive] yearly archive for {year} already exists: {existing}")
-        return existing
-    try:
-        gc, creds = _gs_client()
-        title     = _yearly_archive_sheet_title(year)
-        folder_id = getattr(config, "GOOGLE_DRIVE_FOLDER_ID", None)
-
-        ss = gc.create(title)
-        if folder_id:
-            import googleapiclient.discovery as _gd
-            drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
-            meta  = drive.files().get(fileId=ss.id, fields="parents").execute()
-            prev  = ",".join(meta.get("parents", []))
-            drive.files().update(fileId=ss.id, addParents=folder_id,
-                                 removeParents=prev, fields="id").execute()
-
-        ws_ov = ss.get_worksheet(0)
-        ws_ov.update_title("Overview")
-        ws_pt = ss.add_worksheet("Points", rows=500, cols=60)
-
-        overview_rows, pts_rows, _ = _build_yearly_archive_content(year, guild_id, guild)
-
-        ws_ov.update("A1", overview_rows)
-        ws_pt.update("A1", pts_rows)
-
-        n_tourn = max(0, len(overview_rows) - 1)
-        n_play  = max(0, len(pts_rows) - 1)
-
-        reqs = [
-            _ma_gridlines(ws_ov.id), _ma_gridlines(ws_pt.id),
-            # Overview header
-            _ma_fmt(ws_ov.id, 0, 0, 1, 7, bg=_MA_HDR, bold=True, fg=_MA_GOLD, size=11),
-            _ma_fmt(ws_ov.id, 1, 0, 1 + n_tourn, 7, bg=_MA_BG, fg=_MA_WHITE),
-            _ma_col(ws_ov.id, 0, 220), _ma_col(ws_ov.id, 1, 100), _ma_col(ws_ov.id, 2, 100),
-            _ma_col(ws_ov.id, 3, 90),  _ma_col(ws_ov.id, 4, 200), _ma_col(ws_ov.id, 5, 130),
-            _ma_col(ws_ov.id, 6, 240),
-            _ma_row(ws_ov.id, 0, 30),
-            # Points header
-            _ma_fmt(ws_pt.id, 0, 0, 1, 2 + n_tourn, bg=_MA_HDR, bold=True, fg=_MA_GOLD, size=11),
-            _ma_fmt(ws_pt.id, 1, 0, 1 + n_play, 2 + n_tourn, bg=_MA_BG, fg=_MA_WHITE),
-            # Bold player name + total columns
-            _ma_fmt(ws_pt.id, 1, 0, 1 + n_play, 1, bg=_MA_BG, bold=True, fg=_MA_WHITE),
-            _ma_fmt(ws_pt.id, 1, 1, 1 + n_play, 2, bg=_MA_BG, bold=True, fg=_MA_GREEN, halign="CENTER"),
-            _ma_col(ws_pt.id, 0, 200), _ma_col(ws_pt.id, 1, 80),
-            _ma_row(ws_pt.id, 0, 30),
-        ] + [_ma_col(ws_pt.id, 2 + j, 120) for j in range(n_tourn)]
-        ss.batch_update({"requests": reqs})
-
-        ss.share(None, perm_type="anyone", role="reader")
-        url = ss.url
-        _set_yearly_archive_url(year, guild_id, url)
-        print(f"[archive] created yearly archive {year} for guild {guild_id}: {url}")
-        return url
-    except Exception as e:
-        import traceback
-        print(f"[archive] create_yearly_archive error: {e}"); traceback.print_exc()
-        return None
-
-def update_yearly_archive(year: int, guild_id: int, guild=None) -> None:
-    """Refresh the yearly archive sheet with latest data. Creates it if missing."""
+def _add_tourn_to_master_archive(year: int, guild_id: int, tourn: dict) -> None:
+    """Add (or update) a tournament tab in the Master Archive sheet.
+    Creates the archive sheet if it doesn't exist yet."""
     url = get_yearly_archive_url(year, guild_id)
     if not url:
-        create_yearly_archive(year, guild_id, guild)
+        url = _create_yearly_archive(year, guild_id)
+    if not url or not _sheets_ok():
         return
-    if not _sheets_ok(): return
     try:
         gc, _ = _gs_client()
         m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
         if not m: return
         ss = gc.open_by_key(m.group(1))
 
-        overview_rows, pts_rows, _ = _build_yearly_archive_content(year, guild_id, guild)
-        n_tourn = max(0, len(overview_rows) - 1)
-        n_play  = max(0, len(pts_rows) - 1)
+        t_name  = tourn.get("name", "Tournament")[:30]
+        tab_name = re.sub(r"[^\w\s-]", "", t_name)[:25]
+
+        # Try to get existing tab or create new one
+        try:
+            ws = ss.worksheet(tab_name)
+            ws.clear()
+        except Exception:
+            ws = ss.add_worksheet(tab_name, rows=200, cols=20)
+
+        matches = tourn.get("matches", [])
+        awarded = tourn.get("awarded_points", {})
+        cat     = _get_cat(tourn.get("category_id", "")) or {}
+
+        rows: List[List] = []
+        rows.append([f"🏆 {t_name}"])
+        rows.append(["Champion", tourn.get("champion_name", "—")])
+        rows.append(["Completed", (tourn.get("completed_at") or "")[:10]])
+        rows.append(["Category",  cat.get("name", tourn.get("category_id", "—"))])
+        rows.append([""])
+
+        # Bracket summary
+        rows.append(["BRACKET RESULTS"])
+        rows.append(["Round", "Player 1", "Player 2", "Score", "Winner"])
+        for m2 in sorted(matches, key=lambda x: x.get("round", "?")):
+            if m2.get("status") != "completed": continue
+            def _n(uid):
+                return f"User:{uid}" if uid else "BYE"
+            rows.append([
+                _rnd(m2.get("round", "?")),
+                _n(m2.get("player1_id")), _n(m2.get("player2_id")),
+                m2.get("score", "W/O"),
+                _n(m2.get("winner_id")),
+            ])
+        rows.append([""])
+
+        # Points table
+        rows.append(["POINTS AWARDED"])
+        rows.append(["Player", "Total Points", "Breakdown"])
+        for uid_str, rounds in awarded.items():
+            total_p = sum(int(v) for v in rounds.values())
+            breakdown = "  ".join(f"{r}:{v}pts" for r, v in rounds.items())
+            rows.append([f"User:{uid_str}", total_p, breakdown])
+        rows.append([""])
+
+        # Per-player stats summary (from stats DB — best effort)
+        rows.append(["PLAYER STATS (tournament)"])
+        rows.append(["Player", "W", "L", "Aces", "DFs", "1stSrv%", "BP Conv%", "TBs W/P"])
+        # We don't have per-tournament stats splits, so pull career and note it
+        rows.append(["(Career stats — tournament-specific detail requires match-level stats)"])
+
+        # Match stats by match
+        rows.append([""])
+        rows.append(["MATCH LOG"])
+        rows.append(["Round", "Court", "P1", "P2", "Score", "Surface"])
+        for m2 in sorted(matches, key=lambda x: (x.get("day") or 0, x.get("scheduled_time") or "")):
+            if m2.get("status") != "completed": continue
+            court_label = ""
+            if m2.get("court_key"):
+                court_label = _court_name(tourn, m2["court_key"])
+            surface = "—"
+            if m2.get("court_venue_id"):
+                n = _venue_name_from_id(m2["court_venue_id"])
+                if n: court_label = n
+                try:
+                    from modules.venues import _get_venue as _gv3
+                    v3 = _gv3(m2["court_venue_id"])
+                    if v3: surface = v3.get("surface", "hard")
+                except Exception: pass
+            rows.append([
+                _rnd(m2.get("round", "?")), court_label,
+                f"User:{m2.get('player1_id','?')}", f"User:{m2.get('player2_id','?')}",
+                m2.get("score", "—"), surface,
+            ])
+
+        ws.update("A1", rows)
+        # Basic formatting
+        reqs = [
+            _ma_fmt(ws.id, 0, 0, 1, 20, bg=_MA_HDR, bold=True, fg=_MA_GOLD, size=13),
+            _ma_fmt(ws.id, 1, 0, len(rows), 20, bg=_MA_BG, fg=_MA_WHITE),
+            _ma_col(ws.id, 0, 130), _ma_col(ws.id, 1, 180), _ma_col(ws.id, 2, 180),
+            _ma_col(ws.id, 3, 140), _ma_col(ws.id, 4, 180),
+            _ma_row(ws.id, 0, 32),
+        ]
+        ss.batch_update({"requests": reqs})
+
+        # Also refresh Overview and Points tabs
+        _refresh_archive_overview(ss, year, guild_id)
+        print(f"[archive] added {t_name} to master archive {year}")
+    except Exception as e:
+        import traceback
+        print(f"[archive] _add_tourn_to_master_archive error: {e}"); traceback.print_exc()
+
+
+def _create_yearly_archive(year: int, guild_id: int) -> Optional[str]:
+    """Create a fresh Master Archive sheet and return its URL."""
+    if not _sheets_ok(): return None
+    try:
+        gc, creds = _gs_client()
+        title = f"Master Archive {year}"
+        folder_id = getattr(config, "GOOGLE_DRIVE_FOLDER_ID", None)
+        ss = gc.create(title)
+        if folder_id:
+            import googleapiclient.discovery as _gd
+            drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
+            meta = drive.files().get(fileId=ss.id, fields="parents").execute()
+            prev = ",".join(meta.get("parents", []))
+            drive.files().update(fileId=ss.id, addParents=folder_id,
+                                  removeParents=prev, fields="id").execute()
+
+        ws_ov = ss.get_worksheet(0)
+        ws_ov.update_title("Overview")
+        ws_pt = ss.add_worksheet("Points", rows=500, cols=60)
+        # Set initial headers
+        ws_ov.update("A1", [["Tournament", "Start", "End", "Surface", "Champion", "Category"]])
+        ws_pt.update("A1", [["Player", "Total Points"]])
+        reqs = [
+            _ma_fmt(ws_ov.id, 0, 0, 1, 6,  bg=_MA_HDR, bold=True, fg=_MA_GOLD, size=11),
+            _ma_fmt(ws_ov.id, 1, 0, 2, 6,  bg=_MA_BG,  fg=_MA_WHITE),
+            _ma_fmt(ws_pt.id, 0, 0, 1, 30, bg=_MA_HDR, bold=True, fg=_MA_GOLD, size=11),
+            _ma_fmt(ws_pt.id, 1, 0, 2, 30, bg=_MA_BG,  fg=_MA_WHITE),
+        ]
+        ss.batch_update({"requests": reqs})
+        ss.share(None, perm_type="anyone", role="reader")
+        url = ss.url
+        _set_yearly_archive_url(year, guild_id, url)
+        print(f"[archive] created Master Archive {year} for guild {guild_id}: {url}")
+        return url
+    except Exception as e:
+        import traceback
+        print(f"[archive] _create_yearly_archive error: {e}"); traceback.print_exc()
+        return None
+
+
+def _refresh_archive_overview(ss, year: int, guild_id: int) -> None:
+    """Refresh Overview and Points tabs in the master archive."""
+    try:
+        all_t = _comp_db().get("tournaments", {})
+        year_ts = []
+        for tid, t in all_t.items():
+            if str(t.get("guild_id", "")) != str(guild_id): continue
+            if t.get("status") == STATUS_CANCELLED: continue
+            ts_iso = t.get("tournament_start_date") or t.get("created_at") or ""
+            try:
+                if datetime.fromisoformat(ts_iso).year != year: continue
+            except Exception: continue
+            year_ts.append((tid, t))
+        year_ts.sort(key=lambda x: x[1].get("tournament_start_date") or "")
+
+        # Overview rows
+        ov_rows = [["Tournament", "Start", "End", "Surface", "Champion", "Category"]]
+        for tid, t in year_ts:
+            cat = _get_cat(t.get("category_id", "")) or {}
+            ov_rows.append([
+                t.get("name", tid),
+                (t.get("tournament_start_date") or "")[:10],
+                (t.get("completed_at") or "")[:10] or "—",
+                "—",  # surface from first venue (best effort)
+                t.get("champion_name") or "TBD",
+                cat.get("name", t.get("category_id", "—")),
+            ])
+
+        # Points rows
+        t_ids   = [tid for tid, _ in year_ts]
+        t_names = {tid: t.get("name", tid)[:18] for tid, t in year_ts}
+        pts_hdr = ["Player", "Total"] + [t_names.get(tid, tid) for tid in t_ids]
+        player_pts: Dict[int, Dict[str, int]] = {}
+        for tid, t in year_ts:
+            for uid_str, rounds in t.get("awarded_points", {}).items():
+                try: uid = int(uid_str)
+                except ValueError: continue
+                player_pts.setdefault(uid, {})[tid] = sum(int(v) for v in rounds.values())
+        def _total(u): return sum(player_pts.get(u, {}).values())
+        pts_rows = [pts_hdr]
+        for uid in sorted(player_pts, key=lambda u: -_total(u)):
+            pts_rows.append([f"User:{uid}", _total(uid)] + [player_pts.get(uid, {}).get(tid, "") for tid in t_ids])
 
         try: ws_ov = ss.worksheet("Overview")
         except Exception: ws_ov = ss.get_worksheet(0)
         try: ws_pt = ss.worksheet("Points")
         except Exception: ws_pt = ss.add_worksheet("Points", rows=500, cols=60)
 
-        ws_ov.clear(); ws_ov.update("A1", overview_rows)
+        ws_ov.clear(); ws_ov.update("A1", ov_rows)
         ws_pt.clear(); ws_pt.update("A1", pts_rows)
-
-        reqs = [
-            _ma_fmt(ws_ov.id, 0, 0, 1, 7, bg=_MA_HDR, bold=True, fg=_MA_GOLD, size=11),
-            _ma_fmt(ws_ov.id, 1, 0, max(2, 1 + n_tourn), 7, bg=_MA_BG, fg=_MA_WHITE),
-            _ma_fmt(ws_pt.id, 0, 0, 1, 2 + max(1, n_tourn), bg=_MA_HDR, bold=True, fg=_MA_GOLD, size=11),
-            _ma_fmt(ws_pt.id, 1, 0, max(2, 1 + n_play), 2 + max(1, n_tourn), bg=_MA_BG, fg=_MA_WHITE),
-            _ma_fmt(ws_pt.id, 1, 0, max(2, 1 + n_play), 1, bg=_MA_BG, bold=True, fg=_MA_WHITE),
-            _ma_fmt(ws_pt.id, 1, 1, max(2, 1 + n_play), 2, bg=_MA_BG, bold=True, fg=_MA_GREEN, halign="CENTER"),
-        ] + [_ma_col(ws_pt.id, 2 + j, 120) for j in range(n_tourn)]
-        ss.batch_update({"requests": reqs})
-        print(f"[archive] updated yearly archive {year} for guild {guild_id}")
     except Exception as e:
-        import traceback
-        print(f"[archive] update_yearly_archive error: {e}"); traceback.print_exc()
-
-def remove_from_yearly_archive(year: int, guild_id: int, tournament_id: str) -> None:
-    """Remove a cancelled tournament from the yearly archive sheet (refresh data)."""
-    url = get_yearly_archive_url(year, guild_id)
-    if not url: return
-    # Just re-render — the cancelled tournament won't appear since _build_yearly_archive_content
-    # skips cancelled tournaments
-    try:
-        update_yearly_archive(year, guild_id, guild=None)
-    except Exception as e:
-        print(f"[archive] remove_from_yearly_archive error: {e}")
+        print(f"[archive] _refresh_archive_overview error: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Paginator view
@@ -2273,6 +2039,262 @@ async def _ac_venue(i: discord.Interaction, cur: str) -> List[app_commands.Choic
         if len(out) >= 25: break
     return out
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tournament live sim helpers
+# ─────────────────────────────────────────────────────────────────────────────
+def _time_of_day_conditions(scheduled_time: Optional[str]) -> dict:
+    """Return condition modifiers based on match start time (HH:MM).
+
+    Returns a dict with keys: temp_delta, humidity_delta, wind_mult, is_night.
+    Applied on top of the venue's rolled conditions.
+    """
+    if not scheduled_time:
+        return {"temp_delta": 0, "humidity_delta": 0, "wind_mult": 1.0, "is_night": False}
+    try:
+        h, m = map(int, scheduled_time.split(":")[:2])
+    except Exception:
+        return {"temp_delta": 0, "humidity_delta": 0, "wind_mult": 1.0, "is_night": False}
+
+    # 06–09: early morning — cool, calm, dewier
+    if 6 <= h < 9:
+        return {"temp_delta": -4, "humidity_delta": +10, "wind_mult": 0.6, "is_night": False}
+    # 09–12: morning — warming up, mild breeze
+    if 9 <= h < 12:
+        return {"temp_delta": -1, "humidity_delta": +5,  "wind_mult": 0.8, "is_night": False}
+    # 12–15: midday — peak heat, peak wind
+    if 12 <= h < 15:
+        return {"temp_delta": +4, "humidity_delta": -8,  "wind_mult": 1.3, "is_night": False}
+    # 15–18: afternoon — still hot, often windiest
+    if 15 <= h < 18:
+        return {"temp_delta": +3, "humidity_delta": -5,  "wind_mult": 1.2, "is_night": False}
+    # 18–20: evening — cooling, calmer
+    if 18 <= h < 20:
+        return {"temp_delta": -1, "humidity_delta": 0,   "wind_mult": 0.9, "is_night": False}
+    # 20+: night session — artificial light, cooler, calmer wind
+    return {"temp_delta": -5, "humidity_delta": +3, "wind_mult": 0.5, "is_night": True}
+
+
+async def _run_tournament_match_sim(
+    bot, channel, match_id: str, t_id: str,
+    p1_id: int, p2_id: int, best_of: int,
+    guild, seed1: Optional[int], seed2: Optional[int],
+    scheduled_time: Optional[str] = None,
+    court_venue_id: Optional[str] = None,
+) -> None:
+    """Run a real live matchsim for a tournament match, post point-by-point to channel."""
+    try:
+        from modules.matchsim import (
+            _to_profile_user, _to_profile_from_row,
+            _roll_conditions_for_venue, MatchState, build_score_text,
+            apply_passive_fatigue_decay,
+        )
+        from modules.players import get_player_row, set_fatigue_for_user_id
+        import matchsim as _ms_mod
+    except ImportError as e:
+        print(f"[tourn-sim] matchsim import failed: {e}")
+        return
+
+    # Temporarily override the global MATCH_SPEED_MULT in matchsim so tournament
+    # sims run at TOURN_SIM_SPEED_MULT. Restore after.
+    _orig_speed = getattr(_ms_mod, "MATCH_SPEED_MULT", 1.0)
+    _ms_mod.MATCH_SPEED_MULT = TOURN_SIM_SPEED_MULT
+
+    try:
+        p1_mem = guild.get_member(p1_id)
+        p2_mem = guild.get_member(p2_id)
+        if not p1_mem or not p2_mem:
+            print(f"[tourn-sim] {match_id}: member not found in guild")
+            return
+
+        # Build profiles with fatigue applied
+        p1_prof = _to_profile_user(guild, p1_mem)
+        p2_prof = _to_profile_user(guild, p2_mem)
+
+        # Roll conditions from the venue, then apply time-of-day modifiers
+        cond = _roll_conditions_for_venue(guild.id, court_venue_id)
+        tod  = _time_of_day_conditions(scheduled_time)
+        cond.temp_c     = max(-5, min(45, cond.temp_c + tod["temp_delta"]))
+        cond.humidity_pct = max(0, min(100, cond.humidity_pct + tod["humidity_delta"]))
+        cond.wind_kmh   = max(0, int(cond.wind_kmh * tod["wind_mult"]))
+        if tod["is_night"] and not cond.roof:
+            # Night conditions: slight extra humidity, slight chill already applied
+            cond.humidity_pct = min(100, cond.humidity_pct + 3)
+
+        state = MatchState(match_id=match_id, p1=p1_prof, p2=p2_prof,
+                           best_of=best_of, conditions=cond)
+
+        def _mn(uid, seed):
+            mb = guild.get_member(uid)
+            n  = mb.display_name if mb else f"User:{uid}"
+            return f"({seed}) {n}" if seed else n
+
+        t = _get_comp(t_id)  # fresh read
+        court_label = ""
+        if t:
+            for ck, vid in t.get("venues", {}).items():
+                if vid == court_venue_id:
+                    court_label = _court_name(t, ck); break
+
+        tod_label = ""
+        if scheduled_time:
+            try:
+                h = int(scheduled_time.split(":")[0])
+                tod_label = " 🌙 Night Session" if h >= 20 else (" ☀️ Midday" if 11 <= h < 15 else "")
+            except Exception:
+                pass
+
+        opening = (f"🎾 **{_mn(p1_id, seed1)}** vs **{_mn(p2_id, seed2)}**\n"
+                   f"{'📍 ' + court_label if court_label else ''}"
+                   f"{tod_label}\n"
+                   f"🌡️ {cond.temp_c}°C  💨 {cond.wind_kmh}km/h  "
+                   f"{'🌧️ Rain' if cond.is_raining else '☀️ Clear'}\n"
+                   f"Best of {best_of}  ·  Surface: {cond.surface.title()}")
+        msg = await channel.send(opening)
+
+        # Run the actual sim loop (the real matchsim engine)
+        sim_cog = bot.cogs.get("MatchSimCog") or bot.cogs.get("matchsim")
+        if not sim_cog:
+            print(f"[tourn-sim] MatchSimCog not found in bot.cogs: {list(bot.cogs.keys())}")
+            return
+        await sim_cog._run_match_loop(msg, state, guild=guild)
+
+    except asyncio.CancelledError:
+        try:
+            await msg.edit(content=f"⏹️ **Match `{match_id}` cancelled** (admin recorded result)")
+        except Exception:
+            pass
+        return
+    except Exception as e:
+        import traceback
+        print(f"[tourn-sim] sim error for {match_id}: {e}")
+        traceback.print_exc()
+        return
+    finally:
+        # Restore original speed
+        try: _ms_mod.MATCH_SPEED_MULT = _orig_speed
+        except Exception: pass
+
+    # ── Post-sim: persist result ──────────────────────────────────────────
+    try:
+        # Determine winner from sets
+        s1 = sum(1 for a, b in state.sets if a > b)
+        s2 = sum(1 for a, b in state.sets if b > a)
+        if s1 > s2:
+            wid, lid = p1_id, p2_id
+        elif s2 > s1:
+            wid, lid = p2_id, p1_id
+        else:
+            print(f"[tourn-sim] {match_id}: sets tied, defaulting to p1 win")
+            wid, lid = p1_id, p2_id
+
+        # Build score string with tiebreak annotations
+        score_parts = []
+        for idx, (g1, g2) in enumerate(state.sets):
+            tb = (state.set_tb_loser_points[idx]
+                  if hasattr(state, "set_tb_loser_points") and idx < len(state.set_tb_loser_points)
+                  else None)
+            if tb is not None:
+                score_parts.append(f"{g1}-{g2}({tb})")
+            else:
+                score_parts.append(f"{g1}-{g2}")
+        score_str = " ".join(score_parts)
+
+        # Reload tournament to avoid stale data
+        t = _get_comp(t_id)
+        if not t:
+            print(f"[tourn-sim] {t_id} not found after sim — already cancelled?")
+            return
+
+        match_obj = next((m for m in t.get("matches", []) if m["match_id"] == match_id), None)
+        if not match_obj or match_obj.get("status") == "completed":
+            print(f"[tourn-sim] {match_id} already completed by admin, skipping")
+            return
+
+        match_obj["winner_id"] = wid
+        match_obj["loser_id"]  = lid
+        match_obj["walkover"]  = False
+        match_obj["score"]     = score_str
+        match_obj["status"]    = "completed"
+
+        # Propagate winner
+        rnd  = match_obj.get("round", "")
+        rnds = _rounds(int(t.get("bracket_size", 8)))
+        ridx = rnds.index(rnd) if rnd in rnds else -1
+        if ridx >= 0 and ridx + 1 < len(rnds):
+            next_rnd    = rnds[ridx + 1]
+            prev_sorted = sorted([mx for mx in t.get("matches", []) if mx["round"] == rnd],
+                                  key=lambda mx: mx["match_id"])
+            match_pos   = next((idx for idx, mx in enumerate(prev_sorted)
+                                if mx["match_id"] == match_id), None)
+            if match_pos is not None:
+                next_sorted = sorted([mx for mx in t.get("matches", []) if mx["round"] == next_rnd],
+                                      key=lambda mx: mx["match_id"])
+                slot_idx = match_pos // 2
+                if slot_idx < len(next_sorted):
+                    slot   = next_sorted[slot_idx]
+                    w_seed = seed1 if wid == p1_id else seed2
+                    if match_pos % 2 == 0:
+                        slot["player1_id"] = wid; slot["seed1"] = w_seed
+                    else:
+                        slot["player2_id"] = wid; slot["seed2"] = w_seed
+                    if slot.get("player1_id") and slot.get("player2_id"):
+                        slot["status"] = "scheduled"
+
+        # Track loser's round-exit points (deferred to /tournament complete)
+        cat     = _get_cat(t.get("category_id", "")) or {}
+        cat_key = ROUND_TO_CAT_KEY.get(rnd)
+        loser_pts = int(cat.get(cat_key, 0)) if cat_key else 0
+        if lid and loser_pts > 0:
+            t.setdefault("pending_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
+
+        # Record H2H + stats
+        try:
+            from modules.venues import _get_venue as _gv
+            surface = "hard"
+            if court_venue_id:
+                v = _gv(court_venue_id)
+                surface = v.get("surface", "hard") if v else "hard"
+            record_h2h(guild.id, wid, lid, score_str, t_id, rnd, court_venue_id, surface)
+            w_rank = get_player_rank(guild.id, wid)
+            l_rank = get_player_rank(guild.id, lid) if lid else 99999
+            if lid:
+                record_match_stats(guild.id, wid, lid, True,  rnd, surface, t_id, l_rank)
+                record_match_stats(guild.id, lid, wid, False, rnd, surface, t_id, w_rank)
+        except Exception as e:
+            print(f"[tourn-sim] h2h/stats failed: {e}")
+
+        _save_comp(t_id, t)
+        _snapshot_rankings(guild.id)
+
+        try:
+            update_sheet(t, guild=guild)
+        except Exception as e:
+            print(f"[tourn-sim] sheet update failed: {e}")
+
+        # Result embed
+        w_seed = seed1 if wid == p1_id else seed2
+        l_seed = seed2 if wid == p1_id else seed1
+        emb = discord.Embed(title=f"🏁 {_rnd(rnd)} Result — {t.get('name', '')}",
+                            color=discord.Color.green())
+        emb.add_field(name="✅ Winner",
+                      value=f"**{_mn(wid, w_seed)}**", inline=True)
+        emb.add_field(name="❌ Eliminated",
+                      value=_mn(lid, l_seed),            inline=True)
+        emb.add_field(name="Score", value=score_str,     inline=True)
+        if t.get("sheet_url"):
+            emb.add_field(name="📊 Bracket",
+                          value=f"[Live Sheet]({t['sheet_url']})", inline=False)
+        await channel.send(embed=emb)
+
+    except Exception as e:
+        import traceback
+        print(f"[tourn-sim] persist/embed failed for {match_id}: {e}")
+        traceback.print_exc()
+    finally:
+        _ACTIVE_SIMS.pop(match_id, None)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Cog
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2281,9 +2303,7 @@ class TournamentsCog(commands.Cog):
     # Nested subgroup: /tournament category create|edit|delete|list
     # Counts as 1 slot in tournament (not 4), keeping us under Discord's 25 limit
     category   = app_commands.Group(name="category",   description="Tournament point categories",
-        parent=tournament)
-    manage     = app_commands.Group(name="manage",     description="Tournament admin management tools",
-        parent=tournament)
+                                    parent=tournament)
     rankings   = app_commands.Group(name="rankings",   description="Player rankings and leaderboards")
     stats      = app_commands.Group(name="stats",      description="Player match and career statistics")
     admin      = app_commands.Group(name="admin",      description="Admin-only server management tools")
@@ -2298,12 +2318,11 @@ class TournamentsCog(commands.Cog):
 
         @_tasks.loop(minutes=1)
         async def _auto_sim():
-            """Auto-trigger live sims for scheduled matches whose time has passed."""
+            """Every minute: kick off live sims for any match whose scheduled time has passed."""
             now = _dt.datetime.now(_dt.timezone.utc)
             db  = _comp_db()
             for tid, t in list(db.get("tournaments", {}).items()):
-                if t.get("status") != STATUS_ACTIVE:
-                    continue
+                if t.get("status") != STATUS_ACTIVE: continue
                 base_iso = t.get("tournament_start_date")
                 try:
                     base_dt = _dt.datetime.fromisoformat(base_iso).replace(
@@ -2312,14 +2331,13 @@ class TournamentsCog(commands.Cog):
                 except Exception:
                     continue
 
-                guild_id  = int(t.get("guild_id", 0))
-                guild     = self.bot.get_guild(guild_id)
+                guild_id = int(t.get("guild_id", 0))
+                guild    = self.bot.get_guild(guild_id)
                 if not guild:
                     continue
-
                 result_channel_id = t.get("result_channel_id")
                 if not result_channel_id:
-                    continue  # No channel set — skip auto-sim for this tournament
+                    continue
                 channel = guild.get_channel(int(result_channel_id))
                 if not channel:
                     continue
@@ -2328,34 +2346,33 @@ class TournamentsCog(commands.Cog):
 
                 for m in t.get("matches", []):
                     mid = m.get("match_id", "")
-                    if m.get("status") == "completed":      continue
+                    if m.get("status") == "completed":                 continue
                     if not m.get("player1_id") or not m.get("player2_id"): continue
-                    if mid in _ACTIVE_SIMS:                 continue  # already running
+                    if mid in _ACTIVE_SIMS:                            continue  # already running
 
                     day      = m.get("day")
                     time_str = m.get("scheduled_time") or ""
                     if not day or not time_str:
                         continue
                     try:
-                        h, mi = map(int, time_str.split(":")[:2])
-                        match_dt = base_dt + _dt.timedelta(days=int(day) - 1, hours=h, minutes=mi)
+                        h, mi2 = map(int, time_str.split(":")[:2])
+                        match_dt = base_dt + _dt.timedelta(days=int(day) - 1, hours=h, minutes=mi2)
                     except Exception:
                         continue
                     if now < match_dt:
-                        continue  # Not time yet
+                        continue  # not time yet
 
-                    # ── Kick off real live sim ──────────────────────────────
-                    p1_id = m["player1_id"]
-                    p2_id = m["player2_id"]
-                    task  = asyncio.create_task(
+                    task = asyncio.create_task(
                         _run_tournament_match_sim(
                             self.bot, channel, mid, tid,
-                            p1_id, p2_id, best_of, guild,
+                            m["player1_id"], m["player2_id"], best_of, guild,
                             m.get("seed1"), m.get("seed2"),
+                            scheduled_time=time_str,
+                            court_venue_id=m.get("court_venue_id"),
                         )
                     )
                     _ACTIVE_SIMS[mid] = task
-                    print(f"[auto-sim] started live sim for {mid} in {tid}")
+                    print(f"[auto-sim] launched real sim for {mid} in {tid}")
 
         @_auto_sim.before_loop
         async def _before():
@@ -2364,30 +2381,6 @@ class TournamentsCog(commands.Cog):
         self._sim_task = _auto_sim
         _auto_sim.start()
         print("[tournaments] auto-sim task started")
-
-        # Ensure a Master Archive sheet exists for the current year in every guild
-        asyncio.create_task(self._ensure_yearly_archives())
-
-    async def _ensure_yearly_archives(self):
-        """On startup, create a Master Archive sheet for the current year for every
-        guild the bot is in, if one doesn't already exist."""
-        await self.bot.wait_until_ready()
-        import datetime as _dt
-        year = _dt.datetime.now(_dt.timezone.utc).year
-        for guild in self.bot.guilds:
-            try:
-                existing = get_yearly_archive_url(year, guild.id)
-                if not existing:
-                    print(f"[archive] creating {year} archive for guild {guild.id}…")
-                    loop = asyncio.get_event_loop()
-                    url  = await loop.run_in_executor(
-                        None, create_yearly_archive, year, guild.id, guild)
-                    if url:
-                        print(f"[archive] created {year} archive for {guild.name}: {url}")
-                else:
-                    print(f"[archive] {year} archive already exists for guild {guild.id}")
-            except Exception as e:
-                print(f"[archive] ensure_yearly_archives failed for guild {guild.id}: {e}")
 
     # ═══════════════════════════════════════════════════════════════════════
     # /category commands
@@ -3068,208 +3061,6 @@ class TournamentsCog(commands.Cog):
         pv = PageView(lines, per=20)
         await _reply(i, content=pv.content(), view=pv)
 
-    # ── /tournament match-view ────────────────────────────────────────────
-    @tournament.command(name="match-view",
-                        description="View full details for a specific tournament match.")
-    @app_commands.guild_only()
-    @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match)
-    async def tourn_match_view(self, i: discord.Interaction,
-                               tournament_id: str, match_id: str):
-        t = _get_comp(tournament_id)
-        if not t: return await _reply(i, "❌ Tournament not found.", ephemeral=True)
-
-        match = next((m for m in t.get("matches", []) if m["match_id"] == match_id), None)
-        if not match: return await _reply(i, "❌ Match not found.", ephemeral=True)
-
-        status = match.get("status", "pending")
-        rnd    = match.get("round", "?")
-        p1_id  = match.get("player1_id")
-        p2_id  = match.get("player2_id")
-        s1     = match.get("seed1")
-        s2     = match.get("seed2")
-
-        def _mn(uid, seed=None) -> str:
-            if not uid: return "TBD"
-            mb = i.guild.get_member(uid)
-            n  = mb.display_name if mb else f"<@{uid}>"
-            return f"({seed}) {n}" if seed else n
-
-        p1n = _mn(p1_id, s1)
-        p2n = _mn(p2_id, s2)
-        t_name = t.get("name", tournament_id)
-        best_of = int(t.get("best_of", 3))
-
-        # ── Resolve scheduled datetime ────────────────────────────────────
-        def _match_dt_str() -> str:
-            base_iso = t.get("tournament_start_date")
-            day_num  = match.get("day")
-            time_str = match.get("scheduled_time") or ""
-            if not base_iso or not day_num or not time_str:
-                return "Not yet scheduled"
-            try:
-                import datetime as _dt
-                base = _dt.datetime.fromisoformat(base_iso).replace(
-                    hour=0, minute=0, second=0, microsecond=0, tzinfo=_dt.timezone.utc)
-                h, mi = map(int, time_str.split(":")[:2])
-                dt = base + _dt.timedelta(days=int(day_num) - 1, hours=h, minutes=mi)
-                ts = int(dt.timestamp())
-                return f"<t:{ts}:F> (<t:{ts}:R>)"
-            except Exception:
-                return f"Day {day_num} @ {time_str}"
-
-        court_name = _court_name(t, match.get("court_key") or "")
-
-        # ── LIVE ─────────────────────────────────────────────────────────
-        if match_id in _ACTIVE_SIMS:
-            result_ch_id = t.get("result_channel_id")
-            ch_mention   = f"<#{result_ch_id}>" if result_ch_id else "the results channel"
-            emb = discord.Embed(
-                title=f"🎾 LIVE — {_rnd(rnd)} · {t_name}",
-                color=discord.Color.red())
-            emb.add_field(name="Match",   value=f"**{p1n}** vs **{p2n}**", inline=False)
-            emb.add_field(name="Format",  value=f"Best of {best_of}",       inline=True)
-            emb.add_field(name="Court",   value=court_name or "—",          inline=True)
-            emb.add_field(name="🔴 Live in", value=ch_mention,              inline=False)
-            emb.set_footer(text=f"Match ID: {match_id}")
-            return await _reply(i, embed=emb)
-
-        # ── COMPLETED ────────────────────────────────────────────────────
-        if status == "completed":
-            wid    = match.get("winner_id")
-            lid    = match.get("player1_id") if wid != match.get("player1_id") else match.get("player2_id")
-            score  = match.get("score") or ("Walkover" if match.get("walkover") else "—")
-            wn     = _mn(wid); ln = _mn(lid)
-
-            emb = discord.Embed(
-                title=f"✅ {_rnd(rnd)} — {t_name}",
-                color=discord.Color.green())
-            emb.add_field(name="🏆 Winner",     value=f"**{wn}**",        inline=True)
-            emb.add_field(name="❌ Eliminated", value=ln,                  inline=True)
-            emb.add_field(name="Score",         value=f"`{score}`",        inline=True)
-            if court_name:
-                emb.add_field(name="Court", value=court_name, inline=True)
-            emb.add_field(name="Match ID", value=f"`{match_id}`",          inline=True)
-
-            # Pull H2H record for this match (most recent match between these two)
-            if p1_id and p2_id:
-                try:
-                    h2h_db = _h2h_db()
-                    key    = _h2h_key(p1_id, p2_id)
-                    h2h_g  = h2h_db.get("h2h", {}).get(str(i.guild.id), {})
-                    rec    = h2h_g.get(key, {})
-                    all_ms = [mx for mx in rec.get("matches", [])
-                               if mx.get("tournament_id") == tournament_id
-                               and mx.get("round") == rnd]
-                    if all_ms:
-                        mx = all_ms[-1]
-                        # Surface + conditions
-                        emb.add_field(name="Surface", value=mx.get("surface", "—"), inline=True)
-                except Exception:
-                    pass
-
-            # Career H2H between these two
-            if p1_id and p2_id:
-                try:
-                    h2h_db = _h2h_db()
-                    key    = _h2h_key(p1_id, p2_id)
-                    h2h_g  = h2h_db.get("h2h", {}).get(str(i.guild.id), {})
-                    rec    = h2h_g.get(key, {})
-                    p1_w = sum(1 for mx in rec.get("matches", []) if mx.get("winner") == p1_id)
-                    p2_w = sum(1 for mx in rec.get("matches", []) if mx.get("winner") == p2_id)
-                    if p1_w + p2_w > 0:
-                        emb.add_field(name="H2H (all time)",
-                                      value=f"{_mn(p1_id)} **{p1_w}** – **{p2_w}** {_mn(p2_id)}",
-                                      inline=False)
-                except Exception:
-                    pass
-
-            if t.get("sheet_url"):
-                emb.add_field(name="📊 Bracket",
-                               value=f"[Open Sheet]({t['sheet_url']})", inline=False)
-            return await _reply(i, embed=emb)
-
-        # ── UPCOMING / PENDING ────────────────────────────────────────────
-        emb = discord.Embed(
-            title=f"📅 {_rnd(rnd)} — {t_name}",
-            color=discord.Color.blurple())
-        emb.add_field(name="Match",   value=f"**{p1n}**  vs  **{p2n}**",   inline=False)
-        emb.add_field(name="Format",  value=f"Best of {best_of}",           inline=True)
-        emb.add_field(name="Court",   value=court_name or "TBD",            inline=True)
-        emb.add_field(name="⏰ Scheduled", value=_match_dt_str(),           inline=False)
-
-        # Player stat comparison warmup card
-        if p1_id and p2_id:
-            try:
-                from modules.matchsim import _to_profile_user, ensure_player_for_member
-                p1_m = i.guild.get_member(p1_id)
-                p2_m = i.guild.get_member(p2_id)
-                if p1_m and p2_m:
-                    pr1 = _to_profile_user(i.guild, p1_m)
-                    pr2 = _to_profile_user(i.guild, p2_m)
-
-                    def _bar(v1: float, v2: float, width: int = 12) -> str:
-                        """ASCII split bar: P1 ████░░ P2"""
-                        total = v1 + v2
-                        if total == 0: n1 = width // 2
-                        else: n1 = round(v1 / total * width)
-                        n1 = max(1, min(width - 1, n1))
-                        n2 = width - n1
-                        return f"{'█' * n1}{'░' * n2}"
-
-                    def _stat(label: str, a: float, b: float) -> str:
-                        return (f"`{label:<14}` "
-                                f"**{a:>4.0f}** {_bar(a, b)} **{b:<4.0f}**")
-
-                    stats_lines = "\n".join([
-                        f"{'':>20}**{pr1.name}** vs **{pr2.name}**",
-                        _stat("Serve",    (pr1.fs_speed + pr1.fs_accuracy) / 2,
-                                          (pr2.fs_speed + pr2.fs_accuracy) / 2),
-                        _stat("Forehand", (pr1.fh_power + pr1.fh_accuracy) / 2,
-                                          (pr2.fh_power + pr2.fh_accuracy) / 2),
-                        _stat("Backhand", (pr1.bh_power + pr1.bh_accuracy) / 2,
-                                          (pr2.bh_power + pr2.bh_accuracy) / 2),
-                        _stat("Touch",    (pr1.touch + pr1.volley) / 2,
-                                          (pr2.touch + pr2.volley) / 2),
-                        _stat("Fitness",  (pr1.fitness + pr1.footwork) / 2,
-                                          (pr2.fitness + pr2.footwork) / 2),
-                        _stat("Mental",   (pr1.focus + pr1.tennis_iq) / 2,
-                                          (pr2.focus + pr2.tennis_iq) / 2),
-                    ])
-                    emb.add_field(name="📋 Pre-Match Stats",
-                                  value=stats_lines, inline=False)
-
-                    # Handedness / style summary
-                    p1_style = f"{'L' if pr1.handedness == 'left' else 'R'}-{'1BH' if pr1.backhand_style == 'one_handed' else '2BH'}"
-                    p2_style = f"{'L' if pr2.handedness == 'left' else 'R'}-{'1BH' if pr2.backhand_style == 'one_handed' else '2BH'}"
-                    emb.add_field(name="Style",
-                                  value=f"{p1n}: **{p1_style}**  ·  {p2n}: **{p2_style}**",
-                                  inline=False)
-
-                    # Career H2H between these two
-                    try:
-                        h2h_db = _h2h_db()
-                        key    = _h2h_key(p1_id, p2_id)
-                        h2h_g  = h2h_db.get("h2h", {}).get(str(i.guild.id), {})
-                        rec    = h2h_g.get(key, {})
-                        w1 = sum(1 for mx in rec.get("matches", []) if mx.get("winner") == p1_id)
-                        w2 = sum(1 for mx in rec.get("matches", []) if mx.get("winner") == p2_id)
-                        total = w1 + w2
-                        if total > 0:
-                            emb.add_field(name="H2H (career)",
-                                          value=f"{p1n} **{w1}** – **{w2}** {p2n}",
-                                          inline=False)
-                    except Exception:
-                        pass
-
-            except Exception as e:
-                emb.add_field(name="⚠️ Stats", value=f"Could not load: `{e}`", inline=False)
-
-        emb.set_footer(text=f"Match ID: {match_id}  ·  Status: {status.upper()}")
-        if t.get("sheet_url"):
-            emb.add_field(name="📊 Bracket",
-                           value=f"[Open Sheet]({t['sheet_url']})", inline=False)
-        await _reply(i, embed=emb)
-
     # ── /tournament match-edit ────────────────────────────────────────────
     @tournament.command(name="match-edit", description="(Admin) Edit a match's time or court.")
     @app_commands.guild_only()
@@ -3431,12 +3222,6 @@ class TournamentsCog(commands.Cog):
         if not match: return await _reply(i, "❌ Match not found.", ephemeral=True)
         if match.get("status") == "completed":
             return await _reply(i, "❌ Already completed.", ephemeral=True)
-
-        # Cancel any live sim running for this match
-        _running_task = _ACTIVE_SIMS.pop(match_id, None)
-        if _running_task and not _running_task.done():
-            _running_task.cancel()
-
         try:
             wid = int(winner_id)
         except ValueError:
@@ -3454,10 +3239,10 @@ class TournamentsCog(commands.Cog):
 
         match["winner_id"] = wid; match["loser_id"] = lid
         match["walkover"] = walkover
-        match["score"] = "" if walkover else _normalise_score(score)
+        match["score"] = "" if walkover else score
         match["status"] = "completed"
 
-        # Track loser's round-exit points — NOT awarded until /tournament complete
+        # Award loser's round exit points
         cat = _get_cat(t.get("category_id","")) or {}
         rnd = match.get("round","")
         cat_key = ROUND_TO_CAT_KEY.get(rnd)
@@ -3467,8 +3252,10 @@ class TournamentsCog(commands.Cog):
         loser_m  = i.guild.get_member(lid)  if lid  else None
         winner_m = i.guild.get_member(wid)
 
-        if lid and loser_pts > 0 and not walkover:
-            t.setdefault("pending_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
+        if lid and loser_pts > 0:
+            _award_points(guild_id, lid, loser_pts, tournament_id, rnd,
+                          name=loser_m.display_name if loser_m else "")
+            t.setdefault("awarded_points",{}).setdefault(str(lid),{})[rnd] = loser_pts
 
         # Propagate winner into next round
         rnds = _rounds(int(t.get("bracket_size",8)))
@@ -3515,13 +3302,137 @@ class TournamentsCog(commands.Cog):
 
         wname = winner_m.display_name if winner_m else f"UID:{wid}"
         lname = loser_m.display_name  if loser_m  else (f"UID:{lid}" if lid else "BYE")
-        result_str = "by walkover" if walkover else match["score"]
-        pts_note = f" *(+{loser_pts} pts for {lname} at tournament end)*" if loser_pts and not walkover else ""
-        msg = f"✅ **{_rnd(rnd)}** result: **{wname}** def. **{lname}** {result_str}{pts_note}"
+        result_str = "by walkover" if walkover else score
+        pts_str = f"\n🏅 {lname} awarded **{loser_pts}pts**" if loser_pts and not walkover else ""
+        msg = f"✅ **{_rnd(rnd)}** result: **{wname}** def. **{lname}** {result_str}{pts_str}"
         await _reply(i, msg)
 
+    # ── /tournament match-view ────────────────────────────────────────────
+    @tournament.command(name="match-view", description="View details of a specific match.")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match)
+    async def tourn_match_view(self, i: discord.Interaction,
+                                tournament_id: str, match_id: str):
+        t = _get_comp(tournament_id)
+        if not t: return await _reply(i, "❌ Tournament not found.", ephemeral=True)
+        match = next((m for m in t.get("matches", []) if m["match_id"] == match_id), None)
+        if not match: return await _reply(i, "❌ Match not found.", ephemeral=True)
+
+        p1_id = match.get("player1_id"); p2_id = match.get("player2_id")
+        status = match.get("status", "pending")
+
+        def _mn(uid, seed=None):
+            if uid is None: return "TBD"
+            mb = i.guild.get_member(uid) if i.guild else None
+            n  = mb.display_name if mb else f"UID:{uid}"
+            return f"({seed}) {n}" if seed else n
+
+        court = _court_name(t, match.get("court_key", "")) or "—"
+        rnd   = match.get("round", "?")
+
+        # ── Live sim running ──────────────────────────────────────────────
+        if match_id in _ACTIVE_SIMS:
+            emb = discord.Embed(
+                title=f"🔴 LIVE — {_rnd(rnd)} — {t.get('name','')}",
+                color=discord.Color.red())
+            emb.add_field(name="Player 1", value=_mn(p1_id, match.get("seed1")), inline=True)
+            emb.add_field(name="Player 2", value=_mn(p2_id, match.get("seed2")), inline=True)
+            emb.add_field(name="Court",    value=court,                           inline=True)
+            if t.get("result_channel_id"):
+                ch = i.guild.get_channel(int(t["result_channel_id"]))
+                if ch: emb.add_field(name="Watch live", value=ch.mention, inline=False)
+            return await _reply(i, embed=emb)
+
+        # ── Completed ─────────────────────────────────────────────────────
+        if status == "completed":
+            wid = match.get("winner_id"); lid = match.get("loser_id")
+            h2h_db = _h2h_db()
+            key = _h2h_key(p1_id, p2_id) if p1_id and p2_id else None
+            h2h_rec = h2h_db.get("h2h", {}).get(str(i.guild.id), {}).get(key) if key else None
+            emb = discord.Embed(
+                title=f"✅ {_rnd(rnd)} Result — {t.get('name','')}",
+                color=discord.Color.green())
+            emb.add_field(name="✅ Winner",     value=f"**{_mn(wid, match.get('seed1') if wid==p1_id else match.get('seed2'))}**", inline=True)
+            emb.add_field(name="❌ Eliminated", value=_mn(lid, match.get('seed2') if wid==p1_id else match.get('seed1')),          inline=True)
+            emb.add_field(name="Score",         value=match.get("score","—"),   inline=True)
+            emb.add_field(name="Court",         value=court,                    inline=True)
+            if h2h_rec:
+                ms = h2h_rec.get("matches",[])
+                w1 = sum(1 for m in ms if int(m.get("winner",0))==p1_id)
+                w2 = len(ms)-w1
+                p1n = _mn(p1_id); p2n = _mn(p2_id)
+                emb.add_field(name="⚔️ Career H2H",
+                              value=f"**{p1n}** {w1} – {w2} **{p2n}**", inline=False)
+            if t.get("sheet_url"):
+                emb.add_field(name="📊 Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
+            return await _reply(i, embed=emb)
+
+        # ── Upcoming / Pending ────────────────────────────────────────────
+        emb = discord.Embed(
+            title=f"📋 {_rnd(rnd)} Preview — {t.get('name','')}",
+            color=discord.Color.blue())
+        emb.add_field(name="Player 1", value=_mn(p1_id, match.get("seed1")), inline=True)
+        emb.add_field(name="Player 2", value=_mn(p2_id, match.get("seed2")), inline=True)
+        emb.add_field(name="Court",    value=court,                           inline=True)
+
+        # Scheduled time
+        base_iso = t.get("tournament_start_date")
+        if base_iso and match.get("day") and match.get("scheduled_time"):
+            try:
+                import datetime as _dt2
+                base_dt = _dt2.datetime.fromisoformat(base_iso).replace(
+                    hour=0, minute=0, second=0, microsecond=0, tzinfo=_dt2.timezone.utc)
+                h2, mi2 = map(int, match["scheduled_time"].split(":")[:2])
+                match_dt = base_dt + _dt2.timedelta(days=int(match["day"]) - 1, hours=h2, minutes=mi2)
+                ts = int(match_dt.timestamp())
+                emb.add_field(name="⏰ Scheduled",
+                              value=f"<t:{ts}:F> (<t:{ts}:R>)", inline=False)
+                # Time of day note
+                tod = _time_of_day_conditions(match.get("scheduled_time"))
+                if tod["is_night"]:
+                    emb.add_field(name="🌙 Session", value="Night session", inline=True)
+                elif h2 >= 12:
+                    emb.add_field(name="☀️ Session", value="Day session", inline=True)
+            except Exception:
+                pass
+
+        # Career stats comparison
+        if p1_id and p2_id:
+            sdb = _stats_db(); sg = _stats_guild(sdb, i.guild.id)
+            def _career_line(uid):
+                p = sg.get(str(uid))
+                if not p: return "No data"
+                mp = p.get("matches_played",0); mw = p.get("matches_won",0)
+                wp = round(mw/mp*100,1) if mp else 0
+                fsi = p.get("first_serve_in",0); fst = max(p.get("first_serve_total",1),1)
+                aces = p.get("aces",0)
+                tbp  = p.get("tiebreaks_played",0); tbw = p.get("tiebreaks_won",0)
+                return (f"**{mw}–{mp-mw}** ({wp}%)\n"
+                        f"1st Srv: {round(fsi/fst*100,1)}%  Aces: {aces}\n"
+                        f"Tiebreaks: {tbw}/{tbp}\n"
+                        f"Titles: {p.get('titles',0)}  SF: {p.get('semis',0)}")
+            emb.add_field(name=f"📊 {_mn(p1_id)} Career",  value=_career_line(p1_id), inline=True)
+            emb.add_field(name=f"📊 {_mn(p2_id)} Career",  value=_career_line(p2_id), inline=True)
+
+            # H2H preview
+            h2h_db = _h2h_db()
+            key = _h2h_key(p1_id, p2_id)
+            h2h_rec = h2h_db.get("h2h", {}).get(str(i.guild.id), {}).get(key)
+            if h2h_rec and h2h_rec.get("matches"):
+                ms = h2h_rec["matches"]
+                w1 = sum(1 for m in ms if int(m.get("winner",0))==p1_id)
+                w2 = len(ms)-w1
+                emb.add_field(name="⚔️ Career H2H",
+                              value=f"**{_mn(p1_id)}** {w1} – {w2} **{_mn(p2_id)}**",
+                              inline=False)
+
+        if t.get("sheet_url"):
+            emb.add_field(name="📊 Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
+        emb.set_footer(text=f"Match ID: {match_id}")
+        await _reply(i, embed=emb)
+
     # ── /tournament complete ──────────────────────────────────────────────
-    @tournament.command(name="complete", description="(Admin) Mark tournament finished and award all points.")
+    @tournament.command(name="complete", description="(Admin) Mark tournament finished and award champion points.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all)
     async def tourn_complete(self, i: discord.Interaction, tournament_id: str,
@@ -3535,50 +3446,26 @@ class TournamentsCog(commands.Cog):
         try: cid = int(champion_id)
         except ValueError: return await _reply(i, "❌ champion_id must be a user ID.", ephemeral=True)
 
-        await i.response.defer()
-
-        cat          = _get_cat(t.get("category_id","")) or {}
-        champ_pts    = int(cat.get("champion_pts",   0))
-        finalist_pts = int(cat.get("finalist_pts",   0))
+        cat = _get_cat(t.get("category_id","")) or {}
+        champ_pts    = int(cat.get("champion_pts", 0))
+        finalist_pts = int(cat.get("finalist_pts", 0))
         guild_id     = i.guild.id
         champ_m      = i.guild.get_member(cid)
         champ_name   = champ_m.display_name if champ_m else f"UID:{cid}"
 
-        # ── Award ALL pending round-exit points accumulated during the tournament ──
-        pending = t.get("pending_points", {})
-        awarded_summary: Dict[int, int] = {}   # uid -> total pts given
-        for uid_str, rounds in pending.items():
-            try: uid = int(uid_str)
-            except ValueError: continue
-            mb   = i.guild.get_member(uid)
-            name = mb.display_name if mb else ""
-            for rnd_label, pts in rounds.items():
-                pts = int(pts)
-                if pts <= 0: continue
-                _award_points(guild_id, uid, pts, tournament_id, rnd_label, name=name)
-                t.setdefault("awarded_points", {}).setdefault(uid_str, {})[rnd_label] = pts
-                awarded_summary[uid] = awarded_summary.get(uid, 0) + pts
-
-        # ── Award champion ──
+        # Award champion
         _award_points(guild_id, cid, champ_pts, tournament_id, "W", name=champ_name)
-        t.setdefault("awarded_points", {}).setdefault(str(cid), {})["W"] = champ_pts
-        awarded_summary[cid] = awarded_summary.get(cid, 0) + champ_pts
+        t.setdefault("awarded_points",{}).setdefault(str(cid),{})["W"] = champ_pts
 
-        # ── Award finalist (runner-up from the Final match) ──
-        final_m = next((m for m in t.get("matches", []) if m["round"] == "F"), None)
-        finalist_uid: Optional[int] = None
+        # Award finalist (the other finalist from the Final match)
+        final_m = next((m for m in t.get("matches",[]) if m["round"] == "F"), None)
         if final_m:
-            f_lid = final_m.get("player1_id") if final_m.get("player2_id") == cid else final_m.get("player2_id")
-            if f_lid and f_lid != cid:
-                finalist_uid = f_lid
-                lm = i.guild.get_member(f_lid)
-                _award_points(guild_id, f_lid, finalist_pts, tournament_id, "F",
+            lid = final_m.get("player1_id") if final_m.get("player2_id") == cid else final_m.get("player2_id")
+            if lid and lid != cid:
+                lm = i.guild.get_member(lid)
+                _award_points(guild_id, lid, finalist_pts, tournament_id, "F",
                               name=lm.display_name if lm else "")
-                t.setdefault("awarded_points", {}).setdefault(str(f_lid), {})["F"] = finalist_pts
-                awarded_summary[f_lid] = awarded_summary.get(f_lid, 0) + finalist_pts
-
-        # Clear pending now that everything is awarded
-        t["pending_points"] = {}
+                t.setdefault("awarded_points",{}).setdefault(str(lid),{})["F"] = finalist_pts
 
         t["status"]        = STATUS_COMPLETED
         t["champion_id"]   = cid
@@ -3587,101 +3474,16 @@ class TournamentsCog(commands.Cog):
         _save_comp(tournament_id, t)
         _snapshot_rankings(guild_id)
 
-        # Archive the individual bracket sheet
+        # Archive sheet
         archive_sheet(t)
 
-        # Update / create the Master Archive for this year
-        try:
-            year = datetime.now(timezone.utc).year
-            await asyncio.get_event_loop().run_in_executor(
-                None, update_yearly_archive, year, guild_id, self.bot.get_guild(guild_id))
-        except Exception as e:
-            print(f"[archive] yearly archive update failed: {e}")
-
-        # ── Build response embed ──
-        pts_lines = []
-        # Champion line
-        pts_lines.append(f"🏆 **{champ_name}** (Champion) +**{champ_pts}** pts")
-        # Finalist line
-        if finalist_uid:
-            fn = i.guild.get_member(finalist_uid)
-            fn_name = fn.display_name if fn else f"UID:{finalist_uid}"
-            pts_lines.append(f"🥈 **{fn_name}** (Finalist) +**{finalist_pts}** pts")
-        # Round-exit lines (sorted by pts desc)
-        for uid, total in sorted(awarded_summary.items(), key=lambda x: -x[1]):
-            if uid in (cid, finalist_uid): continue   # already shown above
-            mb   = i.guild.get_member(uid)
-            name = mb.display_name if mb else f"UID:{uid}"
-            pts_lines.append(f"• **{name}** +**{total}** pts")
-
-        emb = discord.Embed(title=f"🏆 Tournament Complete: {t.get('name')}",
-                            color=discord.Color.gold())
-        emb.add_field(name="Champion", value=f"**{champ_name}**", inline=True)
-        if finalist_score:
-            emb.add_field(name="Final Score", value=finalist_score, inline=True)
-        emb.add_field(name="🏅 Points Awarded",
-                      value="\n".join(pts_lines[:20]) or "None", inline=False)
-        await _reply(i, embed=emb)
-
-    # ── /tournament archive-view ──────────────────────────────────────────
-    @tournament.command(name="archive-view",
-                        description="View the Master Archive sheet for a given year.")
-    @app_commands.guild_only()
-    async def tourn_archive_view(self, i: discord.Interaction, year: int = 0):
-        import datetime as _dt
-        if not year:
-            year = _dt.datetime.now(_dt.timezone.utc).year
-        guild_id = i.guild.id
-        url = get_yearly_archive_url(year, guild_id)
-        if not url:
-            # Try to create it on demand
-            await i.response.defer(ephemeral=True)
-            try:
-                loop = asyncio.get_event_loop()
-                url  = await loop.run_in_executor(
-                    None, create_yearly_archive, year, guild_id, i.guild)
-            except Exception as e:
-                return await _reply(i, f"❌ Could not create archive: `{e}`", ephemeral=True)
-            if not url:
-                return await _reply(i,
-                    f"❌ No archive for {year} — Google Sheets may not be configured.",
-                    ephemeral=True)
-        emb = discord.Embed(
-            title=f"📚 Master Archive {year}",
-            color=discord.Color.gold(),
-            description=f"[Open Master Archive {year}]({url})")
-        emb.set_footer(text="Contains bracket links, results and points for every tournament this year.")
-        await _reply(i, embed=emb)
-
-    # ── /tournament archive-create ────────────────────────────────────────
-    @manage.command(name="archive-create",
-                        description="(Admin) Manually create a Master Archive sheet for a year.")
-    @app_commands.guild_only()
-    async def tourn_archive_create(self, i: discord.Interaction, year: int = 0):
-        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
-            return await _reply(i, "❌ Admin only.", ephemeral=True)
-        import datetime as _dt
-        if not year:
-            year = _dt.datetime.now(_dt.timezone.utc).year
-        await i.response.defer()
-        guild_id = i.guild.id
-        existing = get_yearly_archive_url(year, guild_id)
-        if existing:
-            emb = discord.Embed(title=f"📚 Master Archive {year} already exists",
-                                color=discord.Color.gold(),
-                                description=f"[Open Sheet]({existing})")
-            return await _reply(i, embed=emb)
-        loop = asyncio.get_event_loop()
-        url  = await loop.run_in_executor(None, create_yearly_archive, year, guild_id, i.guild)
-        if not url:
-            return await _reply(i, "❌ Failed to create archive — check Sheets config.", ephemeral=True)
-        emb = discord.Embed(title=f"✅ Master Archive {year} Created",
-                            color=discord.Color.green(),
-                            description=f"[Open Sheet]({url})")
+        emb = discord.Embed(title=f"🏆 Tournament Complete: {t.get('name')}", color=discord.Color.gold())
+        emb.add_field(name="Champion", value=f"**{champ_name}** (+{champ_pts}pts)", inline=False)
+        if finalist_score: emb.add_field(name="Final Score", value=finalist_score, inline=False)
         await _reply(i, embed=emb)
 
     # ── /tournament refresh-sheets ───────────────────────────────────────
-    @manage.command(name="refresh-sheets",
+    @tournament.command(name="refresh-sheets",
                         description="(Admin) Regenerate bracket sheets. Leave tournament blank to refresh all.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all)
@@ -3758,134 +3560,6 @@ class TournamentsCog(commands.Cog):
         _save_comp(tournament_id, t)
         await _reply(i, f"✅ Match results will be posted in {channel.mention}.")
 
-    # ── /tournament schedule-sim ──────────────────────────────────────────
-    @tournament.command(
-        name="schedule-sim",
-        description="(Admin) Run live matchsim engine for scheduled tournament matches.",
-    )
-    @app_commands.guild_only()
-    @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match)
-    async def tourn_schedule_sim(
-        self,
-        i: discord.Interaction,
-        tournament_id: str,
-        match_id: Optional[str] = None,
-        day: Optional[int] = None,
-    ):
-        """
-        Starts the real matchsim engine for tournament matches.
-
-        • No extra args → sim all today's due matches (time has passed, no result).
-        • match_id arg   → sim that specific match regardless of time.
-        • day arg        → sim all unplayed matches on that day number.
-
-        Simulations post live score updates to the tournament's result channel.
-        If an admin records a result via /tournament match-result while a sim is
-        running, the sim is cancelled instantly.
-        """
-        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
-            return await _reply(i, "❌ Admin only.", ephemeral=True)
-
-        t = _get_comp(tournament_id)
-        if not t:
-            return await _reply(i, "❌ Tournament not found.", ephemeral=True)
-        if t.get("status") != STATUS_ACTIVE:
-            return await _reply(i, "❌ Tournament must be **active** to run sims.", ephemeral=True)
-
-        result_channel_id = t.get("result_channel_id")
-        if not result_channel_id:
-            return await _reply(
-                i,
-                "❌ No result channel set — run `/tournament set-result-channel` first.",
-                ephemeral=True,
-            )
-        channel = i.guild.get_channel(int(result_channel_id))
-        if not channel:
-            return await _reply(i, "❌ Result channel not found in this server.", ephemeral=True)
-
-        await i.response.defer(ephemeral=True)
-
-        import datetime as _dt
-        now      = _dt.datetime.now(_dt.timezone.utc)
-        base_iso = t.get("tournament_start_date")
-        try:
-            base_dt = _dt.datetime.fromisoformat(base_iso).replace(
-                hour=0, minute=0, second=0, microsecond=0, tzinfo=_dt.timezone.utc)
-        except Exception:
-            base_dt = None
-
-        all_matches = t.get("matches", [])
-        best_of     = int(t.get("best_of", 3))
-        guild       = i.guild
-        to_sim      = []
-
-        for m in all_matches:
-            mid = m.get("match_id", "")
-            if m.get("status") == "completed":                   continue
-            if not m.get("player1_id") or not m.get("player2_id"): continue
-            if mid in _ACTIVE_SIMS:                               continue  # already running
-
-            # Specific match override
-            if match_id:
-                if mid == match_id:
-                    to_sim.append(m)
-                continue
-
-            # Day filter
-            if day is not None and m.get("day") != day:
-                continue
-
-            # Default: only matches whose scheduled time has already passed
-            if base_dt and not match_id:
-                m_day      = m.get("day")
-                time_str   = m.get("scheduled_time") or ""
-                if m_day and time_str:
-                    try:
-                        h, mi    = map(int, time_str.split(":")[:2])
-                        match_dt = base_dt + _dt.timedelta(days=int(m_day) - 1, hours=h, minutes=mi)
-                        if now < match_dt and day is None:
-                            continue  # Not due yet (skip unless day was explicitly given)
-                    except Exception:
-                        pass
-
-            to_sim.append(m)
-
-        if not to_sim:
-            return await _reply(
-                i,
-                "ℹ️ No eligible matches to simulate "
-                "(all completed, already running, or not yet due).",
-                ephemeral=True,
-            )
-
-        started = []
-        for m in to_sim:
-            mid  = m["match_id"]
-            task = asyncio.create_task(
-                _run_tournament_match_sim(
-                    self.bot, channel, mid, tournament_id,
-                    m["player1_id"], m["player2_id"],
-                    best_of, guild,
-                    m.get("seed1"), m.get("seed2"),
-                )
-            )
-            _ACTIVE_SIMS[mid] = task
-            p1_m = guild.get_member(m["player1_id"])
-            p2_m = guild.get_member(m["player2_id"])
-            p1n  = p1_m.display_name if p1_m else f"<@{m['player1_id']}>"
-            p2n  = p2_m.display_name if p2_m else f"<@{m['player2_id']}>"
-            started.append(f"• `{mid}` — **{p1n}** vs **{p2n}**")
-
-        lines = "\n".join(started[:15])
-        if len(started) > 15:
-            lines += f"\n…and {len(started) - 15} more"
-        await _reply(
-            i,
-            f"🎾 **Started {len(started)} live sim(s)** → {channel.mention}\n{lines}\n\n"
-            f"Use `/tournament match-result` to cancel & override any match.",
-            ephemeral=True,
-        )
-
     # ── /tournament set-style ─────────────────────────────────────────────
     @tournament.command(name="set-style", description="(Admin) Set Google Sheets bracket colours and font.")
     @app_commands.guild_only()
@@ -3934,7 +3608,7 @@ class TournamentsCog(commands.Cog):
     # ═══════════════════════════════════════════════════════════════════════
     # /tournament point-defense
     # ═══════════════════════════════════════════════════════════════════════
-    @manage.command(name="point-defense",
+    @tournament.command(name="point-defense",
                         description="(Admin) Strip everyone's points from a past tournament.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_done)
@@ -3988,6 +3662,49 @@ class TournamentsCog(commands.Cog):
             pts   = int(row.get("points",0))
             lines.append(f"**#{rank}** — {name} — **{pts}pts**")
         emb.description = "\n".join(lines) or "No rankings yet."
+        await _reply(i, embed=emb)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # /rankings edit
+    # ═══════════════════════════════════════════════════════════════════════
+    @rankings.command(name="edit",
+                      description="(Admin) Manually adjust a player's ranking points.")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(user_id=_ac_user)
+    async def rankings_edit(self, i: discord.Interaction,
+                             user_id: str, delta: int,
+                             reason: str = "manual adjustment"):
+        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
+            return await _reply(i, "❌ Admin only.", ephemeral=True)
+        if not i.guild: return await _reply(i, "❌ Guild only.", ephemeral=True)
+        try:
+            uid = int(user_id)
+        except ValueError:
+            return await _reply(i, "❌ Invalid user ID.", ephemeral=True)
+
+        guild_id = i.guild.id
+        mb   = i.guild.get_member(uid)
+        name = mb.display_name if mb else f"UID:{uid}"
+
+        # Ensure the player exists in the rankings db
+        db = _rank_db(); g = _rank_guild(db, guild_id)
+        _player_entry(g, uid, name)
+        _rank_save(db)
+
+        # Apply the delta (negative allowed to subtract points)
+        _award_points(guild_id, uid, delta, "MANUAL", reason, name=name)
+        _snapshot_rankings(guild_id)
+
+        new_pts = get_player_points(guild_id, uid)
+        new_rank = get_player_rank(guild_id, uid)
+        sign = "+" if delta >= 0 else ""
+        emb = discord.Embed(
+            title=f"✏️ Rankings Adjusted — {name}",
+            color=discord.Color.green() if delta >= 0 else discord.Color.red())
+        emb.add_field(name="Change",   value=f"**{sign}{delta} pts**", inline=True)
+        emb.add_field(name="New Total", value=f"**{new_pts} pts** (Rank #{new_rank})", inline=True)
+        emb.add_field(name="Reason",   value=reason, inline=False)
+        emb.set_footer(text=f"Adjusted by {i.user.display_name}")
         await _reply(i, embed=emb)
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -4092,17 +3809,19 @@ class TournamentsCog(commands.Cog):
         surf_lines = [f"**{s.title()}**: {ss['w1']}–{ss['w2']}" for s, ss in surf_stats.items()]
         if surf_lines: emb.add_field(name="By Surface", value="\n".join(surf_lines), inline=True)
 
-        # By tournament
-        tourn_stats: Dict[str, Dict] = {}
+        # By category (tournament tier)
+        cat_stats: Dict[str, Dict] = {}
         for m in matches:
-            tid = str(m.get("tournament_id","?"))
-            ts  = tourn_stats.setdefault(tid, {"w1":0,"w2":0,"name":tid})
-            ct  = _get_comp(tid)
-            if ct: ts["name"] = ct.get("name",tid)
-            if int(m.get("winner",0)) == uid1: ts["w1"]+=1
-            else: ts["w2"]+=1
-        tl = [f"**{v['name']}**: {v['w1']}–{v['w2']}" for v in list(tourn_stats.values())[:5]]
-        if tl: emb.add_field(name="By Tournament", value="\n".join(tl), inline=True)
+            tid_m = str(m.get("tournament_id", "?"))
+            ct    = _get_comp(tid_m)
+            cat_id   = ct.get("category_id", "") if ct else ""
+            cat_rec  = _get_cat(cat_id)
+            cat_name = cat_rec.get("name", cat_id) if cat_rec else (cat_id or "Unknown")
+            cs = cat_stats.setdefault(cat_name, {"w1": 0, "w2": 0})
+            if int(m.get("winner", 0)) == uid1: cs["w1"] += 1
+            else: cs["w2"] += 1
+        cl = [f"**{name}**: {v['w1']}–{v['w2']}" for name, v in list(cat_stats.items())[:6]]
+        if cl: emb.add_field(name="By Category", value="\n".join(cl), inline=True)
 
         # By round
         rnd_stats: Dict[str, Dict] = {}
@@ -4119,7 +3838,9 @@ class TournamentsCog(commands.Cog):
         rl2 = []
         for m in recent:
             winner_name = n1 if int(m.get("winner",0)) == uid1 else n2
-            rl2.append(f"{m.get('tournament_id','?')} | {m.get('round','?')} | "
+            t_rec   = _get_comp(str(m.get("tournament_id","?")))
+            t_label = t_rec.get("name", m.get("tournament_id","?")) if t_rec else str(m.get("tournament_id","?"))
+            rl2.append(f"{t_label} | {_rnd(m.get('round','?'))} | "
                        f"**{winner_name}** {m.get('score','')} — {m.get('date','')[:10]}")
         if rl2: emb.add_field(name="Recent Matches", value="\n".join(rl2), inline=False)
 
@@ -4447,7 +4168,7 @@ class TournamentsCog(commands.Cog):
 
 
     # ── /tournament force-delete ─────────────────────────────────────────
-    @manage.command(name="force-delete",
+    @tournament.command(name="force-delete",
                         description="(Admin) Force-delete any tournament by ID, regardless of status.")
     @app_commands.guild_only()
     async def tourn_force_delete(self, i: discord.Interaction, tournament_id: str, confirm: str = ""):
@@ -4492,7 +4213,7 @@ class TournamentsCog(commands.Cog):
                      + ("" if deleted else "\n⚠️ Warning: tournament may not have been fully removed — check Railway logs."))
 
     # ── /tournament purge-ghosts ─────────────────────────────────────────
-    @manage.command(name="purge-ghosts",
+    @tournament.command(name="purge-ghosts",
                         description="(Admin) Delete all cancelled/invalid ghost tournaments from the database.")
     @app_commands.guild_only()
     async def tourn_purge_ghosts(self, i: discord.Interaction):
@@ -4523,7 +4244,7 @@ class TournamentsCog(commands.Cog):
         await _reply(i, embed=emb)
 
     # ── /tournament cancel ───────────────────────────────────────────────
-    @manage.command(name="cancel", description="(Admin) Cancel a tournament and wipe all its data.")
+    @tournament.command(name="cancel", description="(Admin) Cancel a tournament and wipe all its data.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all)
     async def tourn_cancel(self, i: discord.Interaction, tournament_id: str, confirm: str = ""):
@@ -4541,25 +4262,13 @@ class TournamentsCog(commands.Cog):
         guild_id = i.guild.id
         name = t.get("name", tournament_id)
 
-        # Reverse any points already awarded (only possible if tournament was completed then re-cancelled)
+        # Reverse any awarded points
         awarded = t.get("awarded_points", {})
         for uid_str, rounds in awarded.items():
             try: uid = int(uid_str)
             except ValueError: continue
             total = sum(int(v) for v in rounds.values())
             if total: _award_points(guild_id, uid, -total, tournament_id, "CANCEL")
-
-        # Remove from yearly archive (no points were awarded so just purge the entry)
-        try:
-            year = datetime.now(timezone.utc).year
-            # Guess year from tournament_start_date if available
-            ts_iso = t.get("tournament_start_date")
-            if ts_iso:
-                try: year = datetime.fromisoformat(ts_iso).year
-                except Exception: pass
-            remove_from_yearly_archive(year, guild_id, tournament_id)
-        except Exception as e:
-            print(f"[archive] remove from yearly archive failed: {e}")
 
         # Wipe H2H records for matches in this tournament
         h2h_db = _h2h_db()
