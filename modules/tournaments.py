@@ -830,7 +830,7 @@ _BK_NAME_H   = 2          # rows per player box
 _BK_GAP      = 2          # empty rows between matches in R0
 _BK_MATCH_H  = 4          # total player rows per match (2 players × 2 rows)
 _BK_STRIDE   = 6          # full stride in R0 (match + gap)
-_BK_NAME_W   = 5          # merged columns for player name
+_BK_NAME_W   = 2          # merged columns for player name (wider px, fewer cols)
 _BK_SCORE_W  = 3          # default score cols (Bo3); overridden per tournament
 _BK_CONN_W   = 2          # connector columns: arm col + vertical/exit col
 _BK_CPR      = _BK_NAME_W + _BK_SCORE_W + _BK_CONN_W  # = 10 cols per round (default Bo3)
@@ -967,6 +967,9 @@ def _player_display(uid, draw, seeded, guild) -> str:
     seed   = _seed_of(draw, seeded, uid)
     member = guild.get_member(uid) if guild else None
     name   = member.display_name if member else f"UID:{uid}"
+    # Truncate long names so they fit in the 180px name box
+    max_chars = 16
+    if len(name) > max_chars: name = name[:max_chars - 1] + "…"
     return f"({seed}) {name}" if seed else name
 
 def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
@@ -1125,8 +1128,8 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                 reqs.append(_border_req(ws_id, meet, vert_col,
                                         meet + 1, vert_col + 1, bottom=LINE))
 
-        # Column widths
-        reqs.append(_col_width_req(ws_id, name_col, score_col, 160))
+        # Column widths — 2 name cols × 90px = 180px merged, truncation handles long names
+        reqs.append(_col_width_req(ws_id, name_col, score_col, 90))
         for si in range(max_sets):
             reqs.append(_col_width_req(ws_id, score_col + si, score_col + si + 1, set_px))
         reqs.append(_col_width_req(ws_id, arm_col,  arm_col  + 1, 14))
@@ -1223,52 +1226,102 @@ def _col_letter(col_idx: int) -> str:
         result = chr(65 + rem) + result
     return result
 
-def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict) -> None:
+def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict, guild=None) -> None:
     """Populate and format the Schedule sheet."""
+    import datetime as _dt
     fn  = s.get("font", "Roboto Mono")
     bg  = _hex_rgb(s.get("bg",  "#1a1a2e"))
     sc1 = _hex_rgb(s.get("sc1", "#2a2a4a"))
     fc1 = _hex_rgb(s.get("fc1", "#ffffff"))
     fc2 = _hex_rgb(s.get("fc2", "#00e676"))
-    fc3 = _hex_rgb(s.get("fc3", "#ff5252"))
 
-    hdrs = ["Day","Session","Round","Court","Timing","Player 1","Seed 1","Player 2","Seed 2","Status","Score","Winner"]
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    def _member_name(uid, seed=None) -> str:
+        if uid is None: return "BYE"
+        name = None
+        if guild:
+            m = guild.get_member(int(uid))
+            if m: name = m.display_name
+        if not name: name = f"<@{uid}>"
+        prefix = f"({seed}) " if seed else ""
+        return f"{prefix}{name}"
+
+    # Compute base datetime for day 1
+    ts_iso = tourn.get("tournament_start_date")
+    try:
+        base_dt = _dt.datetime.fromisoformat(ts_iso).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+    except Exception:
+        base_dt = None
+
+    def _discord_ts(day, time_str) -> str:
+        """Return <t:UNIX:f> (short date + time) Discord timestamp."""
+        if base_dt is None or not time_str: return time_str or ""
+        try:
+            h, mi = map(int, (time_str or "12:00").split(":")[:2])
+            dt = base_dt + _dt.timedelta(days=int(day or 1) - 1, hours=h, minutes=mi)
+            return f"<t:{int(dt.timestamp())}:f>"
+        except Exception:
+            return time_str or ""
+
+    # ── Build rows ────────────────────────────────────────────────────────────
+    hdrs = ["Day", "Date/Time", "Round", "Court", "Player 1", "Player 2", "Status", "Score", "Winner"]
     srows: List[List] = []
-    for m in sorted(tourn.get("matches",[]),
-                    key=lambda x: (int(x.get("day") or 0), x.get("session","day"))):
-        tt = m.get("timing_type",""); st = m.get("scheduled_time","")
-        timing = st if tt=="session_start" else (f"NB {st}" if tt=="not_before" else f"→{st}")
-        def _sn(uid): return str(uid) if uid else ""
+    sorted_matches = sorted(tourn.get("matches", []),
+                            key=lambda x: (int(x.get("day") or 0), x.get("session", "day")))
+    for m in sorted_matches:
+        day = m.get("day", "")
+        st  = m.get("scheduled_time", "") or ""
+        tt  = m.get("timing_type", "")
+        if tt == "not_before":
+            ts_cell = f"NB {_discord_ts(day, st)}"
+        elif tt == "followed_by":
+            ts_cell = "→ follows"
+        else:
+            ts_cell = _discord_ts(day, st)
+
+        court = m.get("court_venue_id") or _court_name(tourn, m.get("court_key", ""))
+        p1 = _member_name(m.get("player1_id"), m.get("seed1"))
+        p2 = _member_name(m.get("player2_id"), m.get("seed2"))
+        winner_uid = m.get("winner_id")
+        winner = _member_name(winner_uid, None) if winner_uid else ""
+
         srows.append([
-            m.get("day",""), m.get("session",""), _rnd(m.get("round","")),
-            _court_name(tourn, m.get("court_key","")), timing,
-            _sn(m.get("player1_id")), str(m.get("seed1","")),
-            _sn(m.get("player2_id")), str(m.get("seed2","")),
-            m.get("status",""), m.get("score",""),
-            _sn(m.get("winner_id")),
+            day, ts_cell, _rnd(m.get("round", "")),
+            court, p1, p2,
+            m.get("status", ""), m.get("score", ""), winner,
         ])
 
     ws2 = ss.worksheet("Schedule")
     ws2.clear()
-    all_rows = [hdrs] + srows
-    ws2.update("A1", all_rows)
+    ws2.update("A1", [hdrs] + srows)
 
     n_data = len(srows)
     reqs = [
         _gridlines_req(ws2_id, True),
+        # Header row
         _fmt_req(ws2_id, 0, 0, 1, len(hdrs),
                  {"backgroundColor": sc1,
                   "textFormat": {"bold": True, "fontFamily": fn, "foregroundColor": fc2}}),
+        # Data rows
         _fmt_req(ws2_id, 1, 0, 1 + n_data, len(hdrs),
                  {"backgroundColor": bg,
                   "textFormat": {"fontFamily": fn, "foregroundColor": fc1}}),
+        # Column widths: Day, DateTime, Round, Court, P1, P2, Status, Score, Winner
+        _col_width_req(ws2_id, 0, 1, 45),   # Day
+        _col_width_req(ws2_id, 1, 2, 170),  # Date/Time
+        _col_width_req(ws2_id, 2, 3, 110),  # Round
+        _col_width_req(ws2_id, 3, 4, 160),  # Court
+        _col_width_req(ws2_id, 4, 5, 180),  # Player 1
+        _col_width_req(ws2_id, 5, 6, 180),  # Player 2
+        _col_width_req(ws2_id, 6, 7, 90),   # Status
+        _col_width_req(ws2_id, 7, 8, 100),  # Score
+        _col_width_req(ws2_id, 8, 9, 160),  # Winner
     ]
-    # Highlight completed rows in fc2/fc3
-    for ri, m in enumerate(sorted(tourn.get("matches",[]),
-                                   key=lambda x:(int(x.get("day") or 0), x.get("session","day")))):
+    # Bold winner column for completed rows
+    for ri, m in enumerate(sorted_matches):
         if m.get("winner_id"):
-            row_i = 1 + ri
-            reqs.append(_fmt_req(ws2_id, row_i, 11, row_i + 1, 12,
+            reqs.append(_fmt_req(ws2_id, 1 + ri, 8, 2 + ri, 9,
                                  {"textFormat": {"bold": True, "fontFamily": fn,
                                                  "foregroundColor": fc2}}))
     ss.batch_update({"requests": reqs})
@@ -1328,7 +1381,7 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
         # Schedule sheet setup
         sched_reqs = [_gridlines_req(ws2.id, True)]
         ss.batch_update({"requests": sched_reqs})
-        _setup_schedule_sheet(ss, ws2.id, tourn, s)
+        _setup_schedule_sheet(ss, ws2.id, tourn, s, guild=guild)
 
         ss.share(None, perm_type="anyone", role="reader")
         return ss.url
@@ -1384,7 +1437,7 @@ def update_sheet(tourn: dict, guild=None) -> None:
         # ── Schedule sheet ──
         try:
             ws2 = ss.worksheet("Schedule")
-            _setup_schedule_sheet(ss, ws2.id, tourn, s)
+            _setup_schedule_sheet(ss, ws2.id, tourn, s, guild=guild)
         except Exception: pass
     except Exception as e:
         import traceback

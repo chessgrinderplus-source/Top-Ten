@@ -236,6 +236,8 @@ class PickSelect(discord.ui.Select):
         await self.owner_view.on_pick(interaction, self.values[0])
 
 class JoinFantasyView(discord.ui.View):
+    PAGE_SIZE = 25
+
     def __init__(self, cog, user_id: int, tournament_id: str, pool: List[PlayerEntry]):
         super().__init__(timeout=300)
         self.cog = cog
@@ -246,16 +248,41 @@ class JoinFantasyView(discord.ui.View):
         self.used_keys: set = set()
         self.top5_used = 0
         self.top20_used = 0
+        self.page = 0
         self._refresh_select()
 
     def _refresh_select(self):
         self.clear_items()
         remaining = [p for p in self.pool if _player_key(p.name) not in self.used_keys]
         remaining.sort(key=lambda p: (p.seed if p.seed is not None else 10_000, p.name.lower()))
-        show = remaining[:25]
+        total_pages = max(1, (len(remaining) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        self.page = max(0, min(self.page, total_pages - 1))
+        start = self.page * self.PAGE_SIZE
+        show = remaining[start:start + self.PAGE_SIZE]
         opts = [discord.SelectOption(label=_fmt_player(p.seed, p.name)[:100], value=p.name[:100]) for p in show]
         if opts:
             self.add_item(PickSelect(self, opts))
+        # Pagination buttons if needed
+        if total_pages > 1:
+            prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary,
+                                          disabled=(self.page == 0), row=1)
+            next_btn = discord.ui.Button(label=f"Next ▶ ({self.page + 1}/{total_pages})",
+                                          style=discord.ButtonStyle.secondary,
+                                          disabled=(self.page >= total_pages - 1), row=1)
+            async def _on_prev(inter: discord.Interaction, v=self):
+                if inter.user.id != v.user_id:
+                    return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                v.page -= 1; v._refresh_select()
+                await inter.response.edit_message(content=v._status_text(), view=v)
+            async def _on_next(inter: discord.Interaction, v=self):
+                if inter.user.id != v.user_id:
+                    return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                v.page += 1; v._refresh_select()
+                await inter.response.edit_message(content=v._status_text(), view=v)
+            prev_btn.callback = _on_prev
+            next_btn.callback = _on_next
+            self.add_item(prev_btn)
+            self.add_item(next_btn)
         if len(self.picks) > 0:
             self.add_item(ResetPicksButton())
         self.add_item(ConfirmPicksButton(disabled=(len(self.picks) != 5)))
@@ -716,16 +743,21 @@ class FantasyCog(commands.Cog):
         return out
 
     async def _ac_tournament(self, interaction: discord.Interaction, cur: str):
+        """All confirmed tournaments (open, closed, completed) — for roster-view, results, user-results."""
         data = _load()
         gid = interaction.guild.id if interaction.guild else 0
         c = cur.lower(); out = []
-        for t in data.get("tournaments", []):
+        # Sort: completed last so open ones appear first
+        tours = sorted(data.get("tournaments", []),
+                       key=lambda t: (1 if t.get("results_entered") else 0, t.get("name","")))
+        for t in tours:
             if t.get("guild_id") not in (0, gid): continue
             if not _is_created(t): continue
-            tid = t.get("id",""); name = t.get("name","")
+            tid = t.get("id",""); name = t.get("name",""); s = _status_key(t)
+            prefix = "✅ " if s == "Completed" else ("🔒 " if s == "Closed & Results Pending" else "")
+            label  = f"{prefix}{name} [{s}]"
             if c in tid.lower() or c in name.lower() or not c:
-                out.append(app_commands.Choice(
-                    name=f"{name} [{_status_key(t)}]"[:100], value=tid))
+                out.append(app_commands.Choice(name=label[:100], value=tid))
             if len(out) >= 25: break
         return out
 
@@ -1011,7 +1043,7 @@ class FantasyCog(commands.Cog):
         roster = (t.get("rosters", {}) or {}).get(str(target.id))
         if not roster:
             return await interaction.response.send_message(
-                f"ℹ️ {'That user has' if user else 'You have'} no roster for this tournament.", ephemeral=True)
+                f"ℹ️ {'That user has' if user else 'You have'} no roster for this tournament.")
         seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
         results = t.get("results", {}) if t.get("results_entered") else {}
         total_points = 0
@@ -1031,7 +1063,7 @@ class FantasyCog(commands.Cog):
         embed = discord.Embed(title="Fantasy Roster", description="\n".join(lines))
         view = RosterPickMenuView(interaction.user.id, roster[:5], seed_map, results,
                                    f"{target.display_name}'s Picks")
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view)
 
     @fantasy.command(name="results", description="View sorted fantasy results for a tournament.")
     @app_commands.autocomplete(tournament_id=_ac_tournament)
