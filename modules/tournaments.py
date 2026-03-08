@@ -846,10 +846,10 @@ def schedule_text(tourn: dict, guild: discord.Guild, day_filter: Optional[int] =
 # Bracket layout constants
 # Each match: P1 box (2 rows) + P2 box (2 rows) + GAP rows
 # Standard formula: start(r,mi) = mi * 6 * 2^r + 3 * (2^r - 1)
-_BK_NAME_H   = 2          # rows per player box
+_BK_NAME_H   = 1          # rows per player box (1 row = tight, clean look)
 _BK_GAP      = 2          # empty rows between matches in R0
-_BK_MATCH_H  = 4          # total player rows per match (2 players × 2 rows)
-_BK_STRIDE   = 6          # full stride in R0 (match + gap)
+_BK_MATCH_H  = 2          # total player rows per match (2 players × 1 row)
+_BK_STRIDE   = 4          # full stride in R0 (match + gap)
 _BK_NAME_W   = 2          # merged columns for player name (wider px, fewer cols)
 _BK_SCORE_W  = 3          # default score cols (Bo3); overridden per tournament
 _BK_CONN_W   = 2          # connector columns: arm col + vertical/exit col
@@ -863,7 +863,7 @@ _BK_DATA_ROW = 2          # row index (0-based) where bracket data starts
 def _bk_match_start(round_idx: int, match_idx: int) -> int:
     """0-based row index of a match's P1 first row, relative to DATA_ROW."""
     # Verified: r=0→[0,6,12...], r=1→[3,15...], r=2→[9...] etc.
-    return match_idx * _BK_STRIDE * (2 ** round_idx) + 3 * (2 ** round_idx - 1)
+    return match_idx * _BK_STRIDE * (2 ** round_idx) + (_BK_STRIDE // 2) * (2 ** round_idx - 1)
 
 def _bk_round_col(round_idx: int, best_of: int = 3) -> int:
     """0-based column index of a round's name column."""
@@ -988,7 +988,7 @@ def _player_display(uid, draw, seeded, guild) -> str:
     member = guild.get_member(uid) if guild else None
     name   = member.display_name if member else f"UID:{uid}"
     # Truncate long names so they fit in the 180px name box
-    max_chars = 16
+    max_chars = 22
     if len(name) > max_chars: name = name[:max_chars - 1] + "…"
     return f"({seed}) {name}" if seed else name
 
@@ -1095,13 +1095,34 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                 reqs.append(_merge_req(ws_id, p_row, name_col,
                                        p_row + _BK_NAME_H, score_col))
 
-                # Score boxes — one per set, all same width
+                # Score boxes — colour per-cell: bigger number in a set gets winner colour
+                # We need the full score string to compare; get it from m_data
+                _raw_score = m_data.get("score") or ""
+                _sets = [s for s in _raw_score.replace(",", " ").split() if "-" in s]
                 for si in range(max_sets):
+                    # Determine per-cell colour based on which side has more games in this set
+                    cell_txt = txt  # default: player-level colour
+                    if _sets and si < len(_sets) and not m_data.get("walkover"):
+                        parts = _sets[si].split("-")
+                        if len(parts) == 2:
+                            try:
+                                g1, g2 = int(parts[0]), int(parts[1])
+                                this_games  = g1 if uid == p1_uid else g2
+                                other_games = g2 if uid == p1_uid else g1
+                                if this_games > other_games:
+                                    cell_txt = fc2   # winner colour — bigger number
+                                elif other_games > this_games:
+                                    cell_txt = fc3   # loser colour — smaller number
+                                # else equal → neutral fc1
+                                else:
+                                    cell_txt = fc1
+                            except ValueError:
+                                pass
                     reqs.append(_fmt_req(ws_id, p_row, score_col + si,
                                          p_row + _BK_NAME_H, score_col + si + 1,
                                          {"backgroundColor": bg if is_bye else sc2,
-                                          "textFormat": {"fontFamily": fn, "bold": is_w,
-                                                         "fontSize": 9, "foregroundColor": txt},
+                                          "textFormat": {"fontFamily": fn, "bold": (cell_txt == fc2),
+                                                         "fontSize": 9, "foregroundColor": cell_txt},
                                           "verticalAlignment": "MIDDLE",
                                           "horizontalAlignment": "CENTER"}))
 
@@ -1158,7 +1179,7 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
     # ── 5. Row heights ──
     reqs.append(_row_height_req(ws_id, 0, 1, 28))
     reqs.append(_row_height_req(ws_id, 1, 2, 18))
-    reqs.append(_row_height_req(ws_id, _BK_DATA_ROW, total_rows, 20))
+    reqs.append(_row_height_req(ws_id, _BK_DATA_ROW, total_rows, 24))  # taller rows since 1/player
 
     return reqs
 def _write_bracket_values(ws, tourn: dict, guild) -> None:
@@ -1219,8 +1240,8 @@ def _write_bracket_values(ws, tourn: dict, guild) -> None:
                     # Empty slot (not a BYE match) — show TBD
                     updates.append({"range": f"{nc}{row + 1}", "values": [["TBD"]]})
 
-            # Per-set scores: split "6-3 7-5 6-4" into ["6-3","7-5","6-4"] etc.
-            if score and score != "BYE" and (p1_uid or p2_uid):
+            # Per-set scores: skip if walkover or BYE (leave score cols blank)
+            if score and score != "BYE" and not m.get("walkover") and (p1_uid or p2_uid):
                 sets = score.replace(",", " ").split()
                 for offset, uid in [(0, p1_uid), (_BK_NAME_H, p2_uid)]:
                     row = s_row + offset
@@ -1256,13 +1277,15 @@ def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict, guild=None) -> 
     fc2 = _hex_rgb(s.get("fc2", "#00e676"))
 
     # ── Helpers ──────────────────────────────────────────────────────────────
-    def _member_name(uid, seed=None) -> str:
-        if uid is None: return "BYE"
+    def _member_name(uid, seed=None, is_bye=False) -> str:
+        if uid is None: return "" if is_bye else "TBD"
         name = None
         if guild:
-            m = guild.get_member(int(uid))
-            if m: name = m.display_name
-        if not name: name = f"<@{uid}>"
+            try:
+                mem = guild.get_member(int(uid))
+                if mem: name = mem.display_name
+            except Exception: pass
+        if not name: name = f"User:{uid}"
         prefix = f"({seed}) " if seed else ""
         return f"{prefix}{name}"
 
@@ -1275,12 +1298,12 @@ def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict, guild=None) -> 
         base_dt = None
 
     def _discord_ts(day, time_str) -> str:
-        """Return <t:UNIX:f> (short date + time) Discord timestamp."""
+        """Return human-readable date+time string for Google Sheets (Sheets can't render <t:...>)."""
         if base_dt is None or not time_str: return time_str or ""
         try:
             h, mi = map(int, (time_str or "12:00").split(":")[:2])
             dt = base_dt + _dt.timedelta(days=int(day or 1) - 1, hours=h, minutes=mi)
-            return f"<t:{int(dt.timestamp())}:f>"
+            return dt.strftime("%a %d %b, %H:%M UTC")
         except Exception:
             return time_str or ""
 
@@ -1300,16 +1323,20 @@ def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict, guild=None) -> 
         else:
             ts_cell = _discord_ts(day, st)
 
-        court = m.get("court_venue_id") or _court_name(tourn, m.get("court_key", ""))
-        p1 = _member_name(m.get("player1_id"), m.get("seed1"))
-        p2 = _member_name(m.get("player2_id"), m.get("seed2"))
+        # court_venue_id stores the display name directly (set at schedule time from tourn["venues"][key])
+        court = m.get("court_venue_id") or _court_name(tourn, m.get("court_key", "")) or m.get("court_key", "")
+        is_bye_match = m.get("score") == "BYE"
+        p1 = _member_name(m.get("player1_id"), m.get("seed1"), is_bye=is_bye_match)
+        p2 = _member_name(m.get("player2_id"), m.get("seed2"), is_bye=is_bye_match)
         winner_uid = m.get("winner_id")
         winner = _member_name(winner_uid, None) if winner_uid else ""
 
         srows.append([
             day, ts_cell, _rnd(m.get("round", "")),
             court, p1, p2,
-            m.get("status", ""), m.get("score", ""), winner,
+            m.get("status", ""),
+            "Walkover" if m.get("walkover") else ("" if m.get("score") == "BYE" else m.get("score", "")),
+            winner,
         ])
 
     ws2 = ss.worksheet("Schedule")
@@ -1712,7 +1739,161 @@ class TournamentsCog(commands.Cog):
     stats      = app_commands.Group(name="stats",      description="Player match and career statistics")
     admin      = app_commands.Group(name="admin",      description="Admin-only server management tools")
 
-    def __init__(self, bot: commands.Bot): self.bot = bot
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self._sim_task: Optional[Any] = None
+
+    async def cog_load(self):
+        from discord.ext import tasks as _tasks
+        import datetime as _dt
+        import random as _rand
+
+        def _sim_score(best_of: int, winner_stronger: bool) -> str:
+            """Generate a realistic-looking simulated score string."""
+            sets_to_win = (best_of + 1) // 2
+            w_sets = 0; l_sets = 0; score_parts = []
+            while w_sets < sets_to_win and l_sets < sets_to_win:
+                # Winner of this set wins with higher probability if stronger
+                w_wins_set = _rand.random() < (0.65 if winner_stronger else 0.55)
+                if w_wins_set:
+                    w_g = _rand.choice([6, 6, 6, 7])
+                    l_g = _rand.randint(1, 5) if w_g == 6 else _rand.choice([6, 5])
+                    if w_g == 7 and l_g == 6: l_g = 6  # tiebreak
+                    score_parts.append(f"{w_g}-{l_g}"); w_sets += 1
+                else:
+                    l_g = _rand.choice([6, 6, 6, 7])
+                    w_g = _rand.randint(1, 5) if l_g == 6 else _rand.choice([6, 5])
+                    if l_g == 7 and w_g == 6: w_g = 6
+                    score_parts.append(f"{w_g}-{l_g}"); l_sets += 1
+            return " ".join(score_parts)
+
+        @_tasks.loop(minutes=1)
+        async def _auto_sim():
+            """Auto-simulate scheduled matches whose time has passed and have no result."""
+            now = _dt.datetime.now(_dt.timezone.utc)
+            db = _comp_db()
+            for tid, t in list(db.get("tournaments", {}).items()):
+                if t.get("status") != STATUS_ACTIVE: continue
+                base_iso = t.get("tournament_start_date")
+                try:
+                    base_dt = _dt.datetime.fromisoformat(base_iso).replace(
+                        hour=0, minute=0, second=0, microsecond=0,
+                        tzinfo=_dt.timezone.utc)
+                except Exception:
+                    continue
+
+                guild_id = int(t.get("guild_id", 0))
+                guild = self.bot.get_guild(guild_id)
+                result_channel_id = t.get("result_channel_id")
+                channel = guild.get_channel(int(result_channel_id)) if guild and result_channel_id else None
+                best_of = int(t.get("best_of", 3))
+                changed = False
+
+                for m in t.get("matches", []):
+                    if m.get("status") == "completed": continue
+                    if not m.get("player1_id") or not m.get("player2_id"): continue
+
+                    day = m.get("day"); time_str = m.get("scheduled_time") or ""
+                    if not day or not time_str: continue
+                    try:
+                        h, mi = map(int, time_str.split(":")[:2])
+                        match_dt = base_dt + _dt.timedelta(days=int(day) - 1, hours=h, minutes=mi)
+                    except Exception:
+                        continue
+                    if now < match_dt: continue  # not time yet
+
+                    # ── Simulate match ──────────────────────────────────────
+                    p1, p2 = m["player1_id"], m["player2_id"]
+                    s1 = m.get("seed1") or 9999; s2 = m.get("seed2") or 9999
+                    p1_stronger = s1 < s2
+                    # Lower seed wins ~60% of the time
+                    p1_wins = (p1_stronger and _rand.random() < 0.60) or \
+                              (not p1_stronger and _rand.random() < 0.40)
+                    wid = p1 if p1_wins else p2
+                    lid = p2 if p1_wins else p1
+                    winner_stronger = (wid == p1 and p1_stronger) or (wid == p2 and not p1_stronger)
+                    score = _sim_score(best_of, winner_stronger)
+
+                    m["winner_id"] = wid; m["loser_id"] = lid
+                    m["walkover"] = False; m["score"] = score
+                    m["status"] = "completed"
+                    print(f"[auto-sim] {tid} {m.get('match_id')} → {wid} def {lid} {score}")
+
+                    # ── Propagate winner ────────────────────────────────────
+                    rnds = _rounds(int(t.get("bracket_size", 8)))
+                    rnd = m.get("round", "")
+                    ridx = rnds.index(rnd) if rnd in rnds else -1
+                    if ridx >= 0 and ridx + 1 < len(rnds):
+                        next_rnd = rnds[ridx + 1]
+                        prev_sorted = sorted([mx for mx in t.get("matches", []) if mx["round"] == rnd],
+                                             key=lambda mx: mx["match_id"])
+                        match_idx = next((idx for idx, mx in enumerate(prev_sorted)
+                                         if mx["match_id"] == m["match_id"]), None)
+                        if match_idx is not None:
+                            next_sorted = sorted([mx for mx in t.get("matches", []) if mx["round"] == next_rnd],
+                                                 key=lambda mx: mx["match_id"])
+                            slot_idx = match_idx // 2
+                            if slot_idx < len(next_sorted):
+                                slot = next_sorted[slot_idx]
+                                if match_idx % 2 == 0:
+                                    slot["player1_id"] = wid
+                                    slot["seed1"] = m.get("seed1") if wid == p1 else m.get("seed2")
+                                else:
+                                    slot["player2_id"] = wid
+                                    slot["seed2"] = m.get("seed1") if wid == p1 else m.get("seed2")
+                                if slot.get("player1_id") and slot.get("player2_id"):
+                                    slot["status"] = "scheduled"
+
+                    # ── Award loser points ──────────────────────────────────
+                    cat = _get_cat(t.get("category_id", "")) or {}
+                    cat_key = ROUND_TO_CAT_KEY.get(rnd)
+                    loser_pts = int(cat.get(cat_key, 0)) if cat_key else 0
+                    if lid and loser_pts > 0:
+                        loser_mb = guild.get_member(lid) if guild else None
+                        _award_points(guild_id, lid, loser_pts, tid, rnd,
+                                      name=loser_mb.display_name if loser_mb else "")
+                        t.setdefault("awarded_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
+                    changed = True
+
+                    # ── Post result embed ───────────────────────────────────
+                    if channel:
+                        try:
+                            def _mn(uid, seed):
+                                mb = guild.get_member(uid) if guild else None
+                                n = mb.display_name if mb else f"User:{uid}"
+                                return f"({seed}) {n}" if seed else n
+
+                            winner_name = _mn(wid, m.get("seed1") if wid == p1 else m.get("seed2"))
+                            loser_name  = _mn(lid, m.get("seed2") if wid == p1 else m.get("seed1"))
+                            court = m.get("court_venue_id") or _court_name(t, m.get("court_key", ""))
+
+                            emb = discord.Embed(
+                                title=f"🎾 {_rnd(rnd)} — {t.get('name', '')}",
+                                color=discord.Color.green())
+                            emb.add_field(name="✅ Winner", value=f"**{winner_name}**", inline=True)
+                            emb.add_field(name="❌ Eliminated", value=loser_name, inline=True)
+                            emb.add_field(name="Score", value=score, inline=True)
+                            if court: emb.add_field(name="Court", value=court, inline=True)
+                            if loser_pts: emb.add_field(name="🏅 Points", value=f"{loser_name} earns **{loser_pts}pts**", inline=False)
+                            if t.get("sheet_url"): emb.add_field(name="📊 Bracket", value=f"[Live Sheet]({t['sheet_url']})", inline=False)
+                            await channel.send(embed=emb)
+                        except Exception as e:
+                            print(f"[auto-sim] channel post failed: {e}")
+
+                if changed:
+                    _save_comp(tid, t)
+                    try:
+                        update_sheet(t, guild=guild)
+                    except Exception as e:
+                        print(f"[auto-sim] sheet update failed: {e}")
+
+        @_auto_sim.before_loop
+        async def _before():
+            await self.bot.wait_until_ready()
+
+        self._sim_task = _auto_sim
+        _auto_sim.start()
+        print("[tournaments] auto-sim task started")
 
     # ═══════════════════════════════════════════════════════════════════════
     # /category commands
@@ -1870,7 +2051,8 @@ class TournamentsCog(commands.Cog):
                 "champion_id": None, "champion_name": None,
                 "sheet_url": None, "sheets_config": sc,
                 "awarded_points": {},   # uid -> {round: pts}
-                "point_defense_applied": False}
+                "point_defense_applied": False,
+                "result_channel_id": None}  # channel to post sim results
         _save_comp(tid, data)
 
         cat = _get_cat(category_id) or {}
@@ -2543,7 +2725,8 @@ class TournamentsCog(commands.Cog):
     @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match)
     async def tourn_result(self, i: discord.Interaction,
                            tournament_id: str, match_id: str,
-                           winner_id: str, score: str):
+                           winner_id: str, score: str = "",
+                           walkover: bool = False):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         t = _get_comp(tournament_id)
@@ -2556,14 +2739,21 @@ class TournamentsCog(commands.Cog):
             wid = int(winner_id)
         except ValueError:
             return await _reply(i, "❌ winner_id must be a numeric user ID.", ephemeral=True)
+        # Defer immediately — sheet update can take 5-10s and Discord times out at 3s
+        await i.response.defer()
 
         p1 = match.get("player1_id"); p2 = match.get("player2_id")
         if wid not in (p1, p2):
             return await _reply(i, "❌ Winner must be one of the two players.", ephemeral=True)
         lid = p2 if wid == p1 else p1
 
+        if not walkover and not score:
+            return await _reply(i, "❌ Provide a score, or set walkover=True.", ephemeral=True)
+
         match["winner_id"] = wid; match["loser_id"] = lid
-        match["score"] = score; match["status"] = "completed"
+        match["walkover"] = walkover
+        match["score"] = "" if walkover else score
+        match["status"] = "completed"
 
         # Award loser's round exit points
         cat = _get_cat(t.get("category_id","")) or {}
@@ -2602,21 +2792,20 @@ class TournamentsCog(commands.Cog):
                     if slot["player1_id"] and slot["player2_id"]:
                         slot["status"] = "scheduled"
 
-        # H2H record
-        from modules.venues import _get_venue
-        venue_id = match.get("court_venue_id")
-        surface  = "hard"
-        if venue_id:
-            try: v = _get_venue(venue_id); surface = v.get("surface","hard") if v else "hard"
-            except Exception: pass
-        record_h2h(guild_id, wid, lid, score, tournament_id, rnd, venue_id, surface)
-
-        # Record match stats for both players
-        winner_rank = get_player_rank(guild_id, wid)
-        loser_rank  = get_player_rank(guild_id, lid) if lid else 99999
-        if lid:
-            record_match_stats(guild_id, wid, lid, True,  rnd, surface, tournament_id, loser_rank)
-            record_match_stats(guild_id, lid, wid, False, rnd, surface, tournament_id, winner_rank)
+        # H2H + stats — skip for walkovers (no real match was played)
+        if not walkover:
+            from modules.venues import _get_venue
+            venue_id = match.get("court_venue_id")
+            surface  = "hard"
+            if venue_id:
+                try: v = _get_venue(venue_id); surface = v.get("surface","hard") if v else "hard"
+                except Exception: pass
+            record_h2h(guild_id, wid, lid, score, tournament_id, rnd, venue_id, surface)
+            winner_rank = get_player_rank(guild_id, wid)
+            loser_rank  = get_player_rank(guild_id, lid) if lid else 99999
+            if lid:
+                record_match_stats(guild_id, wid, lid, True,  rnd, surface, tournament_id, loser_rank)
+                record_match_stats(guild_id, lid, wid, False, rnd, surface, tournament_id, winner_rank)
 
         _save_comp(tournament_id, t)
         _snapshot_rankings(guild_id)
@@ -2626,9 +2815,9 @@ class TournamentsCog(commands.Cog):
 
         wname = winner_m.display_name if winner_m else f"UID:{wid}"
         lname = loser_m.display_name  if loser_m  else (f"UID:{lid}" if lid else "BYE")
-        msg   = (f"✅ **{_rnd(rnd)}** result recorded: **{wname}** def. **{lname}** {score}\n"
-                 f"🏅 {lname} awarded **{loser_pts}pts**" if loser_pts else
-                 f"✅ **{_rnd(rnd)}** result: **{wname}** def. **{lname}** {score}")
+        result_str = "by walkover" if walkover else score
+        pts_str = f"\n🏅 {lname} awarded **{loser_pts}pts**" if loser_pts and not walkover else ""
+        msg = f"✅ **{_rnd(rnd)}** result: **{wname}** def. **{lname}** {result_str}{pts_str}"
         await _reply(i, msg)
 
     # ── /tournament complete ──────────────────────────────────────────────
@@ -2744,6 +2933,21 @@ class TournamentsCog(commands.Cog):
         if skipped: emb.add_field(name=f"⏭️ Skipped ({len(skipped)})",
                                    value="\n".join(skipped[:10]) or "—", inline=False)
         await _reply(i, embed=emb)
+
+    # ── /tournament set-result-channel ───────────────────────────────────────
+    @tournament.command(name="set-result-channel",
+                        description="(Admin) Set the channel where match sim results are posted.")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(tournament_id=_ac_comp_all)
+    async def tourn_set_result_channel(self, i: discord.Interaction, tournament_id: str,
+                                       channel: discord.TextChannel):
+        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
+            return await _reply(i, "❌ Admin only.", ephemeral=True)
+        t = _get_comp(tournament_id)
+        if not t: return await _reply(i, "❌ Tournament not found.", ephemeral=True)
+        t["result_channel_id"] = channel.id
+        _save_comp(tournament_id, t)
+        await _reply(i, f"✅ Match results will be posted in {channel.mention}.")
 
     # ── /tournament set-style ─────────────────────────────────────────────
     @tournament.command(name="set-style", description="(Admin) Set Google Sheets bracket colours and font.")

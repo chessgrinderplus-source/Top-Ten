@@ -30,7 +30,18 @@ def _load() -> dict:
     return data
 
 def _save(data: dict) -> None:
-    save_json(_path(), data)
+    p = _path()
+    save_json(p, data)
+    # Verify write succeeded (Railway ephemeral FS guard)
+    try:
+        check = load_json(p, None)
+        if check is None:
+            print(f"[fantasy] WARNING: save to {p!r} may not have persisted!")
+    except Exception as e:
+        print(f"[fantasy] WARNING: verify-read failed: {e}")
+
+# Log path on import so Railway logs show exactly where data lives
+print(f"[fantasy] DATA_PATH={_path()!r}")
 
 def _delete_tournament(data: dict, tournament_id: str, guild_id: Optional[int]) -> Optional[dict]:
     kept = []
@@ -976,6 +987,65 @@ class FantasyCog(commands.Cog):
         if int(user.id) not in bl: return await interaction.response.send_message("ℹ️ Not blacklisted.")
         bl.remove(int(user.id)); data["ldb_blacklist"] = sorted(bl); _save(data)
         await interaction.response.send_message(f"✅ Whitelisted **{user.display_name}**.")
+
+    @f_admin.command(name="set-roster", description="Admin: set a user's fantasy roster on their behalf.")
+    @app_commands.autocomplete(tournament_id=_ac_tournament)
+    @app_commands.describe(
+        tournament_id="Fantasy tournament ID",
+        user="The user to set the roster for",
+        pick1="Player name #1 (required)",
+        pick2="Player name #2 (required)",
+        pick3="Player name #3 (required)",
+        pick4="Player name #4 (required)",
+        pick5="Player name #5 (required)",
+    )
+    async def fantasy_set_roster(self, interaction: discord.Interaction,
+                                  tournament_id: str, user: discord.Member,
+                                  pick1: str, pick2: str, pick3: str,
+                                  pick4: str, pick5: str):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+
+        pool = {_player_key(p["name"]): p for p in t.get("players", [])}
+        picks: List[PlayerEntry] = []
+        errors: List[str] = []
+
+        for raw in [pick1, pick2, pick3, pick4, pick5]:
+            key = _player_key(raw)
+            found = next((p for k, p in pool.items() if k == key or raw.lower() in k), None)
+            if not found:
+                # fuzzy: try partial match
+                found = next((p for k, p in pool.items() if raw.lower() in k), None)
+            if not found:
+                errors.append(f"❌ `{raw}` not found in player pool")
+            elif _player_key(found["name"]) in [_player_key(p.name) for p in picks]:
+                errors.append(f"❌ `{found['name']}` picked twice")
+            else:
+                picks.append(PlayerEntry(name=found["name"], seed=found.get("seed")))
+
+        if errors:
+            return await interaction.response.send_message("\n".join(errors), ephemeral=True)
+
+        # Validate seed rules
+        top5_used = sum(1 for p in picks if _seed_bucket(p.seed) == "top5")
+        top20_used = sum(1 for p in picks if _seed_bucket(p.seed) in ("top5", "top20"))
+        if top5_used > 1:
+            return await interaction.response.send_message("❌ Only 1 player from seeds 1–5.", ephemeral=True)
+        if top20_used > 3:
+            return await interaction.response.send_message("❌ Only 3 players from seeds 1–20.", ephemeral=True)
+
+        t.setdefault("rosters", {})[str(user.id)] = [p.name for p in picks]
+        _save(data)
+
+        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
+        lines = [f"✅ Roster set for **{user.display_name}** in **{t.get('name')}**", ""]
+        for idx, p in enumerate(picks, 1):
+            lines.append(f"{idx}. {_fmt_player(seed_map.get(_player_key(p.name)), p.name)}")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     # ── User commands ─────────────────────────────────────────────────────────
 
