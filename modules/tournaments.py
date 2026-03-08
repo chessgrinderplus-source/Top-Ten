@@ -68,6 +68,17 @@ def _del_comp(tid: str) -> bool:
 
 # Log data directory on import so we know where state lives
 print(f"[db] DATA_DIR={_data_dir()!r}  COMP_PATH={COMP_PATH!r}")
+# Confirm the directory actually exists and is writable
+import os as _os
+try:
+    _os.makedirs(_data_dir(), exist_ok=True)
+    _test = os.path.join(_data_dir(), ".write_test")
+    with open(_test, "w") as _f: _f.write("ok")
+    _os.remove(_test)
+    _existing = [f for f in _os.listdir(_data_dir()) if f.endswith(".json")]
+    print(f"[db] directory OK, writable. Existing JSON files: {_existing}")
+except Exception as _e:
+    print(f"[db] WARNING: directory not writable! {_e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -1323,8 +1334,9 @@ def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict, guild=None) -> 
         else:
             ts_cell = _discord_ts(day, st)
 
-        # court_venue_id stores the display name directly (set at schedule time from tourn["venues"][key])
-        court = m.get("court_venue_id") or _court_name(tourn, m.get("court_key", "")) or m.get("court_key", "")
+        # _court_name reads tourn["venues"][court_key] which is always the display name
+        # court_venue_id may hold a UUID for older matches, so don't trust it
+        court = _court_name(tourn, m.get("court_key", "")) or m.get("court_key", "")
         is_bye_match = m.get("score") == "BYE"
         p1 = _member_name(m.get("player1_id"), m.get("seed1"), is_bye=is_bye_match)
         p2 = _member_name(m.get("player2_id"), m.get("seed2"), is_bye=is_bye_match)
@@ -1354,16 +1366,19 @@ def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict, guild=None) -> 
         _fmt_req(ws2_id, 1, 0, 1 + n_data, len(hdrs),
                  {"backgroundColor": bg,
                   "textFormat": {"fontFamily": fn, "foregroundColor": fc1}}),
-        # Column widths: Day, DateTime, Round, Court, P1, P2, Status, Score, Winner
-        _col_width_req(ws2_id, 0, 1, 45),   # Day
-        _col_width_req(ws2_id, 1, 2, 170),  # Date/Time
-        _col_width_req(ws2_id, 2, 3, 110),  # Round
-        _col_width_req(ws2_id, 3, 4, 160),  # Court
-        _col_width_req(ws2_id, 4, 5, 180),  # Player 1
-        _col_width_req(ws2_id, 5, 6, 180),  # Player 2
-        _col_width_req(ws2_id, 6, 7, 90),   # Status
-        _col_width_req(ws2_id, 7, 8, 100),  # Score
-        _col_width_req(ws2_id, 8, 9, 160),  # Winner
+        # Column widths — generous so nothing is cramped
+        _col_width_req(ws2_id, 0, 1, 50),   # Day
+        _col_width_req(ws2_id, 1, 2, 190),  # Date/Time
+        _col_width_req(ws2_id, 2, 3, 120),  # Round
+        _col_width_req(ws2_id, 3, 4, 200),  # Court
+        _col_width_req(ws2_id, 4, 5, 210),  # Player 1
+        _col_width_req(ws2_id, 5, 6, 210),  # Player 2
+        _col_width_req(ws2_id, 6, 7, 100),  # Status
+        _col_width_req(ws2_id, 7, 8, 120),  # Score
+        _col_width_req(ws2_id, 8, 9, 200),  # Winner
+        # Row heights — header taller, data rows comfortable
+        _row_height_req(ws2_id, 0, 1, 32),
+        _row_height_req(ws2_id, 1, 1 + n_data, 28),
     ]
     # Bold winner column for completed rows
     for ri, m in enumerate(sorted_matches):

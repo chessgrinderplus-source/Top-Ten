@@ -249,12 +249,17 @@ class PickSelect(discord.ui.Select):
 class JoinFantasyView(discord.ui.View):
     PAGE_SIZE = 25
 
-    def __init__(self, cog, user_id: int, tournament_id: str, pool: List[PlayerEntry]):
+    def __init__(self, cog, user_id: int, tournament_id: str, pool: List[PlayerEntry],
+                 target_user_id: Optional[int] = None, force_save: bool = False,
+                 header: Optional[str] = None):
         super().__init__(timeout=300)
         self.cog = cog
         self.user_id = user_id
+        self.target_user_id = target_user_id if target_user_id is not None else user_id
         self.tournament_id = tournament_id
         self.pool = pool
+        self.force_save = force_save
+        self.header = header
         self.picks: List[PlayerEntry] = []
         self.used_keys: set = set()
         self.top5_used = 0
@@ -331,7 +336,7 @@ class JoinFantasyView(discord.ui.View):
         await interaction.response.edit_message(content=self._status_text(), view=self)
 
     def _status_text(self) -> str:
-        lines = ["**Fantasy Join — Pick 5 players**", ""]
+        lines = [self.header or "**Fantasy Join — Pick 5 players**", ""]
         if self.picks:
             lines.append("**Your picks so far:**")
             for i, p in enumerate(self.picks, 1):
