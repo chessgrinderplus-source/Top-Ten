@@ -1082,39 +1082,48 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                                           "verticalAlignment": "MIDDLE",
                                           "horizontalAlignment": "CENTER"}))
 
-                # Box border (name + all score cols as one unit)
-                if not is_bye:
-                    reqs.append(_border_req(ws_id, p_row, name_col,
-                                            p_row + _BK_NAME_H, score_col + max_sets,
-                                            top=LINE, bottom=LINE, left=LINE, right=LINE))
+            # Match box border — drawn once around the full match (both player rows)
+            reqs.append(_border_req(ws_id, p1_r, name_col,
+                                    p2_r + _BK_NAME_H, score_col + max_sets,
+                                    top=LINE, bottom=LINE, left=LINE, right=LINE))
 
-            # ── Connector (skip on final round — nothing to connect to) ──
-            if ridx < n_rnds - 1:
-                # Center row of P1 box (bottom row of the 2-row box)
-                p1_center = p1_r + _BK_NAME_H - 1
-                # Center row of P2 box (top row of the 2-row box)
-                p2_center = p2_r
-                # Midpoint between the two centers
-                mid_row = (p1_center + p2_center) // 2  # = p2_r - 1 = p1_r + _BK_NAME_H - 1 + 1? always p1_r+1
+        # ── Inter-round connectors — process pairs of matches ──────────────
+        # Each pair (even=2k, odd=2k+1) feeds one next-round match k.
+        # Arm exits from the center of each match (boundary between p1 and p2 rows).
+        # Vertical bar in vert_col connects even-arm DOWN to odd-arm (or UP for odd).
+        # Exit arm is a horizontal line at the midpoint going right into the next match.
+        if ridx < n_rnds - 1:
+            n_pairs = n_matches // 2
+            for k in range(n_pairs):
+                even_s = _BK_DATA_ROW + _bk_match_start(ridx, k * 2)
+                odd_s  = _BK_DATA_ROW + _bk_match_start(ridx, k * 2 + 1)
+                next_s = _BK_DATA_ROW + _bk_match_start(ridx + 1, k)
 
-                # arm_col: horizontal lines out from each player box center
-                # Draw bottom border on p1_center row = line under center of P1
-                reqs.append(_border_req(ws_id, p1_center, arm_col,
-                                        p1_center + 1, arm_col + 1,
-                                        bottom=LINE))
-                # Draw top border on p2_center row = line above center of P2
-                reqs.append(_border_req(ws_id, p2_center, arm_col,
-                                        p2_center + 1, arm_col + 1,
-                                        top=LINE))
+                # Center of each match = last row of P1 (= boundary row between P1 and P2)
+                # Bottom border of this row in arm_col = horizontal arm exiting the match
+                arm_even = even_s + _BK_NAME_H - 1   # last row of P1 in even match
+                arm_odd  = odd_s  + _BK_NAME_H - 1   # last row of P1 in odd match
 
-                # vert_col: vertical bar from p1_center down to p2_center (left border)
-                reqs.append(_border_req(ws_id, p1_center, vert_col,
-                                        p2_center + 1, vert_col + 1,
-                                        left=LINE))
-                # Exit arm: bottom border at mid_row (horizontal line toward next round)
-                reqs.append(_border_req(ws_id, mid_row, vert_col,
-                                        mid_row + 1, vert_col + 1,
-                                        bottom=LINE))
+                # Vertical bar: spans from just below even arm down to just below odd arm
+                vert_start = even_s + _BK_NAME_H      # = arm_even + 1
+                vert_end   = odd_s  + _BK_NAME_H      # = arm_odd  + 1
+
+                # Exit arm: at center of next-round match (last row of its P1)
+                meet = next_s + _BK_NAME_H - 1
+
+                # Horizontal arm from even match (goes right, no extension past vert_col)
+                reqs.append(_border_req(ws_id, arm_even, arm_col,
+                                        arm_even + 1, arm_col + 1, bottom=LINE))
+                # Horizontal arm from odd match (goes right)
+                reqs.append(_border_req(ws_id, arm_odd, arm_col,
+                                        arm_odd + 1, arm_col + 1, bottom=LINE))
+                # Vertical bar (left border spans from vert_start down to vert_end)
+                reqs.append(_border_req(ws_id, vert_start, vert_col,
+                                        vert_end, vert_col + 1, left=LINE))
+                # Exit arm (bottom border at meet row in vert_col — horizontal line
+                # into next round; visually exits from behind the next match box)
+                reqs.append(_border_req(ws_id, meet, vert_col,
+                                        meet + 1, vert_col + 1, bottom=LINE))
 
         # Column widths
         reqs.append(_col_width_req(ws_id, name_col, score_col, 160))
@@ -1309,10 +1318,9 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
                 ss.batch_update({"requests": chunk})
             except Exception as chunk_e:
                 print(f"[sheets] batch chunk {chunk_start//100} failed: {chunk_e}")
-                # Log which request caused the issue
                 for idx, req in enumerate(chunk):
                     print(f"  req[{chunk_start+idx}]: {list(req.keys())}")
-                raise  # re-raise so caller logs full traceback
+                # Don't raise — continue so values still get written
 
         # Write text values into bracket sheet
         _write_bracket_values(ws, tourn, guild)
@@ -1474,14 +1482,14 @@ async def _reply(i: discord.Interaction, content: str = None, embed: discord.Emb
 # Autocomplete helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe_ac(fn):
-    """Decorator that returns [] if an autocomplete interaction has expired, but logs real errors."""
+    """Decorator that silently discards expired autocomplete interactions."""
     import functools, traceback
     @functools.wraps(fn)
     async def wrapper(i: discord.Interaction, cur: str):
         try:
             return await fn(i, cur)
         except (discord.errors.NotFound, discord.errors.HTTPException):
-            return []   # interaction expired — expected, drop silently
+            return []
         except Exception as e:
             print(f"[ac] {fn.__name__} error: {e}")
             traceback.print_exc()
@@ -3366,3 +3374,13 @@ class TournamentsCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TournamentsCog(bot))
+
+    # Silence autocomplete interaction-expired errors (404 / 400) which are harmless
+    # but noisy. They happen when Discord's 3-second autocomplete window expires.
+    _orig_ac_error = bot.tree.on_error
+    async def _quiet_tree_error(interaction, error):
+        if isinstance(error, (discord.errors.NotFound, discord.errors.HTTPException)):
+            return  # expired interaction — drop silently
+        if _orig_ac_error:
+            await _orig_ac_error(interaction, error)
+    bot.tree.on_error = _quiet_tree_error
