@@ -1143,7 +1143,12 @@ def _sheets_ok() -> bool:
 
 def _gs_client():
     import gspread, os, json, tempfile
-    scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    scopes = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive.file",
+    ]
 
     # ── Prefer OAuth2 user token (works with free Google accounts) ──
     token_path    = os.getenv("GOOGLE_TOKEN_JSON", "keys/google_token.json")
@@ -1885,7 +1890,7 @@ def _build_yearly_archive_content(year: int, guild_id: int, guild) -> Tuple[List
     overview_rows = [overview_hdrs]
     for tid, t in year_tourneys:
         start = t.get("tournament_start_date", "")[:10]
-        end   = t.get("completed_at", "")[:10] or "—"
+        end   = (t.get("completed_at") or "")[:10] or "—"
         # surface: read from first venue in venues dict
         surface = "—"
         venues = t.get("venues", {}) or {}
