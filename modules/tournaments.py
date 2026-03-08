@@ -4317,12 +4317,32 @@ class TournamentsCog(commands.Cog):
 async def setup(bot: commands.Bot):
     await bot.add_cog(TournamentsCog(bot))
 
-    # Silence autocomplete interaction-expired errors (404 / 400) which are harmless
-    # but noisy. They happen when Discord's 3-second autocomplete window expires.
-    _orig_ac_error = bot.tree.on_error
-    async def _quiet_tree_error(interaction, error):
-        if isinstance(error, (discord.errors.NotFound, discord.errors.HTTPException)):
-            return  # expired interaction — drop silently
-        if _orig_ac_error:
+    import logging
+
+    class _SuppressACRace(logging.Filter):
+        _SILENT_CODES = frozenset({"40060", "10062", "404"})
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            if "autocomplete" in msg and any(c in msg for c in self._SILENT_CODES):
+                return False
+            return True
+
+    _ac_logger = logging.getLogger("discord.app_commands.tree")
+    _ac_logger.filters = [f for f in _ac_logger.filters
+                          if not isinstance(f, _SuppressACRace)]
+    _ac_logger.addFilter(_SuppressACRace())
+
+    _orig_ac_error = getattr(bot.tree, "on_error", None)
+
+    async def _quiet_tree_error(
+        interaction: discord.Interaction, error: Exception
+    ) -> None:
+        if isinstance(error, discord.errors.HTTPException) and error.code in (40060, 10062):
+            return
+        if isinstance(error, discord.errors.NotFound):
+            return
+        if _orig_ac_error is not None:
             await _orig_ac_error(interaction, error)
+
     bot.tree.on_error = _quiet_tree_error
