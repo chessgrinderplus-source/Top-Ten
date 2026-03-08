@@ -986,6 +986,8 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
     fc3    = _hex_rgb(s.get("fc3", "#ff5252"))
     sc1    = _hex_rgb(s.get("sc1", "#2a2a4a"))
     sc2    = _hex_rgb(s.get("sc2", "#16213e"))
+    hdr_bg = _hex_rgb(s.get("hdr_bg", s.get("bg", "#1a1a2e")))   # rows 0+1 bg
+    hdr_fc = _hex_rgb(s.get("hdr_fc", s.get("fc2", "#00e676")))  # rows 0+1 text
     line_c = _hex_rgb(s.get("fc1", "#ffffff"))
     fn     = s.get("font", "Roboto Mono")
     best_of  = int(tourn.get("best_of", 3))
@@ -1012,18 +1014,18 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                          {"backgroundColor": bg,
                           "textFormat": {"fontFamily": fn, "foregroundColor": fc1}}))
 
-    # ── 2. Title row (row 0) — same bg as rest, just styled text ──
+    # ── 2. Title row (row 0) — configurable header bg/text ──
     reqs.append(_fmt_req(ws_id, 0, 0, 1, BIG,
-                         {"backgroundColor": bg,
+                         {"backgroundColor": hdr_bg,
                           "textFormat": {"bold": True, "fontSize": 13,
-                                         "fontFamily": fn, "foregroundColor": fc2}}))
+                                         "fontFamily": fn, "foregroundColor": hdr_fc}}))
     reqs.append(_merge_req(ws_id, 0, 0, 1, total_cols))
 
-    # ── 3. Round header row (row 1) — same bg ──
+    # ── 3. Round header row (row 1) — same header bg/text ──
     reqs.append(_fmt_req(ws_id, 1, 0, 2, BIG,
-                         {"backgroundColor": bg,
+                         {"backgroundColor": hdr_bg,
                           "textFormat": {"bold": True, "fontSize": 9,
-                                         "fontFamily": fn, "foregroundColor": fc1}}))
+                                         "fontFamily": fn, "foregroundColor": hdr_fc}}))
     for ridx, rnd in enumerate(rnds):
         col  = _bk_round_col(ridx, max_sets)
         span = _BK_NAME_W + max_sets
@@ -2090,8 +2092,11 @@ class TournamentsCog(commands.Cog):
                     self_v.page = min(self_v.page, max(0, (len(members)-1)//PAGE_SIZE))
                     self_v._build()
                     try:
-                        await inter.message.edit(content=_status_line(), view=self_v)
-                    except Exception: pass
+                        await i.edit_original_response(content=_status_line(), view=self_v)
+                    except Exception:
+                        try:
+                            await inter.message.edit(content=_status_line(), view=self_v)
+                        except Exception: pass
 
                 async def on_done(inter: discord.Interaction):
                     total = len(regs) + len(wcs)
@@ -2117,7 +2122,8 @@ class TournamentsCog(commands.Cog):
                     f"{len(members)} eligible members\n"
                     f"Select players then click ✅ Register Selected. Click 🔒 Done when finished.")
 
-        await _reply(i, content=_status_line(), view=RegisterView())
+        _reg_view = RegisterView()
+        await _reply(i, content=_status_line(), view=_reg_view)
 
     # ── /tournament unregister-user ───────────────────────────────────────
     @tournament.command(name="unregister-user", description="(Admin) Remove any user from a tournament.")
@@ -2650,7 +2656,9 @@ class TournamentsCog(commands.Cog):
                               loser_color:       Optional[str] = None,
                               name_bg_color:     Optional[str] = None,
                               score_bg_color:    Optional[str] = None,
-                              font:              Optional[str] = None):
+                              font:              Optional[str] = None,
+                              header_bg_color:   Optional[str] = None,
+                              header_text_color: Optional[str] = None):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         t = _get_comp(tournament_id)
@@ -2658,11 +2666,12 @@ class TournamentsCog(commands.Cog):
         sc = t.setdefault("sheets_config", {})
         for k, v in [("bg", background_color), ("fc1", name_color), ("fc2", winner_color),
                      ("fc3", loser_color), ("sc1", name_bg_color), ("sc2", score_bg_color),
-                     ("font", font)]:
+                     ("font", font), ("hdr_bg", header_bg_color), ("hdr_fc", header_text_color)]:
             if v is not None: sc[k] = v.strip()
         _save_comp(tournament_id, t)
         labels = {"bg":"Background","fc1":"Name Colour","fc2":"Winner Colour",
-                  "fc3":"Loser Colour","sc1":"Name-Row BG","sc2":"Score-Row BG","font":"Font"}
+                  "fc3":"Loser Colour","sc1":"Name-Row BG","sc2":"Score-Row BG","font":"Font",
+                  "hdr_bg":"Header Row BG","hdr_fc":"Header Row Text"}
         emb = discord.Embed(title="🎨 Style Updated", color=discord.Color.blurple())
         for k, v in sc.items(): emb.add_field(name=labels.get(k,k), value=v, inline=True)
         await _reply(i, embed=emb)
