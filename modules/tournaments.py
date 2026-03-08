@@ -49,6 +49,26 @@ def _rank_save(db):  _save_json(RANKINGS_PATH, db)
 def _h2h_db():       return _load_json(H2H_PATH,      {"h2h": {}})
 def _h2h_save(db):   _save_json(H2H_PATH, db)
 
+def _del_comp(tid: str) -> bool:
+    """Atomically delete a tournament from the DB. Returns True if it existed."""
+    db = _comp_db()
+    t  = db.get("tournaments", {})
+    if tid not in t:
+        print(f"[db] _del_comp: {tid!r} not found in DB (path={COMP_PATH})")
+        return False
+    del t[tid]
+    _comp_save(db)
+    # Verify it's gone
+    check = _comp_db().get("tournaments", {})
+    if tid in check:
+        print(f"[db] _del_comp: ERROR — {tid!r} still present after save! path={COMP_PATH}")
+        return False
+    print(f"[db] _del_comp: {tid!r} deleted OK, {len(check)} tournaments remain")
+    return True
+
+# Log data directory on import so we know where state lives
+print(f"[db] DATA_DIR={_data_dir()!r}  COMP_PATH={COMP_PATH!r}")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1560,10 +1580,12 @@ async def _ac_cat(i: discord.Interaction, cur: str) -> List[app_commands.Choice[
 
 @_safe_ac
 async def _ac_comp_all(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
+    gid = i.guild.id if i.guild else None
     c = cur.lower(); out = []
     for tid, t in _comp_db().get("tournaments",{}).items():
+        if gid and t.get("guild_id") != gid: continue
         st = t.get("status","")
-        if st not in _ACTIVE_STATUSES: continue   # hides cancelled + any other junk
+        if st not in _ACTIVE_STATUSES: continue
         if c in tid.lower() or c in t.get("name","").lower() or not c:
             out.append(app_commands.Choice(name=f"{t.get('name',tid)} [{st}]"[:100], value=tid))
         if len(out)>=25: break
@@ -1571,8 +1593,10 @@ async def _ac_comp_all(i: discord.Interaction, cur: str) -> List[app_commands.Ch
 
 @_safe_ac
 async def _ac_comp_open(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
+    gid = i.guild.id if i.guild else None
     c = cur.lower(); out = []
     for tid, t in _comp_db().get("tournaments",{}).items():
+        if gid and t.get("guild_id") != gid: continue
         if t.get("status") not in (STATUS_UPCOMING, STATUS_REG, STATUS_ACTIVE): continue
         if c in tid.lower() or c in t.get("name","").lower() or not c:
             out.append(app_commands.Choice(name=f"{t.get('name',tid)} [{t.get('status','?')}]"[:100], value=tid))
@@ -1581,8 +1605,10 @@ async def _ac_comp_open(i: discord.Interaction, cur: str) -> List[app_commands.C
 
 @_safe_ac
 async def _ac_comp_done(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
+    gid = i.guild.id if i.guild else None
     c = cur.lower(); out = []
     for tid, t in _comp_db().get("tournaments",{}).items():
+        if gid and t.get("guild_id") != gid: continue
         if t.get("status") != STATUS_COMPLETED: continue
         if c in tid.lower() or c in t.get("name","").lower() or not c:
             out.append(app_commands.Choice(name=f"{t.get('name',tid)}"[:100], value=tid))
@@ -1960,25 +1986,26 @@ class TournamentsCog(commands.Cog):
     @tournament.command(name="list", description="List all tournaments.")
     @app_commands.guild_only()
     async def tourn_list(self, i: discord.Interaction):
-        db = _comp_db().get("tournaments",{})
-        if not db: return await _reply(i, "No tournaments yet.", ephemeral=True)
+        db = _comp_db().get("tournaments", {})
+        # Filter to this guild only
+        guild_ts = [(tid, t) for tid, t in db.items()
+                    if t.get("guild_id") == i.guild.id]
+        if not guild_ts:
+            return await _reply(i, "No tournaments yet.", ephemeral=True)
         emb = discord.Embed(title="📋 Tournaments", color=discord.Color.blurple())
-        for tid, t in list(db.items())[:15]:
+        for tid, t in guild_ts[:15]:
             total  = len(t.get("registrations",[])) + len(t.get("wildcard_entries",[]))
             status = t.get("status","?").upper()
-            rs  = _fmt_dt(t.get("registration_start_date"))
-            rc  = _fmt_dt(t.get("registration_close_date"))
-            ts  = _fmt_dt(t.get("tournament_start_date"))
-            rsr = _fmt_countdown(t.get("registration_start_date"))
-            rcr = _fmt_countdown(t.get("registration_close_date"))
-            tsr = _fmt_countdown(t.get("tournament_start_date"))
-            val = (f"**{status}** · Draw: {t.get('bracket_size','?')} · Players: {total}\n"
-                   f"📋 Reg Opens: {rs} {rsr}\n"
-                   f"🔒 Reg Closes: {rc} {rcr}\n"
-                   f"🎾 Starts: {ts} {tsr}")
+            ts_  = _fmt_dt(t.get("tournament_start_date"))
+            tsr  = _fmt_countdown(t.get("tournament_start_date"))
+            rc_  = _fmt_dt(t.get("registration_close_date"))
+            val  = (f"**{status}** · Bo{t.get('best_of','?')} · Draw: {t.get('bracket_size','?')} · Players: {total}\n"
+                    f"🎾 Starts: {ts_} {tsr}\n"
+                    f"🔒 Reg Closes: {rc_}")
             if t.get("champion_name"): val += f"\n🏆 Champion: **{t['champion_name']}**"
-            if t.get("sheet_url"): val += f"\n📊 [Live Bracket]({t['sheet_url']})"
-            emb.add_field(name=f"{t.get('name','?')} · `{tid}`", value=val, inline=False)
+            if t.get("sheet_url"):     val += f"\n📊 [Live Bracket]({t['sheet_url']})"
+            val += f"\nID: `{tid}`"
+            emb.add_field(name=t.get("name","?"), value=val, inline=False)
         await _reply(i, embed=emb)
 
     # ── /tournament join ──────────────────────────────────────────────────
@@ -3319,7 +3346,9 @@ class TournamentsCog(commands.Cog):
 
         all_t.pop(tournament_id, None)
         _comp_save(db)
-        await _reply(i, f"✅ Deleted **{name}** (`{tournament_id}`).")
+        deleted = _del_comp(tournament_id)
+        await _reply(i, f"{'✅' if deleted else '⚠️'} Deleted **{name}** (`{tournament_id}`)."
+                     + ("" if deleted else "\n⚠️ Warning: tournament may not have been fully removed — check Railway logs."))
 
     # ── /tournament purge-ghosts ─────────────────────────────────────────
     @tournament.command(name="purge-ghosts",
@@ -3406,9 +3435,7 @@ class TournamentsCog(commands.Cog):
                 print(f"[sheets] could not delete sheet: {e}")
 
         # Fully remove tournament from database
-        db = _comp_db()
-        db.get("tournaments", {}).pop(tournament_id, None)
-        _comp_save(db)
+        _del_comp(tournament_id)
 
         emb = discord.Embed(title=f"🗑️ Tournament Deleted — {name}",
                             color=discord.Color.red())
