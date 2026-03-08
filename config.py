@@ -2,7 +2,7 @@ import os, tempfile
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=False)  # Railway env vars take priority over .env file
 except ImportError:
     pass
 
