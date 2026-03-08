@@ -1008,21 +1008,22 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
     total_cols = n_rnds * _bk_cpr(max_sets) + _BK_NAME_W + max_sets + 6
 
     # ── 1. Full sheet background (rows 0 onward, cols 0 onward) ──
-    # Use a very large range so nothing is left white
-    BIG = 1000
-    reqs.append(_fmt_req(ws_id, 0, 0, BIG, BIG,
+    # Stay within the resized grid — use total_rows/cols + padding
+    BIG_R = total_rows + 20
+    BIG_C = total_cols + 10
+    reqs.append(_fmt_req(ws_id, 0, 0, BIG_R, BIG_C,
                          {"backgroundColor": bg,
                           "textFormat": {"fontFamily": fn, "foregroundColor": fc1}}))
 
     # ── 2. Title row (row 0) — configurable header bg/text ──
-    reqs.append(_fmt_req(ws_id, 0, 0, 1, BIG,
+    reqs.append(_fmt_req(ws_id, 0, 0, 1, BIG_C,
                          {"backgroundColor": hdr_bg,
                           "textFormat": {"bold": True, "fontSize": 13,
                                          "fontFamily": fn, "foregroundColor": hdr_fc}}))
     reqs.append(_merge_req(ws_id, 0, 0, 1, total_cols))
 
     # ── 3. Round header row (row 1) — same header bg/text ──
-    reqs.append(_fmt_req(ws_id, 1, 0, 2, BIG,
+    reqs.append(_fmt_req(ws_id, 1, 0, 2, BIG_C,
                          {"backgroundColor": hdr_bg,
                           "textFormat": {"bold": True, "fontSize": 9,
                                          "fontFamily": fn, "foregroundColor": hdr_fc}}))
@@ -1289,6 +1290,12 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
             print(f"[sheets] moved to folder {folder_id}")
 
         ws  = ss.get_worksheet(0); ws.update_title("Bracket")
+        # Resize to fit the bracket + padding (columns must exist before formatting)
+        best_of   = int(tourn.get("best_of", 3))
+        n_rnds    = len(_rounds(int(tourn.get("bracket_size", 8))))
+        needed_cols = n_rnds * (5 + best_of + 2) + 20   # _bk_cpr * rounds + margin
+        needed_rows = 600
+        ws.resize(rows=needed_rows, cols=max(needed_cols, 60))
         ws2 = ss.add_worksheet("Schedule", rows=500, cols=12)
 
         # Build bracket formatting — split into chunks to stay under API limits
@@ -1343,6 +1350,11 @@ def update_sheet(tourn: dict, guild=None) -> None:
                     tmp = ss.add_worksheet("Schedule", rows=500, cols=12)
                 ss.del_worksheet(old_ws)
             ws = ss.add_worksheet("Bracket", rows=600, cols=120)
+            # Ensure enough columns for this tournament's bracket
+            best_of2   = int(tourn.get("best_of", 3))
+            n_rnds2    = len(_rounds(int(tourn.get("bracket_size", 8))))
+            needed2    = n_rnds2 * (5 + best_of2 + 2) + 20
+            ws.resize(rows=600, cols=max(needed2, 60))
             # Move Bracket to index 0
             ss.batch_update({"requests": [{"updateSheetProperties": {
                 "properties": {"sheetId": ws.id, "index": 0},
