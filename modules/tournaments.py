@@ -2276,7 +2276,9 @@ class TournamentsCog(commands.Cog):
     # Nested subgroup: /tournament category create|edit|delete|list
     # Counts as 1 slot in tournament (not 4), keeping us under Discord's 25 limit
     category   = app_commands.Group(name="category",   description="Tournament point categories",
-                                    parent=tournament)
+        parent=tournament)
+    manage     = app_commands.Group(name="manage",     description="Tournament admin management tools",
+        parent=tournament)
     rankings   = app_commands.Group(name="rankings",   description="Player rankings and leaderboards")
     stats      = app_commands.Group(name="stats",      description="Player match and career statistics")
     admin      = app_commands.Group(name="admin",      description="Admin-only server management tools")
@@ -3647,7 +3649,7 @@ class TournamentsCog(commands.Cog):
         await _reply(i, embed=emb)
 
     # ── /tournament archive-create ────────────────────────────────────────
-    @tournament.command(name="archive-create",
+    @manage.command(name="archive-create",
                         description="(Admin) Manually create a Master Archive sheet for a year.")
     @app_commands.guild_only()
     async def tourn_archive_create(self, i: discord.Interaction, year: int = 0):
@@ -3674,7 +3676,7 @@ class TournamentsCog(commands.Cog):
         await _reply(i, embed=emb)
 
     # ── /tournament refresh-sheets ───────────────────────────────────────
-    @tournament.command(name="refresh-sheets",
+    @manage.command(name="refresh-sheets",
                         description="(Admin) Regenerate bracket sheets. Leave tournament blank to refresh all.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all)
@@ -3927,7 +3929,7 @@ class TournamentsCog(commands.Cog):
     # ═══════════════════════════════════════════════════════════════════════
     # /tournament point-defense
     # ═══════════════════════════════════════════════════════════════════════
-    @tournament.command(name="point-defense",
+    @manage.command(name="point-defense",
                         description="(Admin) Strip everyone's points from a past tournament.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_done)
@@ -4440,7 +4442,7 @@ class TournamentsCog(commands.Cog):
 
 
     # ── /tournament force-delete ─────────────────────────────────────────
-    @tournament.command(name="force-delete",
+    @manage.command(name="force-delete",
                         description="(Admin) Force-delete any tournament by ID, regardless of status.")
     @app_commands.guild_only()
     async def tourn_force_delete(self, i: discord.Interaction, tournament_id: str, confirm: str = ""):
@@ -4485,7 +4487,7 @@ class TournamentsCog(commands.Cog):
                      + ("" if deleted else "\n⚠️ Warning: tournament may not have been fully removed — check Railway logs."))
 
     # ── /tournament purge-ghosts ─────────────────────────────────────────
-    @tournament.command(name="purge-ghosts",
+    @manage.command(name="purge-ghosts",
                         description="(Admin) Delete all cancelled/invalid ghost tournaments from the database.")
     @app_commands.guild_only()
     async def tourn_purge_ghosts(self, i: discord.Interaction):
@@ -4516,7 +4518,7 @@ class TournamentsCog(commands.Cog):
         await _reply(i, embed=emb)
 
     # ── /tournament cancel ───────────────────────────────────────────────
-    @tournament.command(name="cancel", description="(Admin) Cancel a tournament and wipe all its data.")
+    @manage.command(name="cancel", description="(Admin) Cancel a tournament and wipe all its data.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all)
     async def tourn_cancel(self, i: discord.Interaction, tournament_id: str, confirm: str = ""):
