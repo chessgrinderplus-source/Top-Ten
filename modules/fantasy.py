@@ -5,6 +5,7 @@ import re
 import uuid
 import time
 import os
+import asyncio
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple, Any
 
@@ -206,41 +207,82 @@ def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Opti
 # Set RAPIDAPI_KEY in your config or as an environment variable.
 # ============================================================
 
-_TENNIS_API_HOST = getattr(config, "TENNIS_API_HOST", "api.tennis.com")
-_TENNIS_API_BASE = getattr(config, "TENNIS_API_BASE", "https://api.tennis.com/v2.0")
+# ============================================================
+# Tennis API integration (API-Tennis ATP/WTA/ITF via RapidAPI)
+#
+# Set RAPIDAPI_KEY as a Railway environment variable.
+# The host for this API is: tennis-api-atp-wta-itf.p.rapidapi.com
+# ============================================================
+
+_RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
+_RAPIDAPI_BASE = f"https://{_RAPIDAPI_HOST}/tennis/"
 
 def _rapidapi_key() -> str:
     return getattr(config, "RAPIDAPI_KEY", "") or os.environ.get("RAPIDAPI_KEY", "")
 
-async def _api_get(path: str, params: Optional[dict] = None) -> Any:
+async def _api_get(method: str, extra_params: Optional[dict] = None) -> Any:
     key = _rapidapi_key()
     if not key:
-        raise RuntimeError("RAPIDAPI_KEY is not set. Add it to your config or environment.")
+        raise RuntimeError("RAPIDAPI_KEY is not set. Add it to your Railway environment variables.")
     headers = {
         "X-RapidAPI-Key": key,
-        "X-RapidAPI-Host": _TENNIS_API_HOST,
+        "X-RapidAPI-Host": _RAPIDAPI_HOST,
     }
+    params = {"method": method}
+    if extra_params:
+        params.update(extra_params)
     async with aiohttp.ClientSession() as session:
         async with session.get(
-            f"{_TENNIS_API_BASE}{path}",
+            _RAPIDAPI_BASE,
             headers=headers,
-            params=params or {},
-            timeout=aiohttp.ClientTimeout(total=15),
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=20),
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            data = await resp.json()
+            if isinstance(data, dict) and not data.get("success", 1):
+                raise RuntimeError(f"API error: {data}")
+            return data.get("result", data) if isinstance(data, dict) else data
 
 async def _api_search_tournaments(name: str) -> List[dict]:
-    data = await _api_get("/tournaments", {"name": name})
-    if isinstance(data, list):
-        return data
-    return data.get("result", data.get("tournaments", []))
+    """Fetch all tournaments and filter by name client-side."""
+    all_t = await _api_get("get_tournaments")
+    if not isinstance(all_t, list):
+        return []
+    name_lower = _norm(name)
+    return [
+        t for t in all_t
+        if name_lower in _norm(t.get("tournament_name", ""))
+    ]
 
-async def _api_get_matches(tournament_id: str) -> List[dict]:
-    data = await _api_get("/results", {"tournament_id": str(tournament_id)})
-    if isinstance(data, list):
-        return data
-    return data.get("result", data.get("matches", []))
+async def _api_get_matches(tournament_key: str, season: str) -> List[dict]:
+    """Fetch all finished matches for a tournament + season."""
+    matches = await _api_get("get_fixtures", {
+        "tournament_key": str(tournament_key),
+        "tournament_season": str(season),
+    })
+    if not isinstance(matches, list):
+        return []
+    return [m for m in matches if m.get("event_status") == "Finished"]
+
+async def _api_get_rankings(event_type: str = "ATP") -> Dict[str, int]:
+    """
+    Fetch ATP or WTA standings and return {player_key: rank}.
+    event_type should be 'ATP' or 'WTA'.
+    """
+    try:
+        standings = await _api_get("get_standings", {"event_type": event_type})
+        if not isinstance(standings, list):
+            return {}
+        return {
+            str(s["player_key"]): int(s.get("place", 9999))
+            for s in standings
+            if s.get("player_key")
+        }
+    except Exception:
+        return {}
+
+# ── Match data helpers ────────────────────────────────────────
 
 def _name_sim(a: str, b: str) -> float:
     """Word-overlap similarity between two player names."""
@@ -251,130 +293,139 @@ def _name_sim(a: str, b: str) -> float:
     return len(a_parts & b_parts) / max(len(a_parts), len(b_parts))
 
 def _match_player_side(player_name: str, match: dict) -> Optional[str]:
-    """Return 'player1' or 'player2' if the player is in this match, else None."""
-    for side in ("player1", "player2"):
-        p = match.get(side, {})
-        name = p.get("name", p.get("full_name", ""))
+    """Return 'first' or 'second' if this player appears in the match."""
+    for side in ("first", "second"):
+        name = match.get(f"event_{side}_player", "")
         if _name_sim(player_name, name) >= 0.45:
             return side
     return None
 
-def _extract_set_score(match: dict) -> Tuple[int, int]:
-    """Return (p1_sets_won, p2_sets_won)."""
-    sets = match.get("sets", match.get("score", []))
-    if not sets:
+def _extract_sets(match: dict, side: str) -> Tuple[int, int]:
+    """Return (sets_won, sets_lost) for 'first' or 'second' side."""
+    scores = match.get("scores", [])
+    if not scores:
+        # Fall back to event_final_result e.g. "2 - 1"
+        raw = match.get("event_final_result", "")
+        parts = [p.strip() for p in raw.split("-")]
+        if len(parts) == 2:
+            try:
+                f, s = int(parts[0]), int(parts[1])
+                return (f, s) if side == "first" else (s, f)
+            except ValueError:
+                pass
         return 0, 0
-    p1s = p2s = 0
-    for s in sets:
-        g1 = int(s.get("player1_games", s.get("p1", s.get("games_1", 0))) or 0)
-        g2 = int(s.get("player2_games", s.get("p2", s.get("games_2", 0))) or 0)
-        if g1 > g2:
-            p1s += 1
-        elif g2 > g1:
-            p2s += 1
-    return p1s, p2s
+    won = lost = 0
+    my_key  = "score_first"  if side == "first"  else "score_second"
+    opp_key = "score_second" if side == "first"  else "score_first"
+    for sc in scores:
+        try:
+            m = int(sc.get(my_key, 0) or 0)
+            o = int(sc.get(opp_key, 0) or 0)
+            if m > o:
+                won += 1
+            elif o > m:
+                lost += 1
+        except (ValueError, TypeError):
+            continue
+    return won, lost
 
-def _match_winner_is_p1(match: dict) -> Optional[bool]:
-    """Return True if player1 won, False if player2 won, None if unknown."""
-    w = match.get("winner", match.get("winner_id", match.get("winner_side")))
-    if w in (1, "1", "player1"):
-        return True
-    if w in (2, "2", "player2"):
-        return False
+def _player_won_match(side: str, match: dict) -> Optional[bool]:
+    """Return True if this side won the match."""
+    winner = match.get("event_winner", "")
+    if "First" in winner:
+        return side == "first"
+    if "Second" in winner:
+        return side == "second"
     return None
 
-def _compute_upset_pts(player_rank: int, opp_rank: int, player_won: bool) -> int:
+def _normalize_round_from_tournament_field(raw: str) -> Optional[str]:
     """
-    +points if player beat a better-ranked (lower number) opponent.
-    -points if player lost to a worse-ranked (higher number) opponent.
-    0 for expected results.
+    tournament_round often looks like 'Wimbledon - Quarterfinals'.
+    Strip the tournament name prefix and normalise.
     """
-    if player_rank <= 0 or opp_rank <= 0:
+    if " - " in raw:
+        raw = raw.split(" - ", 1)[1]
+    return _normalize_round(raw.strip())
+
+def _compute_upset_pts(my_rank: int, opp_rank: int, player_won: bool) -> int:
+    """
+    Positive if player beat a higher-ranked (lower number) opponent.
+    Negative if player lost to a lower-ranked (higher number) opponent.
+    Zero for expected results.
+    """
+    if my_rank <= 0 or opp_rank <= 0:
         return 0
-    diff = opp_rank - player_rank  # negative = opp is better
+    diff = opp_rank - my_rank   # negative means opponent is better
     if player_won and diff < 0:
-        return abs(diff) * 3   # upset win
+        return abs(diff) * 3    # upset win
     if not player_won and diff > 0:
-        return -diff * 3       # upset loss
+        return -diff * 3        # upset loss
     return 0
 
-def _calc_player_stats_from_matches(
+def _calc_player_stats(
     player_name: str,
     all_matches: List[dict],
-) -> Tuple[int, int, int]:
+    rank_map: Dict[str, int],          # player_key → rank
+) -> Tuple[int, int, int, Optional[str]]:
     """
-    Scan all matches and return (sets_won, sets_lost, net_upset_pts) for the given player.
-    Player ranking is read directly from match data.
+    Return (sets_won, sets_lost, net_upset_pts, furthest_round_canonical).
     """
     sets_won = sets_lost = upset_pts = 0
-    for match in all_matches:
-        side = _match_player_side(player_name, match)
-        if side is None:
-            continue
-        opp_side = "player2" if side == "player1" else "player1"
-        me  = match.get(side, {})
-        opp = match.get(opp_side, {})
-
-        my_rank  = int(me.get("ranking",  me.get("rank",  0)) or 0)
-        opp_rank = int(opp.get("ranking", opp.get("rank", 0)) or 0)
-
-        p1_won = _match_winner_is_p1(match)
-        if p1_won is None:
-            continue
-        player_won = (side == "player1") == p1_won
-
-        p1s, p2s = _extract_set_score(match)
-        my_sets  = p1s if side == "player1" else p2s
-        opp_sets = p2s if side == "player1" else p1s
-        sets_won  += my_sets
-        sets_lost += opp_sets
-
-        upset_pts += _compute_upset_pts(my_rank, opp_rank, player_won)
-
-    return sets_won, sets_lost, upset_pts
-
-def _guess_player_round(player_name: str, all_matches: List[dict]) -> Optional[str]:
-    """
-    Find the furthest round a player reached by scanning all their matches.
-    Returns a canonical round string or None.
-    """
-    best: Optional[str] = None
+    best_round: Optional[str] = None
     best_order = -1
+
     for match in all_matches:
         side = _match_player_side(player_name, match)
         if side is None:
             continue
-        rnd_raw = str(match.get("round", match.get("round_name", ""))).strip()
-        canonical = _normalize_round(rnd_raw)
-        if canonical is None:
+
+        opp_side = "second" if side == "first" else "first"
+        my_key  = f"{side}_player_key"
+        opp_key = f"{opp_side}_player_key"
+        my_rank  = rank_map.get(str(match.get(my_key,  "")), 0)
+        opp_rank = rank_map.get(str(match.get(opp_key, "")), 0)
+
+        won = _player_won_match(side, match)
+        if won is None:
             continue
-        order = ROUND_ORDER.get(canonical, -1)
-        if order > best_order:
-            best_order = order
-            best = canonical
-    return best
+
+        sw, sl = _extract_sets(match, side)
+        sets_won  += sw
+        sets_lost += sl
+        upset_pts += _compute_upset_pts(my_rank, opp_rank, won)
+
+        # Track furthest round
+        rnd_raw = match.get("tournament_round", "")
+        canonical = _normalize_round_from_tournament_field(rnd_raw)
+        if canonical:
+            order = ROUND_ORDER.get(canonical, -1)
+            if order > best_order:
+                best_order = order
+                best_round = canonical
+
+    return sets_won, sets_lost, upset_pts, best_round
 
 def _build_fetched_rows(
     fantasy_t: dict,
     all_matches: List[dict],
+    rank_map: Dict[str, int],
     round_points_map: Dict[str, int],
 ) -> Tuple[List[dict], List[str]]:
-    """
-    For every player in the fantasy tournament, compute stats from API match data.
-    Returns (rows, warnings).
-    """
     rows: List[dict] = []
     warnings: List[str] = []
+
     for p in fantasy_t.get("players", []):
         pname = p["name"]
-        sw, sl, upset = _calc_player_stats_from_matches(pname, all_matches)
-        round_key = _guess_player_round(pname, all_matches)
+        sw, sl, upset, round_key = _calc_player_stats(pname, all_matches, rank_map)
+
         if round_key is None:
-            warnings.append(f"⚠️ Could not determine round for **{pname}** — defaulted to R128")
+            warnings.append(f"⚠️ No matches found for **{pname}** — defaulted to R128")
             round_key = "R128"
+
         tourn_pts = round_points_map.get(round_key, 0)
         set_pts   = sw * 5 - sl * 2
         total     = tourn_pts + set_pts + upset
+
         rows.append({
             "player":            pname,
             "round":             round_key,
@@ -385,6 +436,7 @@ def _build_fetched_rows(
             "upset_points":      upset,
             "total":             total,
         })
+
     return rows, warnings
 
 # ============================================================
@@ -1048,9 +1100,9 @@ class TournamentPickSelect(discord.ui.Select):
     def __init__(self, owner_view, api_tournaments: List[dict]):
         opts = []
         for i, tr in enumerate(api_tournaments[:25]):
-            name = tr.get("name", tr.get("tournament_name", f"Tournament {i+1}"))
-            date = tr.get("date", tr.get("start_date", ""))
-            label = f"{name}  ({date})"[:100] if date else name[:100]
+            name  = tr.get("tournament_name", f"Tournament {i+1}")
+            etype = tr.get("event_type_type", "")
+            label = f"{name}  [{etype}]"[:100] if etype else name[:100]
             opts.append(discord.SelectOption(label=label, value=str(i)))
         super().__init__(placeholder="Choose the correct tournament…", min_values=1, max_values=1, options=opts)
         self.owner_view = owner_view
@@ -1060,12 +1112,14 @@ class TournamentPickSelect(discord.ui.Select):
 
 
 class TournamentPickView(discord.ui.View):
-    def __init__(self, cog, user_id: int, fantasy_t: dict, api_tournaments: List[dict]):
+    def __init__(self, cog, user_id: int, fantasy_t: dict, api_tournaments: List[dict], season: str, tour: str):
         super().__init__(timeout=120)
         self.cog = cog
         self.user_id = user_id
         self.fantasy_t = fantasy_t
         self.api_tournaments = api_tournaments
+        self.season = season
+        self.tour = tour
         self.add_item(TournamentPickSelect(self, api_tournaments))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -1076,10 +1130,10 @@ class TournamentPickView(discord.ui.View):
 
     async def on_select(self, interaction: discord.Interaction, idx: int):
         chosen = self.api_tournaments[idx]
-        name = chosen.get("name", chosen.get("tournament_name", "?"))
+        name = chosen.get("tournament_name", "?")
         await interaction.response.edit_message(
-            content=f"⏳ Fetching match data for **{name}**...", view=None)
-        await self.cog._fetch_and_preview(interaction, self.fantasy_t, chosen)
+            content=f"⏳ Fetching matches & rankings for **{name}** {self.season}...", view=None)
+        await self.cog._fetch_and_preview(interaction, self.fantasy_t, chosen, self.season, self.tour)
 
 
 class FetchConfirmView(discord.ui.View):
@@ -1324,13 +1378,21 @@ class FantasyCog(commands.Cog):
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     @app_commands.describe(
         tournament_id="Fantasy tournament to complete",
-        search_query="Tournament name to search on the API (e.g. 'Wimbledon 2025')",
+        search_query="Tournament name to search on the API (e.g. 'Wimbledon')",
+        season="Season/year (e.g. 2025). Defaults to current year.",
+        tour="ATP or WTA (for rankings lookup)",
     )
+    @app_commands.choices(tour=[
+        app_commands.Choice(name="ATP", value="ATP"),
+        app_commands.Choice(name="WTA", value="WTA"),
+    ])
     async def fantasy_tournament_fetch(
         self,
         interaction: discord.Interaction,
         tournament_id: str,
         search_query: str,
+        season: Optional[str] = None,
+        tour: Optional[str] = "ATP",
     ):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
@@ -1341,6 +1403,9 @@ class FantasyCog(commands.Cog):
         t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
         if not t:
             return await interaction.response.send_message("❌ Fantasy tournament not found.", ephemeral=True)
+
+        import datetime
+        season_str = season or str(datetime.datetime.utcnow().year)
 
         await interaction.response.defer(ephemeral=True)
         try:
@@ -1353,12 +1418,12 @@ class FantasyCog(commands.Cog):
                 f"❌ No tournaments found for `{search_query}`. Try a different search term.", ephemeral=True)
 
         if len(api_tournaments) == 1:
-            name = api_tournaments[0].get("name", api_tournaments[0].get("tournament_name", "?"))
+            name = api_tournaments[0].get("tournament_name", "?")
             await interaction.followup.send(
-                f"⏳ Found **{name}** — fetching match data...", ephemeral=True)
-            await self._fetch_and_preview(interaction, t, api_tournaments[0])
+                f"⏳ Found **{name}** — fetching matches & rankings...", ephemeral=True)
+            await self._fetch_and_preview(interaction, t, api_tournaments[0], season_str, tour or "ATP")
         else:
-            view = TournamentPickView(self, interaction.user.id, t, api_tournaments)
+            view = TournamentPickView(self, interaction.user.id, t, api_tournaments, season_str, tour or "ATP")
             await interaction.followup.send(
                 f"🎾 Found **{len(api_tournaments[:25])}** matching tournaments. Pick the right one:",
                 view=view, ephemeral=True)
@@ -1368,18 +1433,27 @@ class FantasyCog(commands.Cog):
         interaction: discord.Interaction,
         fantasy_t: dict,
         api_tournament: dict,
+        season: str,
+        tour: str,
     ) -> None:
-        api_id = str(api_tournament.get("id", api_tournament.get("tournament_id", "")))
+        t_key = str(api_tournament.get("tournament_key", ""))
+        t_name = api_tournament.get("tournament_name", t_key)
         try:
-            all_matches = await _api_get_matches(api_id)
+            all_matches, rank_map = await asyncio.gather(
+                _api_get_matches(t_key, season),
+                _api_get_rankings(tour),
+            )
         except Exception as e:
-            msg = f"❌ Failed to fetch matches: `{e}`"
-            await interaction.edit_original_response(content=msg, embed=None, view=None)
+            await interaction.edit_original_response(
+                content=f"❌ Failed to fetch data: `{e}`", embed=None, view=None)
             return
 
         if not all_matches:
             await interaction.edit_original_response(
-                content="❌ API returned no match data for this tournament. Try a different tournament or use manual entry.",
+                content=(
+                    "❌ No finished matches found for this tournament/season. "
+                    "Check the season year or try again after the tournament ends."
+                ),
                 embed=None, view=None)
             return
 
@@ -1387,16 +1461,16 @@ class FantasyCog(commands.Cog):
         cat = next((c for c in data.get("categories", []) if c.get("id") == fantasy_t.get("category_id")), None)
         round_points_map: Dict[str, int] = (cat or {}).get("round_points", {})
 
-        rows, warnings = _build_fetched_rows(fantasy_t, all_matches, round_points_map)
+        rows, warnings = _build_fetched_rows(fantasy_t, all_matches, rank_map, round_points_map)
 
         lines = [
             f"**Auto-Fetch Preview — {fantasy_t.get('name')}**",
-            f"*Source: {api_tournament.get('name', api_id)}  •  {len(all_matches)} matches fetched*",
+            f"*Source: {t_name} {season}  •  {len(all_matches)} matches  •  {len(rank_map)} ranked players*",
             "",
         ]
         if warnings:
             lines += warnings + [""]
-        lines.append("Player — Round — Total (Tourn + Sets + Upset) | W-L")
+        lines.append("Player — Round — Total (Tourn + Sets + Upset) | W-L sets")
         lines.append("")
         for r in sorted(rows, key=lambda x: x["total"], reverse=True):
             lines.append(
