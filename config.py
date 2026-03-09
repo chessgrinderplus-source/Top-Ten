@@ -33,6 +33,9 @@ TOURNAMENTS_FILE        = os.getenv("TOURNAMENTS_FILE",        _d("tournaments.j
 MATCHSIM_FILE           = os.getenv("MATCHSIM_FILE",           _d("matchsim_bots.json"))
 SHOP_FILE               = os.getenv("SHOP_FILE",               _d("shop_statpacks.json"))
 
+# ── Tennis API ───────────────────────────────────────────────────────────────
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
+
 # ── Google Sheets ─────────────────────────────────────────────────────────────
 GOOGLE_DRIVE_FOLDER_ID  = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 
