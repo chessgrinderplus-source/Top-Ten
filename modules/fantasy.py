@@ -4,9 +4,11 @@ from __future__ import annotations
 import re
 import uuid
 import time
+import os
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple, Any
 
+import aiohttp
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -144,32 +146,271 @@ def _mark_created(t: dict) -> None:
     t["created"] = True
 
 # ============================================================
+# Round name helpers
+# ============================================================
+
+ROUND_CANONICAL = ["Champion", "Finalist", "Semi-Final", "Quarter-Final", "R16", "R32", "R64", "R128"]
+
+# Higher index = earlier exit (used for determining furthest round reached)
+ROUND_ORDER: Dict[str, int] = {r: i for i, r in enumerate(reversed(ROUND_CANONICAL))}
+
+_ROUND_ALIASES: Dict[str, str] = {
+    "champion": "Champion", "winner": "Champion", "w": "Champion",
+    "finalist": "Finalist", "final": "Finalist", "f": "Finalist",
+    "semi-final": "Semi-Final", "semifinal": "Semi-Final", "semi": "Semi-Final", "sf": "Semi-Final",
+    "quarter-final": "Quarter-Final", "quarterfinal": "Quarter-Final", "quarter": "Quarter-Final", "qf": "Quarter-Final",
+    "r16": "R16", "round of 16": "R16", "ro16": "R16",
+    "r32": "R32", "round of 32": "R32", "ro32": "R32",
+    "r64": "R64", "round of 64": "R64", "ro64": "R64",
+    "r128": "R128", "round of 128": "R128", "ro128": "R128",
+    # API-style names
+    "1st round": "R64", "2nd round": "R32", "3rd round": "R16",
+    "round of 64": "R64", "round of 32": "R32", "round of 16": "R16",
+    "quarterfinals": "Quarter-Final", "semifinals": "Semi-Final",
+    "the final": "Finalist",
+}
+
+def _normalize_round(s: str) -> Optional[str]:
+    return _ROUND_ALIASES.get(_norm(s))
+
+def _parse_round_points_text(text: str) -> Tuple[Dict[str, int], List[str]]:
+    """Parse a block of 'Round: Points' lines into a dict. Returns (points_dict, errors)."""
+    result: Dict[str, int] = {}
+    errors: List[str] = []
+    for idx, raw in enumerate((text or "").splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            errors.append(f"Line {idx}: expected 'Round: Points' format, got: {line!r}")
+            continue
+        key_raw, val_raw = line.split(":", 1)
+        canonical = _normalize_round(key_raw.strip())
+        if canonical is None:
+            errors.append(f"Line {idx}: unrecognised round {key_raw.strip()!r}. Valid: {', '.join(ROUND_CANONICAL)}")
+            continue
+        try:
+            result[canonical] = int(val_raw.strip())
+        except ValueError:
+            errors.append(f"Line {idx}: points must be an integer, got {val_raw.strip()!r}")
+    return result, errors
+
+def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Optional[int]:
+    cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
+    if not cat:
+        return None
+    return cat.get("round_points", {}).get(round_key)
+
+# ============================================================
+# Tennis API integration (API-Tennis via RapidAPI)
+# Set RAPIDAPI_KEY in your config or as an environment variable.
+# ============================================================
+
+_TENNIS_API_HOST = getattr(config, "TENNIS_API_HOST", "api.tennis.com")
+_TENNIS_API_BASE = getattr(config, "TENNIS_API_BASE", "https://api.tennis.com/v2.0")
+
+def _rapidapi_key() -> str:
+    return getattr(config, "RAPIDAPI_KEY", "") or os.environ.get("RAPIDAPI_KEY", "")
+
+async def _api_get(path: str, params: Optional[dict] = None) -> Any:
+    key = _rapidapi_key()
+    if not key:
+        raise RuntimeError("RAPIDAPI_KEY is not set. Add it to your config or environment.")
+    headers = {
+        "X-RapidAPI-Key": key,
+        "X-RapidAPI-Host": _TENNIS_API_HOST,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{_TENNIS_API_BASE}{path}",
+            headers=headers,
+            params=params or {},
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+async def _api_search_tournaments(name: str) -> List[dict]:
+    data = await _api_get("/tournaments", {"name": name})
+    if isinstance(data, list):
+        return data
+    return data.get("result", data.get("tournaments", []))
+
+async def _api_get_matches(tournament_id: str) -> List[dict]:
+    data = await _api_get("/results", {"tournament_id": str(tournament_id)})
+    if isinstance(data, list):
+        return data
+    return data.get("result", data.get("matches", []))
+
+def _name_sim(a: str, b: str) -> float:
+    """Word-overlap similarity between two player names."""
+    a_parts = set(_norm(a).split())
+    b_parts = set(_norm(b).split())
+    if not a_parts or not b_parts:
+        return 0.0
+    return len(a_parts & b_parts) / max(len(a_parts), len(b_parts))
+
+def _match_player_side(player_name: str, match: dict) -> Optional[str]:
+    """Return 'player1' or 'player2' if the player is in this match, else None."""
+    for side in ("player1", "player2"):
+        p = match.get(side, {})
+        name = p.get("name", p.get("full_name", ""))
+        if _name_sim(player_name, name) >= 0.45:
+            return side
+    return None
+
+def _extract_set_score(match: dict) -> Tuple[int, int]:
+    """Return (p1_sets_won, p2_sets_won)."""
+    sets = match.get("sets", match.get("score", []))
+    if not sets:
+        return 0, 0
+    p1s = p2s = 0
+    for s in sets:
+        g1 = int(s.get("player1_games", s.get("p1", s.get("games_1", 0))) or 0)
+        g2 = int(s.get("player2_games", s.get("p2", s.get("games_2", 0))) or 0)
+        if g1 > g2:
+            p1s += 1
+        elif g2 > g1:
+            p2s += 1
+    return p1s, p2s
+
+def _match_winner_is_p1(match: dict) -> Optional[bool]:
+    """Return True if player1 won, False if player2 won, None if unknown."""
+    w = match.get("winner", match.get("winner_id", match.get("winner_side")))
+    if w in (1, "1", "player1"):
+        return True
+    if w in (2, "2", "player2"):
+        return False
+    return None
+
+def _compute_upset_pts(player_rank: int, opp_rank: int, player_won: bool) -> int:
+    """
+    +points if player beat a better-ranked (lower number) opponent.
+    -points if player lost to a worse-ranked (higher number) opponent.
+    0 for expected results.
+    """
+    if player_rank <= 0 or opp_rank <= 0:
+        return 0
+    diff = opp_rank - player_rank  # negative = opp is better
+    if player_won and diff < 0:
+        return abs(diff) * 3   # upset win
+    if not player_won and diff > 0:
+        return -diff * 3       # upset loss
+    return 0
+
+def _calc_player_stats_from_matches(
+    player_name: str,
+    all_matches: List[dict],
+) -> Tuple[int, int, int]:
+    """
+    Scan all matches and return (sets_won, sets_lost, net_upset_pts) for the given player.
+    Player ranking is read directly from match data.
+    """
+    sets_won = sets_lost = upset_pts = 0
+    for match in all_matches:
+        side = _match_player_side(player_name, match)
+        if side is None:
+            continue
+        opp_side = "player2" if side == "player1" else "player1"
+        me  = match.get(side, {})
+        opp = match.get(opp_side, {})
+
+        my_rank  = int(me.get("ranking",  me.get("rank",  0)) or 0)
+        opp_rank = int(opp.get("ranking", opp.get("rank", 0)) or 0)
+
+        p1_won = _match_winner_is_p1(match)
+        if p1_won is None:
+            continue
+        player_won = (side == "player1") == p1_won
+
+        p1s, p2s = _extract_set_score(match)
+        my_sets  = p1s if side == "player1" else p2s
+        opp_sets = p2s if side == "player1" else p1s
+        sets_won  += my_sets
+        sets_lost += opp_sets
+
+        upset_pts += _compute_upset_pts(my_rank, opp_rank, player_won)
+
+    return sets_won, sets_lost, upset_pts
+
+def _guess_player_round(player_name: str, all_matches: List[dict]) -> Optional[str]:
+    """
+    Find the furthest round a player reached by scanning all their matches.
+    Returns a canonical round string or None.
+    """
+    best: Optional[str] = None
+    best_order = -1
+    for match in all_matches:
+        side = _match_player_side(player_name, match)
+        if side is None:
+            continue
+        rnd_raw = str(match.get("round", match.get("round_name", ""))).strip()
+        canonical = _normalize_round(rnd_raw)
+        if canonical is None:
+            continue
+        order = ROUND_ORDER.get(canonical, -1)
+        if order > best_order:
+            best_order = order
+            best = canonical
+    return best
+
+def _build_fetched_rows(
+    fantasy_t: dict,
+    all_matches: List[dict],
+    round_points_map: Dict[str, int],
+) -> Tuple[List[dict], List[str]]:
+    """
+    For every player in the fantasy tournament, compute stats from API match data.
+    Returns (rows, warnings).
+    """
+    rows: List[dict] = []
+    warnings: List[str] = []
+    for p in fantasy_t.get("players", []):
+        pname = p["name"]
+        sw, sl, upset = _calc_player_stats_from_matches(pname, all_matches)
+        round_key = _guess_player_round(pname, all_matches)
+        if round_key is None:
+            warnings.append(f"⚠️ Could not determine round for **{pname}** — defaulted to R128")
+            round_key = "R128"
+        tourn_pts = round_points_map.get(round_key, 0)
+        set_pts   = sw * 5 - sl * 2
+        total     = tourn_pts + set_pts + upset
+        rows.append({
+            "player":            pname,
+            "round":             round_key,
+            "sets_won":          sw,
+            "sets_lost":         sl,
+            "tournament_points": tourn_pts,
+            "set_points":        set_pts,
+            "upset_points":      upset,
+            "total":             total,
+        })
+    return rows, warnings
+
+# ============================================================
 # Results parsing
 # ============================================================
 
 def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
+    """Parse manual fallback results: Player | Round (one per line)."""
     rows = []
     errors = []
     for idx, raw in enumerate((text or "").splitlines(), start=1):
         if not raw.strip():
             continue
         parts = [p.strip() for p in raw.split("|")]
-        if len(parts) < 5:
-            errors.append(f"Line {idx}: not enough fields (need at least 5).")
+        if len(parts) < 2:
+            errors.append(f"Line {idx}: need 2 fields: Player | Round")
             continue
         name = parts[0]
         round_text = parts[1]
-        try:
-            tourn = int(parts[2])
-            setp  = int(parts[3])
-            upset = int(parts[4])
-        except Exception:
-            errors.append(f"Line {idx}: points must be integers.")
+        if not name:
+            errors.append(f"Line {idx}: player name is empty.")
             continue
-        lost_to = parts[5].strip() if len(parts) >= 6 else ""
-        total = tourn + setp + upset
-        rows.append({"player": name, "round": round_text, "tournament_points": tourn,
-                     "set_points": setp, "upset_points": upset, "lost_to": lost_to, "total": total})
+        if _normalize_round(round_text) is None:
+            errors.append(f"Line {idx}: unrecognised round '{round_text}'. Valid: {', '.join(ROUND_CANONICAL)}")
+            continue
+        rows.append({"player": name, "round": round_text})
     return rows, errors
 
 # ============================================================
@@ -377,6 +618,59 @@ class ConfirmPicksButton(discord.ui.Button):
 # Admin create flow
 # ============================================================
 
+class CategoryPointsModal(discord.ui.Modal, title="Category — Round Points"):
+    points_text = discord.ui.TextInput(
+        label="Round: Points (one per line)",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=1000,
+        placeholder=(
+            "Champion: 500\n"
+            "Finalist: 300\n"
+            "Semi-Final: 180\n"
+            "Quarter-Final: 90\n"
+            "R16: 45\n"
+            "R32: 20\n"
+            "R64: 10"
+        ),
+    )
+
+    def __init__(self, cog, user_id: int, category_id: str, category_title: str):
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+        self.category_id = category_id
+        self.category_title = category_title
+        # Pre-fill if existing points
+        data = _load()
+        cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
+        if cat and cat.get("round_points"):
+            prefill = "\n".join(f"{r}: {cat['round_points'][r]}" for r in ROUND_CANONICAL if r in cat["round_points"])
+            try:
+                self.points_text.default = prefill
+            except Exception:
+                pass
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        pts, errors = _parse_round_points_text(str(self.points_text))
+        if errors:
+            return await interaction.response.send_message(
+                "❌ Errors in points:\n" + "\n".join(errors[:10]), ephemeral=True)
+        data = _load()
+        cat = next((c for c in data.get("categories", []) if c.get("id") == self.category_id), None)
+        if not cat:
+            return await interaction.response.send_message("❌ Category not found.", ephemeral=True)
+        cat["round_points"] = pts
+        _save(data)
+        lines = [f"✅ Points saved for **{self.category_title}** (`{self.category_id}`)", ""]
+        for r in ROUND_CANONICAL:
+            if r in pts:
+                lines.append(f"**{r}:** {pts[r]}")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
 class UnseededModal(discord.ui.Modal, title="Fantasy Create — Unseeded"):
     unseeded = discord.ui.TextInput(label="Unseeded players (1 per line)",
                                     style=discord.TextStyle.paragraph, required=False, max_length=4000)
@@ -555,12 +849,10 @@ class RosterPickMenuView(discord.ui.View):
                                   description=f"**{header}**\n\nℹ️ Results not entered yet.")
             return await interaction.response.send_message(embed=embed, ephemeral=True)
         lines = [f"**{header} — {r.get('round','')}**", "",
-                 f"**Tournament Bonus:** +{r.get('tournament_points',0)}",
-                 f"**Set Bonus:** +{r.get('set_points',0)}",
-                 f"**Upset Bonus:** +{r.get('upset_points',0)}", "",
+                 f"**Tournament Pts:** +{r.get('tournament_points',0)}",
+                 f"**Set Pts:** +{r.get('set_points',0)}  ({r.get('sets_won',0)}W / {r.get('sets_lost',0)}L)",
+                 f"**Upset Pts:** {r.get('upset_points',0):+}", "",
                  f"**Total Points:** {r.get('total',0)}"]
-        if r.get("lost_to"):
-            lines.extend(["", f"Lost to {r['lost_to']}"])
         embed = discord.Embed(title="Pick Breakdown", description="\n".join(lines))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -584,9 +876,20 @@ class RetryEndView(discord.ui.View):
         await interaction.response.send_modal(
             EndResultsModal(self.cog, self.user_id, self.tournament_id, self.previous_text))
 
-class EndResultsModal(discord.ui.Modal, title="Fantasy End — Results"):
-    results = discord.ui.TextInput(label="Player|Round|Tourn|Set|Upset|LostTo?",
-                                    style=discord.TextStyle.paragraph, required=True, max_length=4000)
+class EndResultsModal(discord.ui.Modal, title="Fantasy End — Manual Results"):
+    results = discord.ui.TextInput(
+        label="Player | Round  (one per line)",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder=(
+            "Djokovic | Champion\n"
+            "Alcaraz | Finalist\n"
+            "Sinner | Semi-Final\n"
+            "Medvedev | Quarter-Final\n"
+            "Use /fantasy-admin tournament-fetch for full automation."
+        ),
+    )
 
     def __init__(self, cog, user_id: int, tournament_id: str, default_text: str = ""):
         super().__init__()
@@ -738,6 +1041,72 @@ class FantasyLeaderboardView(discord.ui.View):
         await self.cog._render_leaderboard(interaction, mode=mode, category_id=cat, days_back=days)
 
 # ============================================================
+# API fetch UI: tournament picker + confirm
+# ============================================================
+
+class TournamentPickSelect(discord.ui.Select):
+    def __init__(self, owner_view, api_tournaments: List[dict]):
+        opts = []
+        for i, tr in enumerate(api_tournaments[:25]):
+            name = tr.get("name", tr.get("tournament_name", f"Tournament {i+1}"))
+            date = tr.get("date", tr.get("start_date", ""))
+            label = f"{name}  ({date})"[:100] if date else name[:100]
+            opts.append(discord.SelectOption(label=label, value=str(i)))
+        super().__init__(placeholder="Choose the correct tournament…", min_values=1, max_values=1, options=opts)
+        self.owner_view = owner_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.owner_view.on_select(interaction, int(self.values[0]))
+
+
+class TournamentPickView(discord.ui.View):
+    def __init__(self, cog, user_id: int, fantasy_t: dict, api_tournaments: List[dict]):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.user_id = user_id
+        self.fantasy_t = fantasy_t
+        self.api_tournaments = api_tournaments
+        self.add_item(TournamentPickSelect(self, api_tournaments))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction, idx: int):
+        chosen = self.api_tournaments[idx]
+        name = chosen.get("name", chosen.get("tournament_name", "?"))
+        await interaction.response.edit_message(
+            content=f"⏳ Fetching match data for **{name}**...", view=None)
+        await self.cog._fetch_and_preview(interaction, self.fantasy_t, chosen)
+
+
+class FetchConfirmView(discord.ui.View):
+    def __init__(self, cog, user_id: int, tournament_id: str, rows: List[dict]):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.rows = rows
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="✅ Confirm & Save", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._apply_results_data(
+            interaction, self.tournament_id, self.rows, title="Results Auto-Saved")
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="❌ Fetch cancelled.", embed=None, view=None)
+
+
+# ============================================================
 # Cog
 # ============================================================
 
@@ -815,15 +1184,35 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load(); cid = _mk_id("fantasy-categ")
-        data["categories"].append({"id": cid, "title": title.strip()}); _save(data)
-        await interaction.response.send_message(f"✅ Category created: **{title.strip()}** (`{cid}`)")
+        data["categories"].append({"id": cid, "title": title.strip(), "round_points": {}})
+        _save(data)
+        await interaction.response.send_modal(CategoryPointsModal(self, interaction.user.id, cid, title.strip()))
+
+    @f_admin.command(name="category-set-points", description="Admin: set or update round points for an existing category.")
+    @app_commands.autocomplete(category_id=_ac_category)
+    async def fantasy_category_set_points(self, interaction: discord.Interaction, category_id: str):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
+        if not cat:
+            return await interaction.response.send_message("❌ Category not found.", ephemeral=True)
+        await interaction.response.send_modal(CategoryPointsModal(self, interaction.user.id, category_id, cat.get("title", "")))
 
     @f_admin.command(name="category-list", description="List fantasy tournament categories.")
     async def fantasy_category_list(self, interaction: discord.Interaction):
         data = _load(); cats = data.get("categories", [])
         if not cats: return await interaction.response.send_message("ℹ️ No categories yet.")
-        lines = [f"- **{c['title']}** — `{c['id']}`"
-                 for c in sorted(cats, key=lambda x: x.get("title","").lower())]
+        lines = []
+        for c in sorted(cats, key=lambda x: x.get("title","").lower()):
+            lines.append(f"**{c['title']}** — `{c['id']}`")
+            rp = c.get("round_points", {})
+            if rp:
+                pts_str = "  •  ".join(f"{r}: **{rp[r]}**" for r in ROUND_CANONICAL if r in rp)
+                lines.append(f"  ↳ {pts_str}")
+            else:
+                lines.append("  ↳ *(no points set — use `/fantasy-admin category-set-points`)*")
+            lines.append("")
         view = PagerView(_chunk_pages(lines), interaction.user.id, "Fantasy Categories")
         await interaction.response.send_message(embed=view._embed(), view=view)
 
@@ -918,7 +1307,7 @@ class FantasyCog(commands.Cog):
         view = ConfirmDeleteTournamentView(self, interaction.user.id, tournament_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @f_admin.command(name="tournament-end", description="Admin: submit results and complete a fantasy tournament.")
+    @f_admin.command(name="tournament-end", description="Admin: submit results manually and complete a fantasy tournament.")
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     async def fantasy_end(self, interaction: discord.Interaction, tournament_id: str):
         if not _is_admin(interaction.user):
@@ -928,16 +1317,114 @@ class FantasyCog(commands.Cog):
         if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
         await interaction.response.send_modal(EndResultsModal(self, interaction.user.id, tournament_id))
 
+    @f_admin.command(
+        name="tournament-fetch",
+        description="Admin: auto-fetch results from the tennis API and complete a fantasy tournament.",
+    )
+    @app_commands.autocomplete(tournament_id=_ac_any_tournament)
+    @app_commands.describe(
+        tournament_id="Fantasy tournament to complete",
+        search_query="Tournament name to search on the API (e.g. 'Wimbledon 2025')",
+    )
+    async def fantasy_tournament_fetch(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        search_query: str,
+    ):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        if not _rapidapi_key():
+            return await interaction.response.send_message(
+                "❌ `RAPIDAPI_KEY` is not set. Add it to your Railway environment variables.", ephemeral=True)
+        data = _load()
+        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        if not t:
+            return await interaction.response.send_message("❌ Fantasy tournament not found.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            api_tournaments = await _api_search_tournaments(search_query)
+        except Exception as e:
+            return await interaction.followup.send(f"❌ API search failed: `{e}`", ephemeral=True)
+
+        if not api_tournaments:
+            return await interaction.followup.send(
+                f"❌ No tournaments found for `{search_query}`. Try a different search term.", ephemeral=True)
+
+        if len(api_tournaments) == 1:
+            name = api_tournaments[0].get("name", api_tournaments[0].get("tournament_name", "?"))
+            await interaction.followup.send(
+                f"⏳ Found **{name}** — fetching match data...", ephemeral=True)
+            await self._fetch_and_preview(interaction, t, api_tournaments[0])
+        else:
+            view = TournamentPickView(self, interaction.user.id, t, api_tournaments)
+            await interaction.followup.send(
+                f"🎾 Found **{len(api_tournaments[:25])}** matching tournaments. Pick the right one:",
+                view=view, ephemeral=True)
+
+    async def _fetch_and_preview(
+        self,
+        interaction: discord.Interaction,
+        fantasy_t: dict,
+        api_tournament: dict,
+    ) -> None:
+        api_id = str(api_tournament.get("id", api_tournament.get("tournament_id", "")))
+        try:
+            all_matches = await _api_get_matches(api_id)
+        except Exception as e:
+            msg = f"❌ Failed to fetch matches: `{e}`"
+            await interaction.edit_original_response(content=msg, embed=None, view=None)
+            return
+
+        if not all_matches:
+            await interaction.edit_original_response(
+                content="❌ API returned no match data for this tournament. Try a different tournament or use manual entry.",
+                embed=None, view=None)
+            return
+
+        data = _load()
+        cat = next((c for c in data.get("categories", []) if c.get("id") == fantasy_t.get("category_id")), None)
+        round_points_map: Dict[str, int] = (cat or {}).get("round_points", {})
+
+        rows, warnings = _build_fetched_rows(fantasy_t, all_matches, round_points_map)
+
+        lines = [
+            f"**Auto-Fetch Preview — {fantasy_t.get('name')}**",
+            f"*Source: {api_tournament.get('name', api_id)}  •  {len(all_matches)} matches fetched*",
+            "",
+        ]
+        if warnings:
+            lines += warnings + [""]
+        lines.append("Player — Round — Total (Tourn + Sets + Upset) | W-L")
+        lines.append("")
+        for r in sorted(rows, key=lambda x: x["total"], reverse=True):
+            lines.append(
+                f"**{r['player']}** — {r['round']} — **{r['total']}** "
+                f"({r['tournament_points']} + {r['set_points']} + {r['upset_points']}) "
+                f"| {r['sets_won']}W-{r['sets_lost']}L"
+            )
+
+        confirm_view = FetchConfirmView(self, interaction.user.id, fantasy_t["id"], rows)
+        pager = PagerView(_chunk_pages(lines), interaction.user.id, "Fetch Preview")
+        await interaction.edit_original_response(content=None, embed=pager._embed(), view=confirm_view)
+
     async def _fantasy_end_submit(self, interaction: discord.Interaction, tournament_id: str, results_text: str):
         try:
             data = _load()
             t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
             if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
+
+            category_id = t.get("category_id")
+            cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
+            round_points_map: Dict[str, int] = (cat or {}).get("round_points", {})
+
             rows, parse_errors = _parse_results_lines(results_text)
             if parse_errors:
                 view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
                 return await interaction.response.send_message("❌ Errors:\n" + "\n".join(parse_errors[:30]),
                                                                 view=view, ephemeral=True)
+
             tp_keys = {_player_key(p["name"]) for p in t.get("players", [])}
             unknown = [r["player"] for r in rows if _player_key(r["player"]) not in tp_keys]
             given   = {_player_key(r["player"]) for r in rows}
@@ -948,20 +1435,69 @@ class FantasyCog(commands.Cog):
                 if missing: msg.append("\n**Missing:**");  msg.extend([f"- {n}" for n in missing[:50]])
                 view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
                 return await interaction.response.send_message("\n".join(msg), view=view, ephemeral=True)
-            t["results"] = {_player_key(r["player"]): r for r in rows}
-            t["results_entered"] = True; t["picks_open"] = False
-            t["completed_at"] = t.get("completed_at") or _now_unix(); _save(data)
-            lines = [f"✅ Results saved for **{t.get('name')}**", "",
-                     "Format: Player — Round — Total (Tourn + Set + Upset)", ""]
-            for r in sorted(rows, key=lambda x: x["total"], reverse=True):
-                lines.append(f"- **{r['player']}** — {r['round']} — **{r['total']}** "
-                              f"({r['tournament_points']} + {r['set_points']} + {r['upset_points']})")
-            view = PagerView(_chunk_pages(lines), interaction.user.id, "Fantasy End Confirmation")
-            await interaction.response.send_message(embed=view._embed(), view=view, ephemeral=True)
+
+            # Manual entry: only tournament points calculated; sets/upsets = 0
+            final_rows = []
+            for r in rows:
+                canonical = _normalize_round(r["round"]) or r["round"]
+                tourn_pts = round_points_map.get(canonical, 0)
+                final_rows.append({
+                    "player":            r["player"],
+                    "round":             canonical,
+                    "sets_won":          0,
+                    "sets_lost":         0,
+                    "tournament_points": tourn_pts,
+                    "set_points":        0,
+                    "upset_points":      0,
+                    "total":             tourn_pts,
+                })
+
+            await self._apply_results_data(interaction, tournament_id, final_rows,
+                                            title="Manual Results Saved",
+                                            note="ℹ️ Set & upset points not included (manual entry). Use `/fantasy-admin tournament-fetch` for full automation.")
         except Exception as e:
             view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
             await interaction.response.send_message(f"❌ Error: `{type(e).__name__}: {e}`",
                                                      view=view, ephemeral=True)
+
+    async def _apply_results_data(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        rows: List[dict],
+        title: str = "Results Saved",
+        note: str = "",
+    ) -> None:
+        data = _load()
+        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        if not t:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(content="❌ Tournament not found.", embed=None, view=None)
+            else:
+                await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+            return
+        t["results"] = {_player_key(r["player"]): r for r in rows}
+        t["results_entered"] = True
+        t["picks_open"] = False
+        t["completed_at"] = t.get("completed_at") or _now_unix()
+        _save(data)
+
+        lines = [f"✅ **{title}** — {t.get('name')}", ""]
+        if note:
+            lines += [note, ""]
+        lines.append("Player — Round — Total (Tourn + Sets + Upset) | W-L")
+        lines.append("")
+        for r in sorted(rows, key=lambda x: x["total"], reverse=True):
+            lines.append(
+                f"**{r['player']}** — {r['round']} — **{r['total']}** "
+                f"({r['tournament_points']} + {r['set_points']} + {r['upset_points']}) "
+                f"| {r.get('sets_won', 0)}W-{r.get('sets_lost', 0)}L"
+            )
+        pager = PagerView(_chunk_pages(lines), interaction.user.id, title)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=None, embed=pager._embed(), view=pager)
+        else:
+            await interaction.response.send_message(embed=pager._embed(), view=pager, ephemeral=True)
 
     # ── Leaderboard admin ─────────────────────────────────────────────────────
 
