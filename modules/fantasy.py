@@ -215,7 +215,7 @@ def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Opti
 # ============================================================
 
 _RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
-_RAPIDAPI_BASE = f"https://{_RAPIDAPI_HOST}/tennis/"
+_RAPIDAPI_BASE = f"https://{_RAPIDAPI_HOST}/"
 
 def _rapidapi_key() -> str:
     return getattr(config, "RAPIDAPI_KEY", "") or os.environ.get("RAPIDAPI_KEY", "")
