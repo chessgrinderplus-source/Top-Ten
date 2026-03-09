@@ -1,5 +1,188 @@
 {
   "guilds": {
-    "1333962919536492607": {}
+    "1333962919536492607": {
+      "721853417479209052": {
+        "user_id": 721853417479209052,
+        "name": "Ninja",
+        "points": 400,
+        "history": [
+          {
+            "tournament_id": "T_eee_0C5A71",
+            "round": "QF",
+            "delta": 400,
+            "is_defense": false,
+            "date": "2026-03-08T22:45:58.204085+00:00"
+          }
+        ],
+        "rankings_snapshots": [
+          {
+            "date": "2026-03-08T22:45:58.257952+00:00",
+            "rank": 5,
+            "points": 400
+          }
+        ],
+        "career_high_pts": 400,
+        "career_low_pts": 400,
+        "career_high_rank": 5,
+        "career_low_rank": 5
+      },
+      "1080153207168303156": {
+        "user_id": 1080153207168303156,
+        "name": "just a random person",
+        "points": 400,
+        "history": [
+          {
+            "tournament_id": "T_eee_0C5A71",
+            "round": "QF",
+            "delta": 400,
+            "is_defense": false,
+            "date": "2026-03-08T22:45:58.227248+00:00"
+          }
+        ],
+        "rankings_snapshots": [
+          {
+            "date": "2026-03-08T22:45:58.257952+00:00",
+            "rank": 6,
+            "points": 400
+          }
+        ],
+        "career_high_pts": 400,
+        "career_low_pts": 400,
+        "career_high_rank": 6,
+        "career_low_rank": 6
+      },
+      "859691230941282304": {
+        "user_id": 859691230941282304,
+        "name": "squeakybum",
+        "points": 400,
+        "history": [
+          {
+            "tournament_id": "T_eee_0C5A71",
+            "round": "QF",
+            "delta": 400,
+            "is_defense": false,
+            "date": "2026-03-08T22:45:58.229672+00:00"
+          }
+        ],
+        "rankings_snapshots": [
+          {
+            "date": "2026-03-08T22:45:58.257952+00:00",
+            "rank": 7,
+            "points": 400
+          }
+        ],
+        "career_high_pts": 400,
+        "career_low_pts": 400,
+        "career_high_rank": 7,
+        "career_low_rank": 7
+      },
+      "247086842430750750": {
+        "user_id": 247086842430750750,
+        "name": "Diegoo",
+        "points": 800,
+        "history": [
+          {
+            "tournament_id": "T_eee_0C5A71",
+            "round": "SF",
+            "delta": 800,
+            "is_defense": false,
+            "date": "2026-03-08T22:45:58.232016+00:00"
+          }
+        ],
+        "rankings_snapshots": [
+          {
+            "date": "2026-03-08T22:45:58.257952+00:00",
+            "rank": 3,
+            "points": 800
+          }
+        ],
+        "career_high_pts": 800,
+        "career_low_pts": 800,
+        "career_high_rank": 3,
+        "career_low_rank": 3
+      },
+      "404321019738718209": {
+        "user_id": 404321019738718209,
+        "name": "Dandude",
+        "points": 800,
+        "history": [
+          {
+            "tournament_id": "T_eee_0C5A71",
+            "round": "SF",
+            "delta": 800,
+            "is_defense": false,
+            "date": "2026-03-08T22:45:58.245010+00:00"
+          }
+        ],
+        "rankings_snapshots": [
+          {
+            "date": "2026-03-08T22:45:58.257952+00:00",
+            "rank": 4,
+            "points": 800
+          }
+        ],
+        "career_high_pts": 800,
+        "career_low_pts": 800,
+        "career_high_rank": 4,
+        "career_low_rank": 4
+      },
+      "962404052640100382": {
+        "user_id": 962404052640100382,
+        "name": "SwayzPhase",
+        "points": 2600,
+        "history": [
+          {
+            "tournament_id": "T_eee_0C5A71",
+            "round": "F",
+            "delta": 1300,
+            "is_defense": false,
+            "date": "2026-03-08T22:45:58.247656+00:00"
+          },
+          {
+            "tournament_id": "T_eee_0C5A71",
+            "round": "F",
+            "delta": 1300,
+            "is_defense": false,
+            "date": "2026-03-08T22:45:58.252536+00:00"
+          }
+        ],
+        "rankings_snapshots": [
+          {
+            "date": "2026-03-08T22:45:58.257952+00:00",
+            "rank": 1,
+            "points": 2600
+          }
+        ],
+        "career_high_pts": 2600,
+        "career_low_pts": 1300,
+        "career_high_rank": 1,
+        "career_low_rank": 1
+      },
+      "1171999659527512104": {
+        "user_id": 1171999659527512104,
+        "name": "BuzzyPlayz",
+        "points": 2000,
+        "history": [
+          {
+            "tournament_id": "T_eee_0C5A71",
+            "round": "W",
+            "delta": 2000,
+            "is_defense": false,
+            "date": "2026-03-08T22:45:58.250324+00:00"
+          }
+        ],
+        "rankings_snapshots": [
+          {
+            "date": "2026-03-08T22:45:58.257952+00:00",
+            "rank": 2,
+            "points": 2000
+          }
+        ],
+        "career_high_pts": 2000,
+        "career_low_pts": 2000,
+        "career_high_rank": 2,
+        "career_low_rank": 2
+      }
+    }
   }
 }

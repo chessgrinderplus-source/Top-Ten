@@ -3,7 +3,250 @@
     {
       "id": "fantasy-categ-a4c3abcf",
       "title": "ATP 500"
+    },
+    {
+      "id": "fantasy-categ-fbdaeb97",
+      "title": "ATP Masters 1000"
+    },
+    {
+      "id": "fantasy-categ-29c2d9cc",
+      "title": "ATP Masters 1000"
     }
   ],
-  "tournaments": []
+  "tournaments": [
+    {
+      "id": "fantasy-d6b93902",
+      "guild_id": 1333962919536492607,
+      "name": "Indian Wells 2026",
+      "category_id": "fantasy-categ-29c2d9cc",
+      "category_title": "ATP Masters 1000",
+      "created": true,
+      "picks_open": false,
+      "results_entered": false,
+      "opened_at": 1772982153,
+      "closed_at": 1773001535,
+      "completed_at": null,
+      "players": [
+        {
+          "name": "Carlos Alcaraz",
+          "seed": 1
+        },
+        {
+          "name": "Jannik Sinner",
+          "seed": 2
+        },
+        {
+          "name": "Novak Djokovic",
+          "seed": 3
+        },
+        {
+          "name": "Alexander Zverev",
+          "seed": 4
+        },
+        {
+          "name": "-",
+          "seed": 5
+        },
+        {
+          "name": "Alex De Minaur",
+          "seed": 6
+        },
+        {
+          "name": "Taylor Fritz",
+          "seed": 7
+        },
+        {
+          "name": "Ben Shelton",
+          "seed": 8
+        },
+        {
+          "name": "Felix Auger-Aliassime",
+          "seed": 9
+        },
+        {
+          "name": "Alexander Bublik",
+          "seed": 10
+        },
+        {
+          "name": "Daniil Medvedev",
+          "seed": 11
+        },
+        {
+          "name": "Jakub Mensik",
+          "seed": 12
+        },
+        {
+          "name": "Casper Ruud",
+          "seed": 13
+        },
+        {
+          "name": "Jack Draper",
+          "seed": 14
+        },
+        {
+          "name": "Flavio Cobolli",
+          "seed": 15
+        },
+        {
+          "name": "--",
+          "seed": 16
+        },
+        {
+          "name": "---",
+          "seed": 17
+        },
+        {
+          "name": "Alejandro Davidovich Fokina",
+          "seed": 18
+        },
+        {
+          "name": "Fransisco Cerundolo",
+          "seed": 19
+        },
+        {
+          "name": "----",
+          "seed": 20
+        },
+        {
+          "name": "Frances Tiafoe",
+          "seed": 21
+        },
+        {
+          "name": "-----",
+          "seed": 22
+        },
+        {
+          "name": "Tommy Paul",
+          "seed": 23
+        },
+        {
+          "name": "Valentin Vacherot",
+          "seed": 24
+        },
+        {
+          "name": "Learner Tien",
+          "seed": 25
+        },
+        {
+          "name": "Arthur Rinderknech",
+          "seed": 26
+        },
+        {
+          "name": "Cameron Norrie",
+          "seed": 27
+        },
+        {
+          "name": "Brandon Nakashima",
+          "seed": 28
+        },
+        {
+          "name": "------",
+          "seed": 29
+        },
+        {
+          "name": "Arthur Fils",
+          "seed": 30
+        },
+        {
+          "name": "Rinky Hijikata",
+          "seed": null
+        },
+        {
+          "name": "Alexsandar Kovacevic",
+          "seed": null
+        },
+        {
+          "name": "Sebastian Baez",
+          "seed": null
+        },
+        {
+          "name": "Alex Michelsen",
+          "seed": null
+        },
+        {
+          "name": "Marton Fuscovics",
+          "seed": null
+        },
+        {
+          "name": "Gabriel Diallo",
+          "seed": null
+        },
+        {
+          "name": "Joao Fonseca",
+          "seed": null
+        },
+        {
+          "name": "Denis Shapovalov",
+          "seed": null
+        }
+      ],
+      "rosters": {
+        "1279106601931899015": [
+          "Carlos Alcaraz",
+          "Felix Auger-Aliassime",
+          "Alex Michelsen",
+          "Learner Tien",
+          "Flavio Cobolli"
+        ],
+        "308698528547471371": [
+          "Carlos Alcaraz",
+          "Jack Draper",
+          "Jakub Mensik",
+          "Joao Fonseca",
+          "Valentin Vacherot"
+        ],
+        "1080153207168303156": [
+          "Jannik Sinner",
+          "Flavio Cobolli",
+          "Arthur Fils",
+          "Tommy Paul",
+          "Frances Tiafoe"
+        ],
+        "363039704922324994": [
+          "Novak Djokovic",
+          "Jack Draper",
+          "Jakub Mensik",
+          "Arthur Fils",
+          "Joao Fonseca"
+        ],
+        "351699470515306498": [
+          "Jannik Sinner",
+          "Daniil Medvedev",
+          "Casper Ruud",
+          "Cameron Norrie",
+          "Joao Fonseca"
+        ],
+        "1171999659527512104": [
+          "Carlos Alcaraz",
+          "Alex De Minaur",
+          "Taylor Fritz",
+          "Frances Tiafoe",
+          "Joao Fonseca"
+        ],
+        "247086842430750750": [
+          "Novak Djokovic",
+          "Alexander Bublik",
+          "Jack Draper",
+          "Denis Shapovalov",
+          "Joao Fonseca"
+        ],
+        "1304836516857512080": [
+          "Novak Djokovic",
+          "Taylor Fritz",
+          "Learner Tien",
+          "Arthur Fils",
+          "Daniil Medvedev"
+        ]
+      },
+      "results": {},
+      "display": {
+        "primary": null,
+        "secondary": null,
+        "tertiary": null,
+        "logo_url": null,
+        "background_url": null
+      }
+    }
+  ],
+  "ldb_blacklist": []
 }

@@ -1,76 +1,241 @@
 {
   "tournaments": {
-    "T_e_CBEFE0": {
-      "id": "T_e_CBEFE0",
+    "T_eee_0C5A71": {
+      "id": "T_eee_0C5A71",
       "guild_id": 1333962919536492607,
-      "name": "e",
+      "name": "eee",
       "category_id": "slam",
-      "bracket_size": 2,
+      "bracket_size": 8,
       "duration": "1week",
-      "seeds": 1,
-      "wildcards": 1,
-      "best_of": 5,
+      "seeds": 4,
+      "wildcards": 0,
+      "best_of": 3,
       "venues": {
-        "main_stage": "venue-rg-court-phillipe-chatrier",
-        "stage_3": "venue-rg-court-phillipe-chatrier"
+        "main_stage": "venue-ao-rod-laver-arena"
       },
-      "registration_start_date": "2026-03-05T02:32:00+00:00",
-      "registration_close_date": "2026-03-05T02:35:00+00:00",
-      "tournament_start_date": "2026-03-05T02:36:00+00:00",
-      "status": "active",
+      "registration_start_date": "2026-03-08T00:00:00+00:00",
+      "registration_close_date": "2026-03-09T00:00:00+00:00",
+      "tournament_start_date": "2026-03-10T00:00:00+00:00",
+      "status": "completed",
       "registrations": [
+        247086842430750750,
+        308698528547471371,
+        404321019738718209,
+        721853417479209052,
+        859691230941282304,
+        962404052640100382,
+        1016794953843740803,
+        1080153207168303156,
         1171999659527512104,
+        1245352647402328137,
+        1264911204640358496,
         1279106601931899015
       ],
       "wildcard_entries": [],
       "draw": [
+        247086842430750750,
+        1016794953843740803,
         1171999659527512104,
-        1279106601931899015
+        721853417479209052,
+        859691230941282304,
+        962404052640100382,
+        1080153207168303156,
+        404321019738718209
       ],
       "seeded_players": [
-        1171999659527512104
+        247086842430750750,
+        404321019738718209,
+        721853417479209052,
+        859691230941282304
       ],
       "matches": [
         {
-          "match_id": "F_001",
-          "round": "F",
+          "match_id": "QF_001",
+          "round": "QF",
           "draw_pos_1": 0,
           "draw_pos_2": 1,
-          "player1_id": 1171999659527512104,
-          "player2_id": 1279106601931899015,
+          "player1_id": 247086842430750750,
+          "player2_id": 1016794953843740803,
           "seed1": 1,
           "seed2": null,
-          "status": "scheduled",
-          "winner_id": null,
-          "loser_id": null,
-          "score": null,
+          "status": "completed",
+          "winner_id": 247086842430750750,
+          "loser_id": 1016794953843740803,
+          "score": "",
           "day": 1,
           "session": "day",
           "court_key": "main_stage",
-          "court_venue_id": "venue-rg-court-phillipe-chatrier",
+          "court_venue_id": "venue-ao-rod-laver-arena",
           "scheduled_time": "11:00",
-          "timing_type": "session_start"
+          "timing_type": "session_start",
+          "walkover": true
+        },
+        {
+          "match_id": "QF_002",
+          "round": "QF",
+          "draw_pos_1": 2,
+          "draw_pos_2": 3,
+          "player1_id": 1171999659527512104,
+          "player2_id": 721853417479209052,
+          "seed1": null,
+          "seed2": 3,
+          "status": "completed",
+          "winner_id": 1171999659527512104,
+          "loser_id": 721853417479209052,
+          "score": "6-4 7-6",
+          "day": 1,
+          "session": "night",
+          "court_key": "main_stage",
+          "court_venue_id": "venue-ao-rod-laver-arena",
+          "scheduled_time": "19:00",
+          "timing_type": "session_start",
+          "walkover": false
+        },
+        {
+          "match_id": "QF_003",
+          "round": "QF",
+          "draw_pos_1": 4,
+          "draw_pos_2": 5,
+          "player1_id": 859691230941282304,
+          "player2_id": 962404052640100382,
+          "seed1": 4,
+          "seed2": null,
+          "status": "completed",
+          "winner_id": 962404052640100382,
+          "loser_id": 859691230941282304,
+          "score": "6-3 6-7 6-7",
+          "day": 2,
+          "session": "night",
+          "court_key": "main_stage",
+          "court_venue_id": "venue-ao-rod-laver-arena",
+          "scheduled_time": "19:00",
+          "timing_type": "session_start",
+          "walkover": false
+        },
+        {
+          "match_id": "QF_004",
+          "round": "QF",
+          "draw_pos_1": 6,
+          "draw_pos_2": 7,
+          "player1_id": 1080153207168303156,
+          "player2_id": 404321019738718209,
+          "seed1": null,
+          "seed2": 2,
+          "status": "completed",
+          "winner_id": 404321019738718209,
+          "loser_id": 1080153207168303156,
+          "score": "6-7 6-4 6-7",
+          "day": 2,
+          "session": "day",
+          "court_key": "main_stage",
+          "court_venue_id": "venue-ao-rod-laver-arena",
+          "scheduled_time": "11:00",
+          "timing_type": "session_start",
+          "walkover": false
+        },
+        {
+          "match_id": "SF_001",
+          "round": "SF",
+          "draw_pos_1": null,
+          "draw_pos_2": null,
+          "player1_id": 247086842430750750,
+          "player2_id": 1171999659527512104,
+          "seed1": 1,
+          "seed2": null,
+          "status": "completed",
+          "winner_id": 1171999659527512104,
+          "loser_id": 247086842430750750,
+          "score": "4-6 4-6",
+          "day": 3,
+          "session": "day",
+          "court_key": "main_stage",
+          "court_venue_id": "venue-ao-rod-laver-arena",
+          "scheduled_time": "11:00",
+          "timing_type": "session_start",
+          "walkover": false
+        },
+        {
+          "match_id": "SF_002",
+          "round": "SF",
+          "draw_pos_1": null,
+          "draw_pos_2": null,
+          "player1_id": 962404052640100382,
+          "player2_id": 404321019738718209,
+          "seed1": null,
+          "seed2": 2,
+          "status": "completed",
+          "winner_id": 962404052640100382,
+          "loser_id": 404321019738718209,
+          "score": "6-7 6-3 7-5",
+          "day": 3,
+          "session": "night",
+          "court_key": "main_stage",
+          "court_venue_id": "venue-ao-rod-laver-arena",
+          "scheduled_time": "23:00",
+          "timing_type": "session_start",
+          "walkover": false
+        },
+        {
+          "match_id": "F_001",
+          "round": "F",
+          "draw_pos_1": null,
+          "draw_pos_2": null,
+          "player1_id": 1171999659527512104,
+          "player2_id": 962404052640100382,
+          "seed1": null,
+          "seed2": null,
+          "status": "completed",
+          "winner_id": 1171999659527512104,
+          "loser_id": 962404052640100382,
+          "score": "7-5 7-5",
+          "day": 5,
+          "session": "day",
+          "court_key": "main_stage",
+          "court_venue_id": "venue-ao-rod-laver-arena",
+          "scheduled_time": "11:00",
+          "timing_type": "session_start",
+          "walkover": false
         }
       ],
-      "completed_at": null,
-      "champion_id": null,
-      "champion_name": null,
-      "sheet_url": null,
+      "completed_at": "2026-03-08T22:45:58.254914+00:00",
+      "champion_id": 1171999659527512104,
+      "champion_name": "BuzzyPlayz",
+      "sheet_url": "https://docs.google.com/spreadsheets/d/1PxR5VtEUS0tFC6D69jTtz1bvc4zfJIQ3GVtkSeO0kbc",
       "sheets_config": {
-        "bg1": "#1a1a2e",
-        "bg2": "#16213e",
-        "bg3": "#0f3460",
-        "fc1": "#e94560",
-        "fc2": "#ffffff",
-        "fc3": "#a8dadc",
-        "sc1": "#e94560",
-        "sc2": "#f5a623",
-        "sc3": "#7ed321",
-        "font": "Roboto Mono",
-        "bg": "e"
+        "bg": "#1a1a2e",
+        "fc1": "#ffffff",
+        "fc2": "#00e676",
+        "fc3": "#ff5252",
+        "sc1": "#2a2a4a",
+        "sc2": "#1a1a2e",
+        "font": "Roboto Mono"
       },
-      "awarded_points": {},
-      "point_defense_applied": false
+      "awarded_points": {
+        "721853417479209052": {
+          "QF": 400
+        },
+        "1080153207168303156": {
+          "QF": 400
+        },
+        "859691230941282304": {
+          "QF": 400
+        },
+        "247086842430750750": {
+          "SF": 800
+        },
+        "404321019738718209": {
+          "SF": 800
+        },
+        "962404052640100382": {
+          "F": 1300
+        },
+        "1171999659527512104": {
+          "W": 2000
+        }
+      },
+      "point_defense_applied": false,
+      "result_channel_id": 1336836286614339606,
+      "pending_points": {}
     }
   }
 }

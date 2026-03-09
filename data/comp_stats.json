@@ -1,0 +1,1048 @@
+{
+  "guilds": {
+    "1333962919536492607": {
+      "1171999659527512104": {
+        "user_id": 1171999659527512104,
+        "aces": 0,
+        "double_faults": 0,
+        "first_serve_in": 0,
+        "first_serve_total": 0,
+        "first_serve_pts_won": 0,
+        "first_serve_pts_total": 0,
+        "second_serve_pts_won": 0,
+        "second_serve_pts_total": 0,
+        "service_games": 0,
+        "service_games_won": 0,
+        "bp_faced": 0,
+        "bp_saved": 0,
+        "return_games": 0,
+        "return_games_won": 0,
+        "bp_opportunities": 0,
+        "bp_converted": 0,
+        "first_return_pts_won": 0,
+        "first_return_pts_total": 0,
+        "second_return_pts_won": 0,
+        "second_return_pts_total": 0,
+        "tiebreaks_played": 0,
+        "tiebreaks_won": 0,
+        "tb_pts_played": 0,
+        "tb_pts_won": 0,
+        "total_points_played": 0,
+        "total_points_won": 0,
+        "total_games_played": 0,
+        "total_games_won": 0,
+        "total_sets_played": 0,
+        "total_sets_won": 0,
+        "bagels_won": 0,
+        "bagels_conceded": 0,
+        "breadsticks_won": 0,
+        "breadsticks_conceded": 0,
+        "deciding_set_played": 0,
+        "deciding_set_won": 0,
+        "winners": 0,
+        "unforced_errors": 0,
+        "forced_errors": 0,
+        "net_approaches": 0,
+        "net_pts_won": 0,
+        "net_pts_total": 0,
+        "matches_played": 3,
+        "matches_won": 3,
+        "matches_lost": 0,
+        "titles": 0,
+        "finals": 1,
+        "semis": 1,
+        "quarters": 1,
+        "r16": 0,
+        "surface": {
+          "hard": {
+            "played": 3,
+            "won": 3
+          }
+        },
+        "round_record": {
+          "QF": {
+            "played": 1,
+            "won": 1
+          },
+          "SF": {
+            "played": 1,
+            "won": 1
+          },
+          "F": {
+            "played": 1,
+            "won": 1
+          }
+        },
+        "vs_top5": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top10": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top25": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top50": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top100": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_unranked": {
+          "w": 3,
+          "l": 0
+        },
+        "vs_ranked_surface": {},
+        "vs_ranked_round": {},
+        "vs_rank_buckets": {
+          "1": {
+            "w": 0,
+            "l": 0
+          },
+          "2-5": {
+            "w": 0,
+            "l": 0
+          },
+          "6-10": {
+            "w": 0,
+            "l": 0
+          },
+          "11-20": {
+            "w": 0,
+            "l": 0
+          },
+          "21-50": {
+            "w": 0,
+            "l": 0
+          },
+          "51+": {
+            "w": 3,
+            "l": 0
+          }
+        },
+        "best_wins": [],
+        "current_win_streak": 3,
+        "current_loss_streak": 0,
+        "best_win_streak": 3,
+        "year": {
+          "2026": {
+            "matches_played": 3,
+            "matches_won": 3,
+            "titles": 0,
+            "finals": 0,
+            "semis": 0,
+            "quarters": 0,
+            "aces": 0,
+            "double_faults": 0,
+            "points_earned": 0,
+            "tournaments": [
+              "T_eee_0C5A71"
+            ]
+          }
+        },
+        "tournament_bests": {
+          "T_eee_0C5A71": {
+            "best_round": "F",
+            "record": {
+              "w": 3,
+              "l": 0
+            }
+          }
+        }
+      },
+      "721853417479209052": {
+        "user_id": 721853417479209052,
+        "aces": 0,
+        "double_faults": 0,
+        "first_serve_in": 0,
+        "first_serve_total": 0,
+        "first_serve_pts_won": 0,
+        "first_serve_pts_total": 0,
+        "second_serve_pts_won": 0,
+        "second_serve_pts_total": 0,
+        "service_games": 0,
+        "service_games_won": 0,
+        "bp_faced": 0,
+        "bp_saved": 0,
+        "return_games": 0,
+        "return_games_won": 0,
+        "bp_opportunities": 0,
+        "bp_converted": 0,
+        "first_return_pts_won": 0,
+        "first_return_pts_total": 0,
+        "second_return_pts_won": 0,
+        "second_return_pts_total": 0,
+        "tiebreaks_played": 0,
+        "tiebreaks_won": 0,
+        "tb_pts_played": 0,
+        "tb_pts_won": 0,
+        "total_points_played": 0,
+        "total_points_won": 0,
+        "total_games_played": 0,
+        "total_games_won": 0,
+        "total_sets_played": 0,
+        "total_sets_won": 0,
+        "bagels_won": 0,
+        "bagels_conceded": 0,
+        "breadsticks_won": 0,
+        "breadsticks_conceded": 0,
+        "deciding_set_played": 0,
+        "deciding_set_won": 0,
+        "winners": 0,
+        "unforced_errors": 0,
+        "forced_errors": 0,
+        "net_approaches": 0,
+        "net_pts_won": 0,
+        "net_pts_total": 0,
+        "matches_played": 1,
+        "matches_won": 0,
+        "matches_lost": 1,
+        "titles": 0,
+        "finals": 0,
+        "semis": 0,
+        "quarters": 0,
+        "r16": 0,
+        "surface": {
+          "hard": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "round_record": {
+          "QF": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "vs_top5": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top10": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top25": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top50": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top100": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_unranked": {
+          "w": 0,
+          "l": 1
+        },
+        "vs_ranked_surface": {},
+        "vs_ranked_round": {},
+        "vs_rank_buckets": {
+          "1": {
+            "w": 0,
+            "l": 0
+          },
+          "2-5": {
+            "w": 0,
+            "l": 0
+          },
+          "6-10": {
+            "w": 0,
+            "l": 0
+          },
+          "11-20": {
+            "w": 0,
+            "l": 0
+          },
+          "21-50": {
+            "w": 0,
+            "l": 0
+          },
+          "51+": {
+            "w": 0,
+            "l": 1
+          }
+        },
+        "best_wins": [],
+        "current_win_streak": 0,
+        "current_loss_streak": 1,
+        "best_win_streak": 0,
+        "year": {
+          "2026": {
+            "matches_played": 1,
+            "matches_won": 0,
+            "titles": 0,
+            "finals": 0,
+            "semis": 0,
+            "quarters": 0,
+            "aces": 0,
+            "double_faults": 0,
+            "points_earned": 0,
+            "tournaments": [
+              "T_eee_0C5A71"
+            ]
+          }
+        },
+        "tournament_bests": {
+          "T_eee_0C5A71": {
+            "best_round": "QF",
+            "record": {
+              "w": 0,
+              "l": 1
+            }
+          }
+        }
+      },
+      "404321019738718209": {
+        "user_id": 404321019738718209,
+        "aces": 0,
+        "double_faults": 0,
+        "first_serve_in": 0,
+        "first_serve_total": 0,
+        "first_serve_pts_won": 0,
+        "first_serve_pts_total": 0,
+        "second_serve_pts_won": 0,
+        "second_serve_pts_total": 0,
+        "service_games": 0,
+        "service_games_won": 0,
+        "bp_faced": 0,
+        "bp_saved": 0,
+        "return_games": 0,
+        "return_games_won": 0,
+        "bp_opportunities": 0,
+        "bp_converted": 0,
+        "first_return_pts_won": 0,
+        "first_return_pts_total": 0,
+        "second_return_pts_won": 0,
+        "second_return_pts_total": 0,
+        "tiebreaks_played": 0,
+        "tiebreaks_won": 0,
+        "tb_pts_played": 0,
+        "tb_pts_won": 0,
+        "total_points_played": 0,
+        "total_points_won": 0,
+        "total_games_played": 0,
+        "total_games_won": 0,
+        "total_sets_played": 0,
+        "total_sets_won": 0,
+        "bagels_won": 0,
+        "bagels_conceded": 0,
+        "breadsticks_won": 0,
+        "breadsticks_conceded": 0,
+        "deciding_set_played": 0,
+        "deciding_set_won": 0,
+        "winners": 0,
+        "unforced_errors": 0,
+        "forced_errors": 0,
+        "net_approaches": 0,
+        "net_pts_won": 0,
+        "net_pts_total": 0,
+        "matches_played": 2,
+        "matches_won": 1,
+        "matches_lost": 1,
+        "titles": 0,
+        "finals": 0,
+        "semis": 0,
+        "quarters": 1,
+        "r16": 0,
+        "surface": {
+          "hard": {
+            "played": 2,
+            "won": 1
+          }
+        },
+        "round_record": {
+          "QF": {
+            "played": 1,
+            "won": 1
+          },
+          "SF": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "vs_top5": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top10": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top25": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top50": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top100": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_unranked": {
+          "w": 1,
+          "l": 1
+        },
+        "vs_ranked_surface": {},
+        "vs_ranked_round": {},
+        "vs_rank_buckets": {
+          "1": {
+            "w": 0,
+            "l": 0
+          },
+          "2-5": {
+            "w": 0,
+            "l": 0
+          },
+          "6-10": {
+            "w": 0,
+            "l": 0
+          },
+          "11-20": {
+            "w": 0,
+            "l": 0
+          },
+          "21-50": {
+            "w": 0,
+            "l": 0
+          },
+          "51+": {
+            "w": 1,
+            "l": 1
+          }
+        },
+        "best_wins": [],
+        "current_win_streak": 0,
+        "current_loss_streak": 1,
+        "best_win_streak": 1,
+        "year": {
+          "2026": {
+            "matches_played": 2,
+            "matches_won": 1,
+            "titles": 0,
+            "finals": 0,
+            "semis": 0,
+            "quarters": 0,
+            "aces": 0,
+            "double_faults": 0,
+            "points_earned": 0,
+            "tournaments": [
+              "T_eee_0C5A71"
+            ]
+          }
+        },
+        "tournament_bests": {
+          "T_eee_0C5A71": {
+            "best_round": "SF",
+            "record": {
+              "w": 1,
+              "l": 1
+            }
+          }
+        }
+      },
+      "1080153207168303156": {
+        "user_id": 1080153207168303156,
+        "aces": 0,
+        "double_faults": 0,
+        "first_serve_in": 0,
+        "first_serve_total": 0,
+        "first_serve_pts_won": 0,
+        "first_serve_pts_total": 0,
+        "second_serve_pts_won": 0,
+        "second_serve_pts_total": 0,
+        "service_games": 0,
+        "service_games_won": 0,
+        "bp_faced": 0,
+        "bp_saved": 0,
+        "return_games": 0,
+        "return_games_won": 0,
+        "bp_opportunities": 0,
+        "bp_converted": 0,
+        "first_return_pts_won": 0,
+        "first_return_pts_total": 0,
+        "second_return_pts_won": 0,
+        "second_return_pts_total": 0,
+        "tiebreaks_played": 0,
+        "tiebreaks_won": 0,
+        "tb_pts_played": 0,
+        "tb_pts_won": 0,
+        "total_points_played": 0,
+        "total_points_won": 0,
+        "total_games_played": 0,
+        "total_games_won": 0,
+        "total_sets_played": 0,
+        "total_sets_won": 0,
+        "bagels_won": 0,
+        "bagels_conceded": 0,
+        "breadsticks_won": 0,
+        "breadsticks_conceded": 0,
+        "deciding_set_played": 0,
+        "deciding_set_won": 0,
+        "winners": 0,
+        "unforced_errors": 0,
+        "forced_errors": 0,
+        "net_approaches": 0,
+        "net_pts_won": 0,
+        "net_pts_total": 0,
+        "matches_played": 1,
+        "matches_won": 0,
+        "matches_lost": 1,
+        "titles": 0,
+        "finals": 0,
+        "semis": 0,
+        "quarters": 0,
+        "r16": 0,
+        "surface": {
+          "hard": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "round_record": {
+          "QF": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "vs_top5": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top10": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top25": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top50": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top100": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_unranked": {
+          "w": 0,
+          "l": 1
+        },
+        "vs_ranked_surface": {},
+        "vs_ranked_round": {},
+        "vs_rank_buckets": {
+          "1": {
+            "w": 0,
+            "l": 0
+          },
+          "2-5": {
+            "w": 0,
+            "l": 0
+          },
+          "6-10": {
+            "w": 0,
+            "l": 0
+          },
+          "11-20": {
+            "w": 0,
+            "l": 0
+          },
+          "21-50": {
+            "w": 0,
+            "l": 0
+          },
+          "51+": {
+            "w": 0,
+            "l": 1
+          }
+        },
+        "best_wins": [],
+        "current_win_streak": 0,
+        "current_loss_streak": 1,
+        "best_win_streak": 0,
+        "year": {
+          "2026": {
+            "matches_played": 1,
+            "matches_won": 0,
+            "titles": 0,
+            "finals": 0,
+            "semis": 0,
+            "quarters": 0,
+            "aces": 0,
+            "double_faults": 0,
+            "points_earned": 0,
+            "tournaments": [
+              "T_eee_0C5A71"
+            ]
+          }
+        },
+        "tournament_bests": {
+          "T_eee_0C5A71": {
+            "best_round": "QF",
+            "record": {
+              "w": 0,
+              "l": 1
+            }
+          }
+        }
+      },
+      "962404052640100382": {
+        "user_id": 962404052640100382,
+        "aces": 0,
+        "double_faults": 0,
+        "first_serve_in": 0,
+        "first_serve_total": 0,
+        "first_serve_pts_won": 0,
+        "first_serve_pts_total": 0,
+        "second_serve_pts_won": 0,
+        "second_serve_pts_total": 0,
+        "service_games": 0,
+        "service_games_won": 0,
+        "bp_faced": 0,
+        "bp_saved": 0,
+        "return_games": 0,
+        "return_games_won": 0,
+        "bp_opportunities": 0,
+        "bp_converted": 0,
+        "first_return_pts_won": 0,
+        "first_return_pts_total": 0,
+        "second_return_pts_won": 0,
+        "second_return_pts_total": 0,
+        "tiebreaks_played": 0,
+        "tiebreaks_won": 0,
+        "tb_pts_played": 0,
+        "tb_pts_won": 0,
+        "total_points_played": 0,
+        "total_points_won": 0,
+        "total_games_played": 0,
+        "total_games_won": 0,
+        "total_sets_played": 0,
+        "total_sets_won": 0,
+        "bagels_won": 0,
+        "bagels_conceded": 0,
+        "breadsticks_won": 0,
+        "breadsticks_conceded": 0,
+        "deciding_set_played": 0,
+        "deciding_set_won": 0,
+        "winners": 0,
+        "unforced_errors": 0,
+        "forced_errors": 0,
+        "net_approaches": 0,
+        "net_pts_won": 0,
+        "net_pts_total": 0,
+        "matches_played": 3,
+        "matches_won": 2,
+        "matches_lost": 1,
+        "titles": 0,
+        "finals": 0,
+        "semis": 1,
+        "quarters": 1,
+        "r16": 0,
+        "surface": {
+          "hard": {
+            "played": 3,
+            "won": 2
+          }
+        },
+        "round_record": {
+          "QF": {
+            "played": 1,
+            "won": 1
+          },
+          "SF": {
+            "played": 1,
+            "won": 1
+          },
+          "F": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "vs_top5": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top10": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top25": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top50": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top100": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_unranked": {
+          "w": 2,
+          "l": 1
+        },
+        "vs_ranked_surface": {},
+        "vs_ranked_round": {},
+        "vs_rank_buckets": {
+          "1": {
+            "w": 0,
+            "l": 0
+          },
+          "2-5": {
+            "w": 0,
+            "l": 0
+          },
+          "6-10": {
+            "w": 0,
+            "l": 0
+          },
+          "11-20": {
+            "w": 0,
+            "l": 0
+          },
+          "21-50": {
+            "w": 0,
+            "l": 0
+          },
+          "51+": {
+            "w": 2,
+            "l": 1
+          }
+        },
+        "best_wins": [],
+        "current_win_streak": 0,
+        "current_loss_streak": 1,
+        "best_win_streak": 2,
+        "year": {
+          "2026": {
+            "matches_played": 3,
+            "matches_won": 2,
+            "titles": 0,
+            "finals": 0,
+            "semis": 0,
+            "quarters": 0,
+            "aces": 0,
+            "double_faults": 0,
+            "points_earned": 0,
+            "tournaments": [
+              "T_eee_0C5A71"
+            ]
+          }
+        },
+        "tournament_bests": {
+          "T_eee_0C5A71": {
+            "best_round": "F",
+            "record": {
+              "w": 2,
+              "l": 1
+            }
+          }
+        }
+      },
+      "859691230941282304": {
+        "user_id": 859691230941282304,
+        "aces": 0,
+        "double_faults": 0,
+        "first_serve_in": 0,
+        "first_serve_total": 0,
+        "first_serve_pts_won": 0,
+        "first_serve_pts_total": 0,
+        "second_serve_pts_won": 0,
+        "second_serve_pts_total": 0,
+        "service_games": 0,
+        "service_games_won": 0,
+        "bp_faced": 0,
+        "bp_saved": 0,
+        "return_games": 0,
+        "return_games_won": 0,
+        "bp_opportunities": 0,
+        "bp_converted": 0,
+        "first_return_pts_won": 0,
+        "first_return_pts_total": 0,
+        "second_return_pts_won": 0,
+        "second_return_pts_total": 0,
+        "tiebreaks_played": 0,
+        "tiebreaks_won": 0,
+        "tb_pts_played": 0,
+        "tb_pts_won": 0,
+        "total_points_played": 0,
+        "total_points_won": 0,
+        "total_games_played": 0,
+        "total_games_won": 0,
+        "total_sets_played": 0,
+        "total_sets_won": 0,
+        "bagels_won": 0,
+        "bagels_conceded": 0,
+        "breadsticks_won": 0,
+        "breadsticks_conceded": 0,
+        "deciding_set_played": 0,
+        "deciding_set_won": 0,
+        "winners": 0,
+        "unforced_errors": 0,
+        "forced_errors": 0,
+        "net_approaches": 0,
+        "net_pts_won": 0,
+        "net_pts_total": 0,
+        "matches_played": 1,
+        "matches_won": 0,
+        "matches_lost": 1,
+        "titles": 0,
+        "finals": 0,
+        "semis": 0,
+        "quarters": 0,
+        "r16": 0,
+        "surface": {
+          "hard": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "round_record": {
+          "QF": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "vs_top5": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top10": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top25": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top50": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top100": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_unranked": {
+          "w": 0,
+          "l": 1
+        },
+        "vs_ranked_surface": {},
+        "vs_ranked_round": {},
+        "vs_rank_buckets": {
+          "1": {
+            "w": 0,
+            "l": 0
+          },
+          "2-5": {
+            "w": 0,
+            "l": 0
+          },
+          "6-10": {
+            "w": 0,
+            "l": 0
+          },
+          "11-20": {
+            "w": 0,
+            "l": 0
+          },
+          "21-50": {
+            "w": 0,
+            "l": 0
+          },
+          "51+": {
+            "w": 0,
+            "l": 1
+          }
+        },
+        "best_wins": [],
+        "current_win_streak": 0,
+        "current_loss_streak": 1,
+        "best_win_streak": 0,
+        "year": {
+          "2026": {
+            "matches_played": 1,
+            "matches_won": 0,
+            "titles": 0,
+            "finals": 0,
+            "semis": 0,
+            "quarters": 0,
+            "aces": 0,
+            "double_faults": 0,
+            "points_earned": 0,
+            "tournaments": [
+              "T_eee_0C5A71"
+            ]
+          }
+        },
+        "tournament_bests": {
+          "T_eee_0C5A71": {
+            "best_round": "QF",
+            "record": {
+              "w": 0,
+              "l": 1
+            }
+          }
+        }
+      },
+      "247086842430750750": {
+        "user_id": 247086842430750750,
+        "aces": 0,
+        "double_faults": 0,
+        "first_serve_in": 0,
+        "first_serve_total": 0,
+        "first_serve_pts_won": 0,
+        "first_serve_pts_total": 0,
+        "second_serve_pts_won": 0,
+        "second_serve_pts_total": 0,
+        "service_games": 0,
+        "service_games_won": 0,
+        "bp_faced": 0,
+        "bp_saved": 0,
+        "return_games": 0,
+        "return_games_won": 0,
+        "bp_opportunities": 0,
+        "bp_converted": 0,
+        "first_return_pts_won": 0,
+        "first_return_pts_total": 0,
+        "second_return_pts_won": 0,
+        "second_return_pts_total": 0,
+        "tiebreaks_played": 0,
+        "tiebreaks_won": 0,
+        "tb_pts_played": 0,
+        "tb_pts_won": 0,
+        "total_points_played": 0,
+        "total_points_won": 0,
+        "total_games_played": 0,
+        "total_games_won": 0,
+        "total_sets_played": 0,
+        "total_sets_won": 0,
+        "bagels_won": 0,
+        "bagels_conceded": 0,
+        "breadsticks_won": 0,
+        "breadsticks_conceded": 0,
+        "deciding_set_played": 0,
+        "deciding_set_won": 0,
+        "winners": 0,
+        "unforced_errors": 0,
+        "forced_errors": 0,
+        "net_approaches": 0,
+        "net_pts_won": 0,
+        "net_pts_total": 0,
+        "matches_played": 1,
+        "matches_won": 0,
+        "matches_lost": 1,
+        "titles": 0,
+        "finals": 0,
+        "semis": 0,
+        "quarters": 0,
+        "r16": 0,
+        "surface": {
+          "hard": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "round_record": {
+          "SF": {
+            "played": 1,
+            "won": 0
+          }
+        },
+        "vs_top5": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top10": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top25": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top50": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_top100": {
+          "w": 0,
+          "l": 0
+        },
+        "vs_unranked": {
+          "w": 0,
+          "l": 1
+        },
+        "vs_ranked_surface": {},
+        "vs_ranked_round": {},
+        "vs_rank_buckets": {
+          "1": {
+            "w": 0,
+            "l": 0
+          },
+          "2-5": {
+            "w": 0,
+            "l": 0
+          },
+          "6-10": {
+            "w": 0,
+            "l": 0
+          },
+          "11-20": {
+            "w": 0,
+            "l": 0
+          },
+          "21-50": {
+            "w": 0,
+            "l": 0
+          },
+          "51+": {
+            "w": 0,
+            "l": 1
+          }
+        },
+        "best_wins": [],
+        "current_win_streak": 0,
+        "current_loss_streak": 1,
+        "best_win_streak": 0,
+        "year": {
+          "2026": {
+            "matches_played": 1,
+            "matches_won": 0,
+            "titles": 0,
+            "finals": 0,
+            "semis": 0,
+            "quarters": 0,
+            "aces": 0,
+            "double_faults": 0,
+            "points_earned": 0,
+            "tournaments": [
+              "T_eee_0C5A71"
+            ]
+          }
+        },
+        "tournament_bests": {
+          "T_eee_0C5A71": {
+            "best_round": "SF",
+            "record": {
+              "w": 0,
+              "l": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -843,42 +843,6 @@
             "weight": "1"
           },
           {
-            "frame_id": "racket-5653",
-            "pattern": "16x19",
-            "tension": 70,
-            "weight": "1"
-          },
-          {
-            "frame_id": "racket-5653",
-            "pattern": "16x19",
-            "tension": 70,
-            "weight": "1"
-          },
-          {
-            "frame_id": "racket-5653",
-            "pattern": "16x19",
-            "tension": 70,
-            "weight": "1"
-          },
-          {
-            "frame_id": "racket-5653",
-            "pattern": "16x19",
-            "tension": 70,
-            "weight": "1"
-          },
-          {
-            "frame_id": "racket-5653",
-            "pattern": "16x19",
-            "tension": 70,
-            "weight": "1"
-          },
-          {
-            "frame_id": "racket-5653",
-            "pattern": "16x19",
-            "tension": 70,
-            "weight": "1"
-          },
-          {
             "frame_id": "racket-5458",
             "pattern": "16x19",
             "tension": 36,
@@ -2144,6 +2108,54 @@
           "weight": "1"
         },
         "equipped_shoes": "shoes-7657"
+      },
+      "721853417479209052": {
+        "rackets": [],
+        "shoes": [],
+        "strung_rackets": [],
+        "racket_access": {},
+        "equipped_racket": null,
+        "equipped_shoes": null
+      },
+      "859691230941282304": {
+        "rackets": [],
+        "shoes": [],
+        "strung_rackets": [],
+        "racket_access": {},
+        "equipped_racket": null,
+        "equipped_shoes": null
+      },
+      "962404052640100382": {
+        "rackets": [],
+        "shoes": [],
+        "strung_rackets": [],
+        "racket_access": {},
+        "equipped_racket": null,
+        "equipped_shoes": null
+      },
+      "1080153207168303156": {
+        "rackets": [],
+        "shoes": [],
+        "strung_rackets": [],
+        "racket_access": {},
+        "equipped_racket": null,
+        "equipped_shoes": null
+      },
+      "404321019738718209": {
+        "rackets": [],
+        "shoes": [],
+        "strung_rackets": [],
+        "racket_access": {},
+        "equipped_racket": null,
+        "equipped_shoes": null
+      },
+      "247086842430750750": {
+        "rackets": [],
+        "shoes": [],
+        "strung_rackets": [],
+        "racket_access": {},
+        "equipped_racket": null,
+        "equipped_shoes": null
       }
     }
   },

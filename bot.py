@@ -4,7 +4,6 @@ from discord.ext import commands
 import config
 from utils import ensure_dir, load_json, now_ts
 from modules.academy import academy_can_challenge
-
 from flask import Flask
 from threading import Thread
 
