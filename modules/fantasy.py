@@ -220,6 +220,8 @@ _RAPIDAPI_BASE = f"https://{_RAPIDAPI_HOST}/tennis/v2"
 def _rapidapi_key() -> str:
     return getattr(config, "RAPIDAPI_KEY", "") or os.environ.get("RAPIDAPI_KEY", "")
 
+print(f"[fantasy] RAPIDAPI_KEY set: {bool(_rapidapi_key())}, length: {len(_rapidapi_key())}")
+
 async def _api_get(path: str) -> Any:
     key = _rapidapi_key()
     if not key:
