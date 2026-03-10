@@ -203,79 +203,77 @@ def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Opti
     return cat.get("round_points", {}).get(round_key)
 
 # ============================================================
-# Tennis API integration (API-Tennis via RapidAPI)
-# Set RAPIDAPI_KEY in your config or as an environment variable.
-# ============================================================
-
-# ============================================================
-# Tennis API integration (API-Tennis ATP/WTA/ITF via RapidAPI)
+# Tennis data — SofaScore unofficial API
+# No API key required. Covers all ATP/WTA/ITF tournaments.
 #
-# Set RAPIDAPI_KEY as a Railway environment variable.
-# The host for this API is: tennis-api-atp-wta-itf.p.rapidapi.com
+# Endpoints used:
+#   Search       : GET https://api.sofascore.com/api/v1/search/all?q={query}
+#   Seasons      : GET https://api.sofascore.com/api/v1/unique-tournament/{id}/seasons
+#   Matches page : GET https://api.sofascore.com/api/v1/unique-tournament/{id}/season/{sid}/events/last/{page}
+#
+# URL format   : https://www.sofascore.com/tennis/.../SLUG/UNIQUE_TOURNAMENT_ID
 # ============================================================
 
-_RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
-_RAPIDAPI_BASE = f"https://{_RAPIDAPI_HOST}/tennis/v2"
+_SOFA_BASE = "https://api.sofascore.com/api/v1"
+_SOFA_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+    "Accept": "application/json",
+    "Referer": "https://www.sofascore.com/",
+}
 
-def _rapidapi_key() -> str:
-    return getattr(config, "RAPIDAPI_KEY", "") or os.environ.get("RAPIDAPI_KEY", "")
-
-async def _api_get(path: str, params: Optional[dict] = None) -> Any:
-    key = _rapidapi_key()
-    if not key:
-        raise RuntimeError("RAPIDAPI_KEY is not set. Add it to your Railway environment variables.")
-    headers = {
-        "x-rapidapi-key":  key,
-        "x-rapidapi-host": _RAPIDAPI_HOST,
-    }
-    url = f"{_RAPIDAPI_BASE}/{path.lstrip('/')}"
+async def _sofa_get(path: str, params: Optional[dict] = None) -> Any:
+    url = f"{_SOFA_BASE}/{path.lstrip('/')}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, params=params or {}, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        async with session.get(
+            url, headers=_SOFA_HEADERS, params=params or {},
+            timeout=aiohttp.ClientTimeout(total=20)
+        ) as resp:
             resp.raise_for_status()
             return await resp.json()
 
-async def _api_search_calendar(tour: str, season: str, query: str) -> List[dict]:
-    """
-    GET /tennis/v2/{tour}/tournament/calendar/{season}
-    Returns tournaments filtered by name query.
-    """
-    data = await _api_get(f"{tour.lower()}/tournament/calendar/{season}")
-    items = data if isinstance(data, list) else data.get("data", data.get("result", []))
-    if not isinstance(items, list):
-        return []
-    query_norm = _norm(query)
-    if not query_norm:
-        return items[:25]
-    return [t for t in items if query_norm in _norm(t.get("name", ""))]
+def _parse_sofa_url(url: str) -> Optional[str]:
+    """Extract unique tournament ID from a SofaScore URL."""
+    # e.g. https://www.sofascore.com/tennis/atp-singles/wimbledon/18182
+    import re as _re
+    m = _re.search(r"/(\d+)(?:/|\?|#|$)", url)
+    return m.group(1) if m else None
 
-async def _api_get_results(tour: str, tournament_id: str, season: str) -> List[dict]:
-    """GET /tennis/v2/{tour}/tournament/results/{tournament_id}?season={season}"""
-    data = await _api_get(f"{tour.lower()}/tournament/results/{tournament_id}", params={"season": season})
-    if isinstance(data, list):
-        return data
-    for key in ("results", "data", "matches", "fixtures"):
-        if isinstance(data.get(key), list):
-            return data[key]
+async def _sofa_search(query: str) -> List[dict]:
+    """Search SofaScore and return unique tournaments matching the query."""
+    data = await _sofa_get("search/all", {"q": query})
+    results = data.get("uniqueTournaments", data.get("results", []))
+    if isinstance(results, list):
+        # Filter to tennis only
+        return [
+            r for r in results
+            if _norm(r.get("sport", {}).get("name", "") if isinstance(r.get("sport"), dict) else r.get("sport", "")) == "tennis"
+               or r.get("category", {}).get("sport", {}).get("name", "").lower() == "tennis"
+        ][:25]
     return []
 
-async def _api_get_rankings(tour: str) -> Dict[str, int]:
-    """
-    GET /tennis/v2/{tour}/ranking/singles/
-    Returns {normalised_player_name: rank}.
-    """
-    try:
-        data = await _api_get(f"{tour.lower()}/ranking/singles/")
-        rows = data if isinstance(data, list) else data.get("rankings", data.get("data", []))
-        rank_map: Dict[str, int] = {}
-        for r in rows:
-            name = (r.get("player_name") or r.get("name") or r.get("full_name") or "").strip()
-            rank = r.get("rank") or r.get("place") or r.get("ranking") or 0
-            if name and rank:
-                rank_map[_norm(name)] = int(rank)
-        return rank_map
-    except Exception as e:
-        print(f"[fantasy] Rankings fetch failed: {e}")
-        return {}
+async def _sofa_get_seasons(tournament_id: str) -> List[dict]:
+    data = await _sofa_get(f"unique-tournament/{tournament_id}/seasons")
+    return data.get("seasons", [])
+
+async def _sofa_get_all_matches(tournament_id: str, season_id: str) -> List[dict]:
+    """Fetch all finished matches across all pages for a tournament season."""
+    all_events: List[dict] = []
+    page = 0
+    while True:
+        try:
+            data = await _sofa_get(
+                f"unique-tournament/{tournament_id}/season/{season_id}/events/last/{page}"
+            )
+        except Exception:
+            break
+        events = data.get("events", [])
+        if not events:
+            break
+        all_events.extend(events)
+        if not data.get("hasNextPage", False):
+            break
+        page += 1
+    return [e for e in all_events if e.get("status", {}).get("type") == "finished"]
 
 # ── Match data helpers ────────────────────────────────────────
 
@@ -286,75 +284,70 @@ def _name_sim(a: str, b: str) -> float:
         return 0.0
     return len(a_parts & b_parts) / max(len(a_parts), len(b_parts))
 
-def _lookup_rank(player_name: str, rank_map: Dict[str, int]) -> int:
-    key = _norm(player_name)
-    if key in rank_map:
-        return rank_map[key]
-    best_score, best_rank = 0.0, 0
-    for rkey, rank in rank_map.items():
-        score = _name_sim(key, rkey)
-        if score > best_score:
-            best_score, best_rank = score, rank
-    return best_rank if best_score >= 0.45 else 0
+def _sofa_player_name(side_dict: dict) -> str:
+    """Extract player name from SofaScore homeTeam/awayTeam dict."""
+    return (side_dict.get("name") or side_dict.get("shortName") or "").strip()
 
-def _match_player_side(player_name: str, match: dict) -> Optional[str]:
-    """Try common field name patterns to find which side this player is on."""
-    for pair in (("home", "away"), ("first", "second"), ("player1", "player2")):
-        for side in pair:
-            for field in (f"{side}_player", f"player_{side}", f"event_{side}_player", side):
-                name = str(match.get(field, "") or "")
-                if name and _name_sim(player_name, name) >= 0.45:
-                    return side
+def _sofa_player_rank(side_dict: dict) -> int:
+    """Extract player ranking from SofaScore team dict."""
+    rank = side_dict.get("ranking") or side_dict.get("rankingPoints") or 0
+    try:
+        return int(rank)
+    except (ValueError, TypeError):
+        return 0
+
+def _match_side(player_name: str, match: dict) -> Optional[str]:
+    """Return 'home' or 'away' if this player is in the match."""
+    for side in ("home", "away"):
+        name = _sofa_player_name(match.get(f"{side}Team", match.get(f"{side}Score", {})))
+        if name and _name_sim(player_name, name) >= 0.45:
+            return side
     return None
 
-def _opp_side(side: str) -> str:
-    return {"home": "away", "away": "home",
-            "first": "second", "second": "first",
-            "player1": "player2", "player2": "player1"}.get(side, side)
-
-def _extract_sets(match: dict, side: str) -> Tuple[int, int]:
-    opp = _opp_side(side)
-    is_first = side in ("first", "home", "player1")
-    for scores_key in ("scores", "sets", "score"):
-        scores = match.get(scores_key)
-        if isinstance(scores, list) and scores:
-            won = lost = 0
-            for sc in scores:
-                my_g = int(sc.get(f"{side}_score", sc.get(f"score_{'first' if is_first else 'second'}", 0)) or 0)
-                op_g = int(sc.get(f"{opp}_score",  sc.get(f"score_{'second' if is_first else 'first'}", 0)) or 0)
-                if my_g > op_g: won += 1
-                elif op_g > my_g: lost += 1
-            return won, lost
-    raw = str(match.get("result", match.get("score", match.get("event_final_result", ""))) or "")
-    parts = [p.strip() for p in raw.split("-")]
-    if len(parts) == 2:
+def _sofa_sets(match: dict, side: str) -> Tuple[int, int]:
+    """Return (sets_won, sets_lost) from SofaScore match data."""
+    home_score = match.get("homeScore", {})
+    away_score = match.get("awayScore", {})
+    my_score  = home_score if side == "home" else away_score
+    opp_score = away_score if side == "home" else home_score
+    won = lost = 0
+    period = 1
+    while True:
+        key = f"period{period}"
+        my_g  = my_score.get(key)
+        opp_g = opp_score.get(key)
+        if my_g is None or opp_g is None:
+            break
         try:
-            f, s = int(parts[0]), int(parts[1])
-            return (f, s) if is_first else (s, f)
-        except ValueError:
+            if int(my_g) > int(opp_g):
+                won += 1
+            elif int(opp_g) > int(my_g):
+                lost += 1
+        except (ValueError, TypeError):
             pass
-    return 0, 0
+        period += 1
+    return won, lost
 
-def _player_won_match(side: str, match: dict) -> Optional[bool]:
-    for field in ("winner", "event_winner", "match_winner", "winner_side"):
-        w = str(match.get(field, "") or "").lower()
-        if not w:
-            continue
-        if side.lower() in w or ("home" in w and side == "home") or ("first" in w and side in ("first", "player1")):
-            return True
-        opp = _opp_side(side)
-        if opp.lower() in w or ("away" in w and side == "away") or ("second" in w and side in ("second", "player2")):
-            return False
+def _sofa_winner(match: dict) -> Optional[str]:
+    """Return 'home' or 'away' for the winner, or None."""
+    winner_code = match.get("winnerCode")
+    if winner_code == 1:
+        return "home"
+    if winner_code == 2:
+        return "away"
     return None
 
-def _extract_round(match: dict) -> Optional[str]:
-    for field in ("round", "round_name", "tournament_round", "stage", "event_round"):
-        raw = str(match.get(field, "") or "").strip()
-        if not raw:
-            continue
-        if " - " in raw:
-            raw = raw.split(" - ", 1)[1]
-        canonical = _normalize_round(raw)
+def _sofa_round(match: dict) -> Optional[str]:
+    """Extract and normalise round from SofaScore match."""
+    rnd = match.get("roundInfo", {})
+    name = rnd.get("name") or rnd.get("nameCode") or ""
+    if name:
+        canonical = _normalize_round(str(name))
+        if canonical:
+            return canonical
+    slug = str(rnd.get("slug", ""))
+    if slug:
+        canonical = _normalize_round(slug.replace("-", " "))
         if canonical:
             return canonical
     return None
@@ -372,36 +365,32 @@ def _compute_upset_pts(my_rank: int, opp_rank: int, player_won: bool) -> int:
 def _calc_player_stats(
     player_name: str,
     all_matches: List[dict],
-    rank_map: Dict[str, int],
 ) -> Tuple[int, int, int, Optional[str]]:
+    """Return (sets_won, sets_lost, net_upset_pts, furthest_round_canonical)."""
     sets_won = sets_lost = upset_pts = 0
     best_round: Optional[str] = None
     best_order = -1
-    my_rank = _lookup_rank(player_name, rank_map)
 
     for match in all_matches:
-        side = _match_player_side(player_name, match)
+        side = _match_side(player_name, match)
         if side is None:
             continue
-        opp = _opp_side(side)
-        opp_name = ""
-        for field in (f"{opp}_player", f"player_{opp}", f"event_{opp}_player", opp):
-            v = str(match.get(field, "") or "")
-            if v:
-                opp_name = v
-                break
-        opp_rank = _lookup_rank(opp_name, rank_map) if opp_name else 0
+        opp_side = "away" if side == "home" else "home"
 
-        won = _player_won_match(side, match)
-        if won is None:
+        my_rank  = _sofa_player_rank(match.get(f"{side}Team", {}))
+        opp_rank = _sofa_player_rank(match.get(f"{opp_side}Team", {}))
+
+        winner = _sofa_winner(match)
+        if winner is None:
             continue
+        player_won = (winner == side)
 
-        sw, sl = _extract_sets(match, side)
+        sw, sl = _sofa_sets(match, side)
         sets_won  += sw
         sets_lost += sl
-        upset_pts += _compute_upset_pts(my_rank, opp_rank, won)
+        upset_pts += _compute_upset_pts(my_rank, opp_rank, player_won)
 
-        canonical = _extract_round(match)
+        canonical = _sofa_round(match)
         if canonical:
             order = ROUND_ORDER.get(canonical, -1)
             if order > best_order:
@@ -413,14 +402,13 @@ def _calc_player_stats(
 def _build_fetched_rows(
     fantasy_t: dict,
     all_matches: List[dict],
-    rank_map: Dict[str, int],
     round_points_map: Dict[str, int],
 ) -> Tuple[List[dict], List[str]]:
     rows: List[dict] = []
     warnings: List[str] = []
     for p in fantasy_t.get("players", []):
         pname = p["name"]
-        sw, sl, upset, round_key = _calc_player_stats(pname, all_matches, rank_map)
+        sw, sl, upset, round_key = _calc_player_stats(pname, all_matches)
         if round_key is None:
             warnings.append(f"⚠️ No matches found for **{pname}** — defaulted to R128")
             round_key = "R128"
@@ -1112,14 +1100,12 @@ class TournamentPickSelect(discord.ui.Select):
 
 
 class TournamentPickView(discord.ui.View):
-    def __init__(self, cog, user_id: int, fantasy_t: dict, api_tournaments: List[dict], season: str, tour: str):
+    def __init__(self, cog, user_id: int, fantasy_t: dict, api_tournaments: List[dict]):
         super().__init__(timeout=120)
         self.cog = cog
         self.user_id = user_id
         self.fantasy_t = fantasy_t
         self.api_tournaments = api_tournaments
-        self.season = season
-        self.tour = tour
         self.add_item(TournamentPickSelect(self, api_tournaments))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -1130,10 +1116,11 @@ class TournamentPickView(discord.ui.View):
 
     async def on_select(self, interaction: discord.Interaction, idx: int):
         chosen = self.api_tournaments[idx]
-        name = chosen.get("tournament_name", "?")
+        name = chosen.get("name", chosen.get("slug", "?"))
+        sofa_id = str(chosen.get("id", ""))
         await interaction.response.edit_message(
-            content=f"⏳ Fetching matches & rankings for **{name}** {self.season}...", view=None)
-        await self.cog._fetch_and_preview(interaction, self.fantasy_t, str(chosen.get("id", "")), self.season, self.tour)
+            content=f"⏳ Fetching matches for **{name}**...", view=None)
+        await self.cog._fetch_and_preview(interaction, self.fantasy_t, sofa_id)
 
 
 class FetchConfirmView(discord.ui.View):
@@ -1373,103 +1360,99 @@ class FantasyCog(commands.Cog):
 
     @f_admin.command(
         name="tournament-search",
-        description="Admin: search the tennis API calendar to find a tournament ID.",
+        description="Admin: search SofaScore to find a tournament ID for use with tournament-fetch.",
     )
-    @app_commands.describe(
-        query="Tournament name to search for (e.g. 'Australian Open')",
-        season="Season year (e.g. 2025)",
-        tour="ATP or WTA",
-    )
-    @app_commands.choices(tour=[
-        app_commands.Choice(name="ATP", value="ATP"),
-        app_commands.Choice(name="WTA", value="WTA"),
-    ])
+    @app_commands.describe(query="Tournament name (e.g. 'Australian Open', 'Wimbledon')")
     async def fantasy_tournament_search(
         self,
         interaction: discord.Interaction,
         query: str,
-        season: str,
-        tour: Optional[str] = "ATP",
     ):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
-        if not _rapidapi_key():
-            return await interaction.response.send_message(
-                "❌ `RAPIDAPI_KEY` is not set.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         try:
-            results = await _api_search_calendar(tour or "ATP", season, query)
+            results = await _sofa_search(query)
         except Exception as e:
-            return await interaction.followup.send(f"❌ API error: `{e}`", ephemeral=True)
+            return await interaction.followup.send(f"❌ Search failed: `{e}`", ephemeral=True)
         if not results:
             return await interaction.followup.send(
-                f"❌ No tournaments found for `{query}` in {season}.", ephemeral=True)
-        lines = [f"**Tournament Search — {query} ({season} {tour})**", ""]
-        for t in results[:25]:
+                f"❌ No tennis tournaments found for `{query}`.", ephemeral=True)
+        lines = [f"**Tournament Search — {query}**", ""]
+        for t in results[:20]:
             tid  = t.get("id", "?")
-            name = t.get("name", "?")
-            date = (t.get("date", "") or "")[:10]
-            lines.append(f"`{tid}` — **{name}** — {date}")
+            name = t.get("name", t.get("slug", "?"))
+            cat  = t.get("category", {}).get("name", "")
+            lines.append(f"`{tid}` — **{name}**" + (f" — {cat}" if cat else ""))
         lines.append("\nUse the ID with `/fantasy-admin tournament-fetch`.")
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @f_admin.command(
-        description="Admin: auto-fetch results from the tennis API and complete a fantasy tournament.",
+        name="tournament-fetch",
+        description="Admin: auto-fetch results from SofaScore and complete a fantasy tournament.",
     )
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     @app_commands.describe(
         tournament_id="Fantasy tournament to complete",
-        api_tournament_id="Tournament ID from the RapidAPI calendar (e.g. 18440)",
-        season="Season year (e.g. 2025)",
-        tour="ATP or WTA",
+        sofa_id="SofaScore tournament ID (from tournament-search), OR paste a full SofaScore URL",
     )
-    @app_commands.choices(tour=[
-        app_commands.Choice(name="ATP", value="ATP"),
-        app_commands.Choice(name="WTA", value="WTA"),
-    ])
     async def fantasy_tournament_fetch(
         self,
         interaction: discord.Interaction,
         tournament_id: str,
-        api_tournament_id: str,
-        season: str,
-        tour: Optional[str] = "ATP",
+        sofa_id: str,
     ):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
-        if not _rapidapi_key():
-            return await interaction.response.send_message(
-                "❌ `RAPIDAPI_KEY` is not set. Add it to your Railway environment variables.", ephemeral=True)
         data = _load()
         t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
         if not t:
             return await interaction.response.send_message("❌ Fantasy tournament not found.", ephemeral=True)
 
+        # Accept either a raw ID or a full SofaScore URL
+        if sofa_id.startswith("http"):
+            parsed = _parse_sofa_url(sofa_id)
+            if not parsed:
+                return await interaction.response.send_message(
+                    "❌ Could not extract tournament ID from URL.", ephemeral=True)
+            sofa_id = parsed
+
         await interaction.response.defer(ephemeral=True)
-        await self._fetch_and_preview(interaction, t, api_tournament_id, season, tour or "ATP")
+        await self._fetch_and_preview(interaction, t, sofa_id)
 
     async def _fetch_and_preview(
         self,
         interaction: discord.Interaction,
         fantasy_t: dict,
-        api_tournament_id: str,
-        season: str,
-        tour: str,
+        sofa_tournament_id: str,
     ) -> None:
+        # Get seasons and pick the most recent
         try:
-            all_matches, rank_map = await asyncio.gather(
-                _api_get_results(tour, api_tournament_id, season),
-                _api_get_rankings(tour),
-            )
+            seasons = await _sofa_get_seasons(sofa_tournament_id)
         except Exception as e:
+            await interaction.followup.send(f"❌ Failed to fetch seasons: `{e}`", ephemeral=True)
+            return
+
+        if not seasons:
             await interaction.followup.send(
-                f"❌ Failed to fetch data: `{e}`", ephemeral=True)
+                "❌ No seasons found for this tournament. Check the ID.", ephemeral=True)
+            return
+
+        # Most recent season first
+        season = seasons[0]
+        season_id = str(season.get("id", ""))
+        season_name = season.get("name", season_id)
+
+        try:
+            all_matches = await _sofa_get_all_matches(sofa_tournament_id, season_id)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to fetch matches: `{e}`", ephemeral=True)
             return
 
         if not all_matches:
             await interaction.followup.send(
-                f"❌ No match data returned for tournament `{api_tournament_id}` season `{season}`. "
-                "Double-check both values in the RapidAPI calendar.",
+                f"❌ No finished matches found for season **{season_name}**. "
+                "The tournament may still be in progress, or try a different ID.",
                 ephemeral=True)
             return
 
@@ -1477,11 +1460,11 @@ class FantasyCog(commands.Cog):
         cat = next((c for c in data.get("categories", []) if c.get("id") == fantasy_t.get("category_id")), None)
         round_points_map: Dict[str, int] = (cat or {}).get("round_points", {})
 
-        rows, warnings = _build_fetched_rows(fantasy_t, all_matches, rank_map, round_points_map)
+        rows, warnings = _build_fetched_rows(fantasy_t, all_matches, round_points_map)
 
         lines = [
             f"**Auto-Fetch Preview — {fantasy_t.get('name')}**",
-            f"*API tournament ID: {api_tournament_id}  •  {len(all_matches)} matches  •  {len(rank_map)} ranked players*",
+            f"*SofaScore ID: {sofa_tournament_id}  •  Season: {season_name}  •  {len(all_matches)} matches*",
             "",
         ]
         if warnings:
