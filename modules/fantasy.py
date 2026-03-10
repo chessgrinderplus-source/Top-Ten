@@ -220,9 +220,7 @@ _RAPIDAPI_BASE = f"https://{_RAPIDAPI_HOST}/tennis/v2"
 def _rapidapi_key() -> str:
     return getattr(config, "RAPIDAPI_KEY", "") or os.environ.get("RAPIDAPI_KEY", "")
 
-print(f"[fantasy] RAPIDAPI_KEY set: {bool(_rapidapi_key())}, length: {len(_rapidapi_key())}")
-
-async def _api_get(path: str) -> Any:
+async def _api_get(path: str, params: Optional[dict] = None) -> Any:
     key = _rapidapi_key()
     if not key:
         raise RuntimeError("RAPIDAPI_KEY is not set. Add it to your Railway environment variables.")
@@ -232,13 +230,27 @@ async def _api_get(path: str) -> Any:
     }
     url = f"{_RAPIDAPI_BASE}/{path.lstrip('/')}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        async with session.get(url, headers=headers, params=params or {}, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             resp.raise_for_status()
             return await resp.json()
 
-async def _api_get_results(tour: str, tournament_id: str) -> List[dict]:
-    """GET /tennis/v2/{tour}/tournament/results/{tournament_id}"""
-    data = await _api_get(f"{tour.lower()}/tournament/results/{tournament_id}")
+async def _api_search_calendar(tour: str, season: str, query: str) -> List[dict]:
+    """
+    GET /tennis/v2/{tour}/tournament/calendar/{season}
+    Returns tournaments filtered by name query.
+    """
+    data = await _api_get(f"{tour.lower()}/tournament/calendar/{season}")
+    items = data if isinstance(data, list) else data.get("data", data.get("result", []))
+    if not isinstance(items, list):
+        return []
+    query_norm = _norm(query)
+    if not query_norm:
+        return items[:25]
+    return [t for t in items if query_norm in _norm(t.get("name", ""))]
+
+async def _api_get_results(tour: str, tournament_id: str, season: str) -> List[dict]:
+    """GET /tennis/v2/{tour}/tournament/results/{tournament_id}?season={season}"""
+    data = await _api_get(f"{tour.lower()}/tournament/results/{tournament_id}", params={"season": season})
     if isinstance(data, list):
         return data
     for key in ("results", "data", "matches", "fixtures"):
@@ -1121,7 +1133,7 @@ class TournamentPickView(discord.ui.View):
         name = chosen.get("tournament_name", "?")
         await interaction.response.edit_message(
             content=f"⏳ Fetching matches & rankings for **{name}** {self.season}...", view=None)
-        await self.cog._fetch_and_preview(interaction, self.fantasy_t, chosen, self.season, self.tour)
+        await self.cog._fetch_and_preview(interaction, self.fantasy_t, str(chosen.get("id", "")), self.season, self.tour)
 
 
 class FetchConfirmView(discord.ui.View):
@@ -1360,13 +1372,55 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_modal(EndResultsModal(self, interaction.user.id, tournament_id))
 
     @f_admin.command(
-        name="tournament-fetch",
+        name="tournament-search",
+        description="Admin: search the tennis API calendar to find a tournament ID.",
+    )
+    @app_commands.describe(
+        query="Tournament name to search for (e.g. 'Australian Open')",
+        season="Season year (e.g. 2025)",
+        tour="ATP or WTA",
+    )
+    @app_commands.choices(tour=[
+        app_commands.Choice(name="ATP", value="ATP"),
+        app_commands.Choice(name="WTA", value="WTA"),
+    ])
+    async def fantasy_tournament_search(
+        self,
+        interaction: discord.Interaction,
+        query: str,
+        season: str,
+        tour: Optional[str] = "ATP",
+    ):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        if not _rapidapi_key():
+            return await interaction.response.send_message(
+                "❌ `RAPIDAPI_KEY` is not set.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            results = await _api_search_calendar(tour or "ATP", season, query)
+        except Exception as e:
+            return await interaction.followup.send(f"❌ API error: `{e}`", ephemeral=True)
+        if not results:
+            return await interaction.followup.send(
+                f"❌ No tournaments found for `{query}` in {season}.", ephemeral=True)
+        lines = [f"**Tournament Search — {query} ({season} {tour})**", ""]
+        for t in results[:25]:
+            tid  = t.get("id", "?")
+            name = t.get("name", "?")
+            date = (t.get("date", "") or "")[:10]
+            lines.append(f"`{tid}` — **{name}** — {date}")
+        lines.append("\nUse the ID with `/fantasy-admin tournament-fetch`.")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @f_admin.command(
         description="Admin: auto-fetch results from the tennis API and complete a fantasy tournament.",
     )
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     @app_commands.describe(
         tournament_id="Fantasy tournament to complete",
-        api_tournament_id="Tournament ID from the RapidAPI playground (e.g. 18440)",
+        api_tournament_id="Tournament ID from the RapidAPI calendar (e.g. 18440)",
+        season="Season year (e.g. 2025)",
         tour="ATP or WTA",
     )
     @app_commands.choices(tour=[
@@ -1378,6 +1432,7 @@ class FantasyCog(commands.Cog):
         interaction: discord.Interaction,
         tournament_id: str,
         api_tournament_id: str,
+        season: str,
         tour: Optional[str] = "ATP",
     ):
         if not _is_admin(interaction.user):
@@ -1391,18 +1446,19 @@ class FantasyCog(commands.Cog):
             return await interaction.response.send_message("❌ Fantasy tournament not found.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
-        await self._fetch_and_preview(interaction, t, api_tournament_id, tour or "ATP")
+        await self._fetch_and_preview(interaction, t, api_tournament_id, season, tour or "ATP")
 
     async def _fetch_and_preview(
         self,
         interaction: discord.Interaction,
         fantasy_t: dict,
         api_tournament_id: str,
+        season: str,
         tour: str,
     ) -> None:
         try:
             all_matches, rank_map = await asyncio.gather(
-                _api_get_results(tour, api_tournament_id),
+                _api_get_results(tour, api_tournament_id, season),
                 _api_get_rankings(tour),
             )
         except Exception as e:
@@ -1412,7 +1468,8 @@ class FantasyCog(commands.Cog):
 
         if not all_matches:
             await interaction.followup.send(
-                "❌ No match data returned. Double-check the tournament ID from RapidAPI and make sure the tournament is finished.",
+                f"❌ No match data returned for tournament `{api_tournament_id}` season `{season}`. "
+                "Double-check both values in the RapidAPI calendar.",
                 ephemeral=True)
             return
 
