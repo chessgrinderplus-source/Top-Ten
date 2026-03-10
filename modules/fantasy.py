@@ -215,175 +215,168 @@ def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Opti
 # ============================================================
 
 _RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
-_RAPIDAPI_BASE = f"https://{_RAPIDAPI_HOST}/"
+_RAPIDAPI_BASE = f"https://{_RAPIDAPI_HOST}/tennis/v2"
 
 def _rapidapi_key() -> str:
     return getattr(config, "RAPIDAPI_KEY", "") or os.environ.get("RAPIDAPI_KEY", "")
 
-async def _api_get(method: str, extra_params: Optional[dict] = None) -> Any:
+async def _api_get(path: str) -> Any:
     key = _rapidapi_key()
     if not key:
         raise RuntimeError("RAPIDAPI_KEY is not set. Add it to your Railway environment variables.")
     headers = {
-        "X-RapidAPI-Key": key,
-        "X-RapidAPI-Host": _RAPIDAPI_HOST,
+        "x-rapidapi-key":  key,
+        "x-rapidapi-host": _RAPIDAPI_HOST,
     }
-    params = {"method": method}
-    if extra_params:
-        params.update(extra_params)
+    url = f"{_RAPIDAPI_BASE}/{path.lstrip('/')}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(
-            _RAPIDAPI_BASE,
-            headers=headers,
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=20),
-        ) as resp:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             resp.raise_for_status()
-            data = await resp.json()
-            if isinstance(data, dict) and not data.get("success", 1):
-                raise RuntimeError(f"API error: {data}")
-            return data.get("result", data) if isinstance(data, dict) else data
+            return await resp.json()
 
-async def _api_search_tournaments(name: str) -> List[dict]:
-    """Fetch all tournaments and filter by name client-side."""
-    all_t = await _api_get("get_tournaments")
-    if not isinstance(all_t, list):
-        return []
-    name_lower = _norm(name)
-    return [
-        t for t in all_t
-        if name_lower in _norm(t.get("tournament_name", ""))
-    ]
+async def _api_get_results(tour: str, tournament_id: str) -> List[dict]:
+    """GET /tennis/v2/{tour}/tournament/results/{tournament_id}"""
+    data = await _api_get(f"{tour.lower()}/tournament/results/{tournament_id}")
+    if isinstance(data, list):
+        return data
+    for key in ("results", "data", "matches", "fixtures"):
+        if isinstance(data.get(key), list):
+            return data[key]
+    return []
 
-async def _api_get_matches(tournament_key: str, season: str) -> List[dict]:
-    """Fetch all finished matches for a tournament + season."""
-    matches = await _api_get("get_fixtures", {
-        "tournament_key": str(tournament_key),
-        "tournament_season": str(season),
-    })
-    if not isinstance(matches, list):
-        return []
-    return [m for m in matches if m.get("event_status") == "Finished"]
-
-async def _api_get_rankings(event_type: str = "ATP") -> Dict[str, int]:
+async def _api_get_rankings(tour: str) -> Dict[str, int]:
     """
-    Fetch ATP or WTA standings and return {player_key: rank}.
-    event_type should be 'ATP' or 'WTA'.
+    GET /tennis/v2/{tour}/ranking/singles/
+    Returns {normalised_player_name: rank}.
     """
     try:
-        standings = await _api_get("get_standings", {"event_type": event_type})
-        if not isinstance(standings, list):
-            return {}
-        return {
-            str(s["player_key"]): int(s.get("place", 9999))
-            for s in standings
-            if s.get("player_key")
-        }
-    except Exception:
+        data = await _api_get(f"{tour.lower()}/ranking/singles/")
+        rows = data if isinstance(data, list) else data.get("rankings", data.get("data", []))
+        rank_map: Dict[str, int] = {}
+        for r in rows:
+            name = (r.get("player_name") or r.get("name") or r.get("full_name") or "").strip()
+            rank = r.get("rank") or r.get("place") or r.get("ranking") or 0
+            if name and rank:
+                rank_map[_norm(name)] = int(rank)
+        return rank_map
+    except Exception as e:
+        print(f"[fantasy] Rankings fetch failed: {e}")
         return {}
 
 # ── Match data helpers ────────────────────────────────────────
 
 def _name_sim(a: str, b: str) -> float:
-    """Word-overlap similarity between two player names."""
     a_parts = set(_norm(a).split())
     b_parts = set(_norm(b).split())
     if not a_parts or not b_parts:
         return 0.0
     return len(a_parts & b_parts) / max(len(a_parts), len(b_parts))
 
+def _lookup_rank(player_name: str, rank_map: Dict[str, int]) -> int:
+    key = _norm(player_name)
+    if key in rank_map:
+        return rank_map[key]
+    best_score, best_rank = 0.0, 0
+    for rkey, rank in rank_map.items():
+        score = _name_sim(key, rkey)
+        if score > best_score:
+            best_score, best_rank = score, rank
+    return best_rank if best_score >= 0.45 else 0
+
 def _match_player_side(player_name: str, match: dict) -> Optional[str]:
-    """Return 'first' or 'second' if this player appears in the match."""
-    for side in ("first", "second"):
-        name = match.get(f"event_{side}_player", "")
-        if _name_sim(player_name, name) >= 0.45:
-            return side
+    """Try common field name patterns to find which side this player is on."""
+    for pair in (("home", "away"), ("first", "second"), ("player1", "player2")):
+        for side in pair:
+            for field in (f"{side}_player", f"player_{side}", f"event_{side}_player", side):
+                name = str(match.get(field, "") or "")
+                if name and _name_sim(player_name, name) >= 0.45:
+                    return side
     return None
+
+def _opp_side(side: str) -> str:
+    return {"home": "away", "away": "home",
+            "first": "second", "second": "first",
+            "player1": "player2", "player2": "player1"}.get(side, side)
 
 def _extract_sets(match: dict, side: str) -> Tuple[int, int]:
-    """Return (sets_won, sets_lost) for 'first' or 'second' side."""
-    scores = match.get("scores", [])
-    if not scores:
-        # Fall back to event_final_result e.g. "2 - 1"
-        raw = match.get("event_final_result", "")
-        parts = [p.strip() for p in raw.split("-")]
-        if len(parts) == 2:
-            try:
-                f, s = int(parts[0]), int(parts[1])
-                return (f, s) if side == "first" else (s, f)
-            except ValueError:
-                pass
-        return 0, 0
-    won = lost = 0
-    my_key  = "score_first"  if side == "first"  else "score_second"
-    opp_key = "score_second" if side == "first"  else "score_first"
-    for sc in scores:
+    opp = _opp_side(side)
+    is_first = side in ("first", "home", "player1")
+    for scores_key in ("scores", "sets", "score"):
+        scores = match.get(scores_key)
+        if isinstance(scores, list) and scores:
+            won = lost = 0
+            for sc in scores:
+                my_g = int(sc.get(f"{side}_score", sc.get(f"score_{'first' if is_first else 'second'}", 0)) or 0)
+                op_g = int(sc.get(f"{opp}_score",  sc.get(f"score_{'second' if is_first else 'first'}", 0)) or 0)
+                if my_g > op_g: won += 1
+                elif op_g > my_g: lost += 1
+            return won, lost
+    raw = str(match.get("result", match.get("score", match.get("event_final_result", ""))) or "")
+    parts = [p.strip() for p in raw.split("-")]
+    if len(parts) == 2:
         try:
-            m = int(sc.get(my_key, 0) or 0)
-            o = int(sc.get(opp_key, 0) or 0)
-            if m > o:
-                won += 1
-            elif o > m:
-                lost += 1
-        except (ValueError, TypeError):
-            continue
-    return won, lost
+            f, s = int(parts[0]), int(parts[1])
+            return (f, s) if is_first else (s, f)
+        except ValueError:
+            pass
+    return 0, 0
 
 def _player_won_match(side: str, match: dict) -> Optional[bool]:
-    """Return True if this side won the match."""
-    winner = match.get("event_winner", "")
-    if "First" in winner:
-        return side == "first"
-    if "Second" in winner:
-        return side == "second"
+    for field in ("winner", "event_winner", "match_winner", "winner_side"):
+        w = str(match.get(field, "") or "").lower()
+        if not w:
+            continue
+        if side.lower() in w or ("home" in w and side == "home") or ("first" in w and side in ("first", "player1")):
+            return True
+        opp = _opp_side(side)
+        if opp.lower() in w or ("away" in w and side == "away") or ("second" in w and side in ("second", "player2")):
+            return False
     return None
 
-def _normalize_round_from_tournament_field(raw: str) -> Optional[str]:
-    """
-    tournament_round often looks like 'Wimbledon - Quarterfinals'.
-    Strip the tournament name prefix and normalise.
-    """
-    if " - " in raw:
-        raw = raw.split(" - ", 1)[1]
-    return _normalize_round(raw.strip())
+def _extract_round(match: dict) -> Optional[str]:
+    for field in ("round", "round_name", "tournament_round", "stage", "event_round"):
+        raw = str(match.get(field, "") or "").strip()
+        if not raw:
+            continue
+        if " - " in raw:
+            raw = raw.split(" - ", 1)[1]
+        canonical = _normalize_round(raw)
+        if canonical:
+            return canonical
+    return None
 
 def _compute_upset_pts(my_rank: int, opp_rank: int, player_won: bool) -> int:
-    """
-    Positive if player beat a higher-ranked (lower number) opponent.
-    Negative if player lost to a lower-ranked (higher number) opponent.
-    Zero for expected results.
-    """
     if my_rank <= 0 or opp_rank <= 0:
         return 0
-    diff = opp_rank - my_rank   # negative means opponent is better
+    diff = opp_rank - my_rank
     if player_won and diff < 0:
-        return abs(diff) * 3    # upset win
+        return abs(diff) * 3
     if not player_won and diff > 0:
-        return -diff * 3        # upset loss
+        return -diff * 3
     return 0
 
 def _calc_player_stats(
     player_name: str,
     all_matches: List[dict],
-    rank_map: Dict[str, int],          # player_key → rank
+    rank_map: Dict[str, int],
 ) -> Tuple[int, int, int, Optional[str]]:
-    """
-    Return (sets_won, sets_lost, net_upset_pts, furthest_round_canonical).
-    """
     sets_won = sets_lost = upset_pts = 0
     best_round: Optional[str] = None
     best_order = -1
+    my_rank = _lookup_rank(player_name, rank_map)
 
     for match in all_matches:
         side = _match_player_side(player_name, match)
         if side is None:
             continue
-
-        opp_side = "second" if side == "first" else "first"
-        my_key  = f"{side}_player_key"
-        opp_key = f"{opp_side}_player_key"
-        my_rank  = rank_map.get(str(match.get(my_key,  "")), 0)
-        opp_rank = rank_map.get(str(match.get(opp_key, "")), 0)
+        opp = _opp_side(side)
+        opp_name = ""
+        for field in (f"{opp}_player", f"player_{opp}", f"event_{opp}_player", opp):
+            v = str(match.get(field, "") or "")
+            if v:
+                opp_name = v
+                break
+        opp_rank = _lookup_rank(opp_name, rank_map) if opp_name else 0
 
         won = _player_won_match(side, match)
         if won is None:
@@ -394,9 +387,7 @@ def _calc_player_stats(
         sets_lost += sl
         upset_pts += _compute_upset_pts(my_rank, opp_rank, won)
 
-        # Track furthest round
-        rnd_raw = match.get("tournament_round", "")
-        canonical = _normalize_round_from_tournament_field(rnd_raw)
+        canonical = _extract_round(match)
         if canonical:
             order = ROUND_ORDER.get(canonical, -1)
             if order > best_order:
@@ -413,19 +404,15 @@ def _build_fetched_rows(
 ) -> Tuple[List[dict], List[str]]:
     rows: List[dict] = []
     warnings: List[str] = []
-
     for p in fantasy_t.get("players", []):
         pname = p["name"]
         sw, sl, upset, round_key = _calc_player_stats(pname, all_matches, rank_map)
-
         if round_key is None:
             warnings.append(f"⚠️ No matches found for **{pname}** — defaulted to R128")
             round_key = "R128"
-
         tourn_pts = round_points_map.get(round_key, 0)
         set_pts   = sw * 5 - sl * 2
         total     = tourn_pts + set_pts + upset
-
         rows.append({
             "player":            pname,
             "round":             round_key,
@@ -436,7 +423,6 @@ def _build_fetched_rows(
             "upset_points":      upset,
             "total":             total,
         })
-
     return rows, warnings
 
 # ============================================================
@@ -1378,9 +1364,8 @@ class FantasyCog(commands.Cog):
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     @app_commands.describe(
         tournament_id="Fantasy tournament to complete",
-        search_query="Tournament name to search on the API (e.g. 'Wimbledon')",
-        season="Season/year (e.g. 2025). Defaults to current year.",
-        tour="ATP or WTA (for rankings lookup)",
+        api_tournament_id="Tournament ID from the RapidAPI playground (e.g. 18440)",
+        tour="ATP or WTA",
     )
     @app_commands.choices(tour=[
         app_commands.Choice(name="ATP", value="ATP"),
@@ -1390,8 +1375,7 @@ class FantasyCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         tournament_id: str,
-        search_query: str,
-        season: Optional[str] = None,
+        api_tournament_id: str,
         tour: Optional[str] = "ATP",
     ):
         if not _is_admin(interaction.user):
@@ -1404,57 +1388,30 @@ class FantasyCog(commands.Cog):
         if not t:
             return await interaction.response.send_message("❌ Fantasy tournament not found.", ephemeral=True)
 
-        import datetime
-        season_str = season or str(datetime.datetime.utcnow().year)
-
         await interaction.response.defer(ephemeral=True)
-        try:
-            api_tournaments = await _api_search_tournaments(search_query)
-        except Exception as e:
-            return await interaction.followup.send(f"❌ API search failed: `{e}`", ephemeral=True)
-
-        if not api_tournaments:
-            return await interaction.followup.send(
-                f"❌ No tournaments found for `{search_query}`. Try a different search term.", ephemeral=True)
-
-        if len(api_tournaments) == 1:
-            name = api_tournaments[0].get("tournament_name", "?")
-            await interaction.followup.send(
-                f"⏳ Found **{name}** — fetching matches & rankings...", ephemeral=True)
-            await self._fetch_and_preview(interaction, t, api_tournaments[0], season_str, tour or "ATP")
-        else:
-            view = TournamentPickView(self, interaction.user.id, t, api_tournaments, season_str, tour or "ATP")
-            await interaction.followup.send(
-                f"🎾 Found **{len(api_tournaments[:25])}** matching tournaments. Pick the right one:",
-                view=view, ephemeral=True)
+        await self._fetch_and_preview(interaction, t, api_tournament_id, tour or "ATP")
 
     async def _fetch_and_preview(
         self,
         interaction: discord.Interaction,
         fantasy_t: dict,
-        api_tournament: dict,
-        season: str,
+        api_tournament_id: str,
         tour: str,
     ) -> None:
-        t_key = str(api_tournament.get("tournament_key", ""))
-        t_name = api_tournament.get("tournament_name", t_key)
         try:
             all_matches, rank_map = await asyncio.gather(
-                _api_get_matches(t_key, season),
+                _api_get_results(tour, api_tournament_id),
                 _api_get_rankings(tour),
             )
         except Exception as e:
-            await interaction.edit_original_response(
-                content=f"❌ Failed to fetch data: `{e}`", embed=None, view=None)
+            await interaction.followup.send(
+                f"❌ Failed to fetch data: `{e}`", ephemeral=True)
             return
 
         if not all_matches:
-            await interaction.edit_original_response(
-                content=(
-                    "❌ No finished matches found for this tournament/season. "
-                    "Check the season year or try again after the tournament ends."
-                ),
-                embed=None, view=None)
+            await interaction.followup.send(
+                "❌ No match data returned. Double-check the tournament ID from RapidAPI and make sure the tournament is finished.",
+                ephemeral=True)
             return
 
         data = _load()
@@ -1465,7 +1422,7 @@ class FantasyCog(commands.Cog):
 
         lines = [
             f"**Auto-Fetch Preview — {fantasy_t.get('name')}**",
-            f"*Source: {t_name} {season}  •  {len(all_matches)} matches  •  {len(rank_map)} ranked players*",
+            f"*API tournament ID: {api_tournament_id}  •  {len(all_matches)} matches  •  {len(rank_map)} ranked players*",
             "",
         ]
         if warnings:
@@ -1481,7 +1438,7 @@ class FantasyCog(commands.Cog):
 
         confirm_view = FetchConfirmView(self, interaction.user.id, fantasy_t["id"], rows)
         pager = PagerView(_chunk_pages(lines), interaction.user.id, "Fetch Preview")
-        await interaction.edit_original_response(content=None, embed=pager._embed(), view=confirm_view)
+        await interaction.followup.send(embed=pager._embed(), view=confirm_view, ephemeral=True)
 
     async def _fantasy_end_submit(self, interaction: discord.Interaction, tournament_id: str, results_text: str):
         try:
