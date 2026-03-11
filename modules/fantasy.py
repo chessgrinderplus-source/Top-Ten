@@ -296,7 +296,53 @@ async def _sofa_get_all_matches(tournament_id: str, season_id: str) -> List[dict
         page += 1
     return [e for e in all_events if e.get("status", {}).get("type") == "finished"]
 
-# ── Match data helpers ────────────────────────────────────────
+async def _sofa_get_draw_players(tournament_id: str, season_id: str) -> List[dict]:
+    """
+    Extract all players + seeds from a tournament draw by scanning all matches.
+    Returns [{"name": str, "seed": int|None}, ...] deduplicated and sorted by seed.
+    """
+    all_matches: List[dict] = []
+    page = 0
+    while True:
+        try:
+            data = await _sofa_get(
+                f"unique-tournament/{tournament_id}/season/{season_id}/events/last/{page}"
+            )
+        except Exception:
+            break
+        events = data.get("events", [])
+        if not events:
+            break
+        all_matches.extend(events)
+        if not data.get("hasNextPage", False):
+            break
+        page += 1
+
+    seen: Dict[str, dict] = {}
+    for match in all_matches:
+        for side in ("home", "away"):
+            team = match.get(f"{side}Team", {})
+            name = (team.get("name") or team.get("shortName") or "").strip()
+            if not name:
+                continue
+            key = _norm(name)
+            if key in seen:
+                continue
+            # Seed is sometimes in the team dict directly
+            seed = team.get("seed") or team.get("ranking") or None
+            try:
+                seed = int(seed) if seed else None
+            except (ValueError, TypeError):
+                seed = None
+            seen[key] = {"name": name, "seed": seed}
+
+    players = list(seen.values())
+    # Sort: seeded first (by seed number), then unseeded alphabetically
+    players.sort(key=lambda p: (0 if p["seed"] is None else 1, p["seed"] or 9999, p["name"].lower()))
+    # Actually: seeded (ascending) first, then unseeded
+    seeded   = sorted([p for p in players if p["seed"] is not None], key=lambda p: p["seed"])
+    unseeded = sorted([p for p in players if p["seed"] is None],     key=lambda p: p["name"].lower())
+    return seeded + unseeded
 
 def _name_sim(a: str, b: str) -> float:
     a_parts = set(_norm(a).split())
@@ -386,11 +432,12 @@ def _compute_upset_pts(my_rank: int, opp_rank: int, player_won: bool) -> int:
 def _calc_player_stats(
     player_name: str,
     all_matches: List[dict],
-) -> Tuple[int, int, int, Optional[str]]:
-    """Return (sets_won, sets_lost, net_upset_pts, furthest_round_canonical)."""
+) -> Tuple[int, int, int, Optional[str], bool]:
+    """Return (sets_won, sets_lost, net_upset_pts, furthest_round_canonical, won_final)."""
     sets_won = sets_lost = upset_pts = 0
     best_round: Optional[str] = None
     best_order = -1
+    won_final = False
 
     for match in all_matches:
         side = _match_side(player_name, match)
@@ -417,8 +464,10 @@ def _calc_player_stats(
             if order > best_order:
                 best_order = order
                 best_round = canonical
+                # Track if they won the match that determined their furthest round
+                won_final = player_won
 
-    return sets_won, sets_lost, upset_pts, best_round
+    return sets_won, sets_lost, upset_pts, best_round, won_final
 
 def _build_fetched_rows(
     fantasy_t: dict,
@@ -429,10 +478,13 @@ def _build_fetched_rows(
     warnings: List[str] = []
     for p in fantasy_t.get("players", []):
         pname = p["name"]
-        sw, sl, upset, round_key = _calc_player_stats(pname, all_matches)
+        sw, sl, upset, round_key, won_final = _calc_player_stats(pname, all_matches)
         if round_key is None:
             warnings.append(f"⚠️ No matches found for **{pname}** — defaulted to R128")
             round_key = "R128"
+        # Winner of the Final → Champion
+        if round_key == "Finalist" and won_final:
+            round_key = "Champion"
         tourn_pts = round_points_map.get(round_key, 0)
         set_pts   = sw * 5 - sl * 2
         total     = tourn_pts + set_pts + upset
@@ -977,12 +1029,13 @@ def _is_blacklisted(data: dict, user_id: int) -> bool:
     try: return int(user_id) in set(int(x) for x in data.get("ldb_blacklist", []))
     except Exception: return False
 
-def _t_in_scope(t: dict, guild_id: Optional[int], category_id: Optional[str], days_back: Optional[int]) -> bool:
+def _t_in_scope(t: dict, guild_id: Optional[int], category_id: Optional[str], days_back: Optional[int], ldb_reset_at: int = 0) -> bool:
     if guild_id is not None and t.get("guild_id") not in (0, guild_id): return False
     if category_id and t.get("category_id") != category_id: return False
+    completed = int(t.get("completed_at") or 0)
+    if ldb_reset_at and completed < ldb_reset_at: return False
     if days_back is not None:
         if not t.get("results_entered"): return False
-        completed = int(t.get("completed_at") or 0)
         if completed <= 0: return False
         cutoff = _now_unix() - int(days_back) * 86400
         if completed < cutoff: return False
@@ -1018,7 +1071,7 @@ def _compute_leaderboard(data: dict, guild_id: Optional[int], mode: str,
                           min_tournaments: int = 5) -> List[Tuple[int, float, int]]:
     tours = [t for t in data.get("tournaments", [])
              if _is_created(t) and t.get("results_entered")
-             and _t_in_scope(t, guild_id, category_id, days_back)]
+             and _t_in_scope(t, guild_id, category_id, days_back, int(data.get("ldb_reset_at", 0)))]
     points_total: Dict[int, int] = {}; points_count: Dict[int, int] = {}
     wins: Dict[int, int] = {}; top5: Dict[int, int] = {}; top10: Dict[int, int] = {}
     for t in tours:
@@ -1309,6 +1362,101 @@ class FantasyCog(commands.Cog):
             return await interaction.response.send_message("❌ Category not found. Use `/fantasy-category-list` to see IDs.", ephemeral=True)
         await interaction.response.send_modal(
             SeedsModal(self, interaction.user.id, tournament_name.strip(), category_id, cat.get("title","")))
+
+    @f_admin.command(
+        name="draw-fetch",
+        description="Admin: auto-create a fantasy tournament by fetching the draw from SofaScore.",
+    )
+    @app_commands.autocomplete(category_id=_ac_category)
+    @app_commands.describe(
+        tournament_name="Name for this fantasy tournament",
+        category_id="Category to assign it to",
+        sofa_id="SofaScore tournament ID or full SofaScore URL",
+    )
+    async def fantasy_draw_fetch(
+        self,
+        interaction: discord.Interaction,
+        tournament_name: str,
+        category_id: str,
+        sofa_id: str,
+    ):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        cat = next((c for c in data["categories"] if c.get("id") == category_id), None)
+        if not cat:
+            return await interaction.response.send_message("❌ Category not found.", ephemeral=True)
+
+        if sofa_id.startswith("http"):
+            parsed = _parse_sofa_url(sofa_id)
+            if not parsed:
+                return await interaction.response.send_message("❌ Could not extract ID from URL.", ephemeral=True)
+            sofa_id = parsed
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Get most recent season
+        try:
+            seasons = await _sofa_get_seasons(sofa_id)
+        except Exception as e:
+            return await interaction.followup.send(f"❌ Failed to fetch seasons: `{e}`", ephemeral=True)
+        if not seasons:
+            return await interaction.followup.send("❌ No seasons found. Check the ID.", ephemeral=True)
+
+        season_id = str(seasons[0].get("id", ""))
+        season_name = seasons[0].get("name", season_id)
+
+        try:
+            players = await _sofa_get_draw_players(sofa_id, season_id)
+        except Exception as e:
+            return await interaction.followup.send(f"❌ Failed to fetch draw: `{e}`", ephemeral=True)
+
+        if not players:
+            return await interaction.followup.send(
+                "❌ No players found in draw. The tournament may not have started yet.", ephemeral=True)
+
+        # Build tournament
+        tid = _mk_id("fantasy")
+        tournament = {
+            "id": tid,
+            "guild_id": interaction.guild.id if interaction.guild else 0,
+            "name": tournament_name.strip(),
+            "category_id": category_id,
+            "category_title": cat.get("title", ""),
+            "created": False,
+            "picks_open": True,
+            "results_entered": False,
+            "opened_at": _now_unix(),
+            "closed_at": None,
+            "completed_at": None,
+            "players": [{"name": p["name"], "seed": p["seed"]} for p in players],
+            "rosters": {},
+            "results": {},
+            "display": {"primary": None, "secondary": None, "tertiary": None,
+                        "logo_url": None, "background_url": None},
+        }
+        data["tournaments"].append(tournament)
+        _save(data)
+
+        seeded_count   = sum(1 for p in players if p["seed"] is not None)
+        unseeded_count = len(players) - seeded_count
+        lines = [
+            f"**Draw fetched — {season_name}**",
+            f"**{len(players)} players** ({seeded_count} seeded, {unseeded_count} unseeded)",
+            "",
+            f"**Tournament:** {tournament_name} (`{tid}`)",
+            f"**Category:** {cat.get('title')}",
+            "",
+            "**Players (first 30):**",
+        ]
+        for p in players[:30]:
+            lines.append(f"- {_fmt_player(p['seed'], p['name'])}")
+        if len(players) > 30:
+            lines.append(f"... and {len(players) - 30} more")
+
+        embed = discord.Embed(title="Confirm Draw", description="\n".join(lines)[:3900])
+        view = ConfirmCreateView(self, interaction.user.id, tid)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     async def _fantasy_create_set_unseeded(self, interaction: discord.Interaction, tournament_id: str, unseeded_text: str):
         data = _load()
@@ -1606,6 +1754,16 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user): return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load(); data["ldb_blacklist"] = []; _save(data)
         await interaction.response.send_message("✅ Fantasy leaderboard blacklist cleared.")
+
+    @f_admin.command(name="ldb-wipe", description="Admin: wipe all leaderboard history (fresh start). Tournament data is preserved.")
+    async def fantasy_ldb_wipe(self, interaction: discord.Interaction):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        data["ldb_reset_at"] = _now_unix()
+        _save(data)
+        await interaction.response.send_message(
+            f"✅ Leaderboard wiped. Only tournaments completed after <t:{data['ldb_reset_at']}:F> will count.")
 
     @f_admin.command(name="ldb-blacklist", description="Admin: blacklist a user from all fantasy leaderboards.")
     async def fantasy_ldb_blacklist(self, interaction: discord.Interaction, user: discord.Member):
