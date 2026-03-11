@@ -457,17 +457,22 @@ def _build_fetched_rows(
 # ============================================================
 
 def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
-    """Parse manual fallback results: Player | Round (one per line)."""
+    """
+    Parse results pasted from Claude chat.
+    Short:  Player | Round
+    Full:   Player | Round | sets_won | sets_lost | upset_pts
+    """
     rows = []
     errors = []
     for idx, raw in enumerate((text or "").splitlines(), start=1):
-        if not raw.strip():
+        line = raw.strip()
+        if not line:
             continue
-        parts = [p.strip() for p in raw.split("|")]
+        parts = [p.strip() for p in line.split("|")]
         if len(parts) < 2:
-            errors.append(f"Line {idx}: need 2 fields: Player | Round")
+            errors.append(f"Line {idx}: need at least: Player | Round")
             continue
-        name = parts[0]
+        name       = parts[0]
         round_text = parts[1]
         if not name:
             errors.append(f"Line {idx}: player name is empty.")
@@ -475,7 +480,17 @@ def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
         if _normalize_round(round_text) is None:
             errors.append(f"Line {idx}: unrecognised round '{round_text}'. Valid: {', '.join(ROUND_CANONICAL)}")
             continue
-        rows.append({"player": name, "round": round_text})
+        sets_won = sets_lost = upset_pts = 0
+        if len(parts) >= 5:
+            try:
+                sets_won  = int(parts[2])
+                sets_lost = int(parts[3])
+                upset_pts = int(parts[4])
+            except ValueError:
+                errors.append(f"Line {idx}: sets_won/sets_lost/upset_pts must be integers.")
+                continue
+        rows.append({"player": name, "round": round_text,
+                     "sets_won": sets_won, "sets_lost": sets_lost, "upset_pts": upset_pts})
     return rows, errors
 
 # ============================================================
@@ -947,18 +962,21 @@ class RetryEndView(discord.ui.View):
         await interaction.response.send_modal(
             EndResultsModal(self.cog, self.user_id, self.tournament_id, self.previous_text))
 
-class EndResultsModal(discord.ui.Modal, title="Fantasy End — Manual Results"):
+class EndResultsModal(discord.ui.Modal, title="Fantasy End — Paste Results"):
     results = discord.ui.TextInput(
-        label="Player | Round  (one per line)",
+        label="Player | Round | sets_won | sets_lost | upset_pts",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=4000,
         placeholder=(
-            "Djokovic | Champion\n"
-            "Alcaraz | Finalist\n"
-            "Sinner | Semi-Final\n"
-            "Medvedev | Quarter-Final\n"
-            "Use /fantasy-admin tournament-fetch for full automation."
+            "Full format (from Claude chat):\n"
+            "Alcaraz | Champion | 21 | 3 | 0\n"
+            "Djokovic | Finalist | 13 | 7 | 6\n"
+            "Sinner | Semi-Final | 16 | 4 | -6\n"
+            "\n"
+            "Short format (no set/upset pts):\n"
+            "Alcaraz | Champion\n"
+            "Djokovic | Finalist"
         ),
     )
 
@@ -1601,25 +1619,31 @@ class FantasyCog(commands.Cog):
                 view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
                 return await interaction.response.send_message("\n".join(msg), view=view, ephemeral=True)
 
-            # Manual entry: only tournament points calculated; sets/upsets = 0
+            # Build final rows — uses set/upset pts if provided (full format from Claude chat)
             final_rows = []
             for r in rows:
-                canonical = _normalize_round(r["round"]) or r["round"]
-                tourn_pts = round_points_map.get(canonical, 0)
+                canonical  = _normalize_round(r["round"]) or r["round"]
+                tourn_pts  = round_points_map.get(canonical, 0)
+                sw         = r.get("sets_won", 0)
+                sl         = r.get("sets_lost", 0)
+                upset      = r.get("upset_pts", 0)
+                set_pts    = sw * 5 - sl * 2
+                total      = tourn_pts + set_pts + upset
                 final_rows.append({
                     "player":            r["player"],
                     "round":             canonical,
-                    "sets_won":          0,
-                    "sets_lost":         0,
+                    "sets_won":          sw,
+                    "sets_lost":         sl,
                     "tournament_points": tourn_pts,
-                    "set_points":        0,
-                    "upset_points":      0,
-                    "total":             tourn_pts,
+                    "set_points":        set_pts,
+                    "upset_points":      upset,
+                    "total":             total,
                 })
 
+            has_full = any(r.get("sets_won") or r.get("upset_pts") for r in rows)
+            note = "" if has_full else "ℹ️ Set & upset points not included. Paste full format from Claude chat for complete scoring."
             await self._apply_results_data(interaction, tournament_id, final_rows,
-                                            title="Manual Results Saved",
-                                            note="ℹ️ Set & upset points not included (manual entry). Use `/fantasy-admin tournament-fetch` for full automation.")
+                                            title="Results Saved", note=note)
         except Exception as e:
             view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
             await interaction.response.send_message(f"❌ Error: `{type(e).__name__}: {e}`",
