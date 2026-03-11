@@ -175,25 +175,46 @@ def _normalize_round(s: str) -> Optional[str]:
     return _ROUND_ALIASES.get(_norm(s))
 
 def _parse_round_points_text(text: str) -> Tuple[Dict[str, int], List[str]]:
-    """Parse a block of 'Round: Points' lines into a dict. Returns (points_dict, errors)."""
+    """
+    Accept either:
+      A) 'Round: Points' format  (e.g. 'Champion: 500')
+      B) Plain numbers, one per line in canonical round order
+         (Champion, Finalist, Semi-Final, Quarter-Final, R16, R32, R64, R128)
+    """
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    if not lines:
+        return {}, []
+
+    # Detect format: if first non-empty line has no ':' and is a plain number → plain mode
+    plain_mode = all(re.match(r'^-?\d+$', l) for l in lines)
+
     result: Dict[str, int] = {}
     errors: List[str] = []
-    for idx, raw in enumerate((text or "").splitlines(), start=1):
-        line = raw.strip()
-        if not line:
-            continue
-        if ":" not in line:
-            errors.append(f"Line {idx}: expected 'Round: Points' format, got: {line!r}")
-            continue
-        key_raw, val_raw = line.split(":", 1)
-        canonical = _normalize_round(key_raw.strip())
-        if canonical is None:
-            errors.append(f"Line {idx}: unrecognised round {key_raw.strip()!r}. Valid: {', '.join(ROUND_CANONICAL)}")
-            continue
-        try:
-            result[canonical] = int(val_raw.strip())
-        except ValueError:
-            errors.append(f"Line {idx}: points must be an integer, got {val_raw.strip()!r}")
+
+    if plain_mode:
+        for i, line in enumerate(lines):
+            if i >= len(ROUND_CANONICAL):
+                errors.append(f"Line {i+1}: more values than rounds ({len(ROUND_CANONICAL)} max)")
+                break
+            try:
+                result[ROUND_CANONICAL[i]] = int(line)
+            except ValueError:
+                errors.append(f"Line {i+1}: expected integer, got {line!r}")
+    else:
+        for idx, line in enumerate(lines, start=1):
+            if ":" not in line:
+                errors.append(f"Line {idx}: expected 'Round: Points' format, got: {line!r}")
+                continue
+            key_raw, val_raw = line.split(":", 1)
+            canonical = _normalize_round(key_raw.strip())
+            if canonical is None:
+                errors.append(f"Line {idx}: unrecognised round {key_raw.strip()!r}. Valid: {', '.join(ROUND_CANONICAL)}")
+                continue
+            try:
+                result[canonical] = int(val_raw.strip())
+            except ValueError:
+                errors.append(f"Line {idx}: points must be an integer, got {val_raw.strip()!r}")
+
     return result, errors
 
 def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Optional[int]:
@@ -660,18 +681,20 @@ class ConfirmPicksButton(discord.ui.Button):
 
 class CategoryPointsModal(discord.ui.Modal, title="Category — Round Points"):
     points_text = discord.ui.TextInput(
-        label="Round: Points (one per line)",
+        label="Points per round (one number per line)",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=1000,
         placeholder=(
-            "Champion: 500\n"
-            "Finalist: 300\n"
-            "Semi-Final: 180\n"
-            "Quarter-Final: 90\n"
-            "R16: 45\n"
-            "R32: 20\n"
-            "R64: 10"
+            "500\n"
+            "300\n"
+            "180\n"
+            "90\n"
+            "45\n"
+            "20\n"
+            "10\n"
+            "5\n"
+            "↑ Champion / Finalist / SF / QF / R16 / R32 / R64 / R128"
         ),
     )
 
@@ -685,7 +708,11 @@ class CategoryPointsModal(discord.ui.Modal, title="Category — Round Points"):
         data = _load()
         cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
         if cat and cat.get("round_points"):
-            prefill = "\n".join(f"{r}: {cat['round_points'][r]}" for r in ROUND_CANONICAL if r in cat["round_points"])
+            prefill = "\n".join(
+                str(cat["round_points"][r])
+                for r in ROUND_CANONICAL
+                if r in cat["round_points"]
+            )
             try:
                 self.points_text.default = prefill
             except Exception:
@@ -1702,6 +1729,7 @@ class FantasyCog(commands.Cog):
                             status: Optional[app_commands.Choice[str]] = None):
         data = _load()
         gid = interaction.guild.id if interaction.guild else 0
+        is_admin = isinstance(interaction.user, discord.Member) and _is_admin(interaction.user)
         ts = [t for t in data.get("tournaments", [])
               if t.get("guild_id") in (0, gid) and _require_created_or_admin(interaction, t) is None]
         want = status.value if status else None
@@ -1710,7 +1738,12 @@ class FantasyCog(commands.Cog):
             return await interaction.response.send_message(
                 f"ℹ️ No fantasy tournaments{' with status ' + want if want else ''}.")
         ts.sort(key=lambda x: (x.get("name") or "").lower())
-        lines = [f"- **{t.get('name')}** — `{t.get('id')}` — **{_status_and_stamp(t)}**" for t in ts]
+        lines = []
+        for t in ts:
+            line = f"- **{t.get('name')}** — `{t.get('id')}` — **{_status_and_stamp(t)}**"
+            if is_admin:
+                line += f"\n  ↳ Category: **{t.get('category_title', '?')}** (`{t.get('category_id', '?')}`)"
+            lines.append(line)
         title = "Fantasy Tournaments" + (f" — {want}" if want else "")
         view = PagerView(_chunk_pages(lines), interaction.user.id, title)
         await interaction.response.send_message(embed=view._embed(), view=view)
