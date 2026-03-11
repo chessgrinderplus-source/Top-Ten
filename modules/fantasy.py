@@ -235,125 +235,98 @@ def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Opti
 # URL format   : https://www.sofascore.com/tennis/.../SLUG/UNIQUE_TOURNAMENT_ID
 # ============================================================
 
-_SOFA_BASE = "https://api.sofascore.com/api/v1"
-_SOFA_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Origin": "https://www.sofascore.com",
-    "Referer": "https://www.sofascore.com/",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
-    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
+# ============================================================
+# Tennis data — Jeff Sackmann GitHub CSVs
+# No API key, no auth, no blocking.
+#
+# ATP singles : github.com/JeffSackmann/tennis_atp   atp_matches_{year}.csv
+# ATP doubles : github.com/JeffSackmann/tennis_atp   atp_matches_doubles_{year}.csv
+# WTA singles : github.com/JeffSackmann/tennis_wta   wta_matches_{year}.csv
+# WTA doubles : github.com/JeffSackmann/tennis_wta   wta_matches_doubles_{year}.csv
+#
+# Key CSV columns used:
+#   tourney_name, tourney_date
+#   round           : R128 R64 R32 R16 QF SF F RR
+#   winner_name, winner_seed, winner_rank
+#   loser_name,  loser_seed,  loser_rank
+#   score           : "6-3 7-5" etc.
+# ============================================================
+
+_SACK_ATP_BASE = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master"
+_SACK_WTA_BASE = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master"
+
+# Sackmann round codes → our canonical names
+_SACK_ROUND_MAP: Dict[str, str] = {
+    "F":    "Finalist",   # winner gets relabeled Champion later
+    "SF":   "Semi-Final",
+    "QF":   "Quarter-Final",
+    "R16":  "R16",
+    "R32":  "R32",
+    "R64":  "R64",
+    "R128": "R128",
+    "RR":   "R16",        # round-robin treated as R16
+    "BR":   "Semi-Final", # bronze match
+    "ER":   "R32",        # early round
 }
 
-async def _sofa_get(path: str, params: Optional[dict] = None) -> Any:
-    url = f"{_SOFA_BASE}/{path.lstrip('/')}"
+def _sack_csv_url(tour: str, year: str, doubles: bool = False) -> str:
+    base = _SACK_WTA_BASE if tour.upper() == "WTA" else _SACK_ATP_BASE
+    prefix = "wta" if tour.upper() == "WTA" else "atp"
+    suffix = "_doubles" if doubles else ""
+    return f"{base}/{prefix}_matches{suffix}_{year}.csv"
+
+async def _fetch_csv(url: str) -> List[dict]:
+    """Download a Sackmann CSV and return as list of dicts."""
+    headers = {"User-Agent": "Mozilla/5.0"}
     async with aiohttp.ClientSession() as session:
-        async with session.get(
-            url, headers=_SOFA_HEADERS, params=params or {},
-            timeout=aiohttp.ClientTimeout(total=20)
-        ) as resp:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status == 404:
+                return []
             resp.raise_for_status()
-            return await resp.json()
+            text = await resp.text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    if not lines:
+        return []
+    import csv as _csv
+    reader = _csv.DictReader(lines)
+    return list(reader)
 
-def _parse_sofa_url(url: str) -> Optional[str]:
-    """Extract unique tournament ID from a SofaScore URL."""
-    # e.g. https://www.sofascore.com/tennis/atp-singles/wimbledon/18182
-    import re as _re
-    m = _re.search(r"/(\d+)(?:/|\?|#|$)", url)
-    return m.group(1) if m else None
-
-async def _sofa_search(query: str) -> List[dict]:
-    """Search SofaScore and return unique tournaments matching the query."""
-    data = await _sofa_get("search/all", {"q": query})
-    results = data.get("uniqueTournaments", data.get("results", []))
-    if isinstance(results, list):
-        # Filter to tennis only
-        return [
-            r for r in results
-            if _norm(r.get("sport", {}).get("name", "") if isinstance(r.get("sport"), dict) else r.get("sport", "")) == "tennis"
-               or r.get("category", {}).get("sport", {}).get("name", "").lower() == "tennis"
-        ][:25]
-    return []
-
-async def _sofa_get_seasons(tournament_id: str) -> List[dict]:
-    data = await _sofa_get(f"unique-tournament/{tournament_id}/seasons")
-    return data.get("seasons", [])
-
-async def _sofa_get_all_matches(tournament_id: str, season_id: str) -> List[dict]:
-    """Fetch all finished matches across all pages for a tournament season."""
-    all_events: List[dict] = []
-    page = 0
-    while True:
-        try:
-            data = await _sofa_get(
-                f"unique-tournament/{tournament_id}/season/{season_id}/events/last/{page}"
-            )
-        except Exception:
-            break
-        events = data.get("events", [])
-        if not events:
-            break
-        all_events.extend(events)
-        if not data.get("hasNextPage", False):
-            break
-        page += 1
-    return [e for e in all_events if e.get("status", {}).get("type") == "finished"]
-
-async def _sofa_get_draw_players(tournament_id: str, season_id: str) -> List[dict]:
+async def _sack_fetch_matches(tour: str, year: str, tourney_query: str, doubles: bool = False) -> Tuple[List[dict], str]:
     """
-    Extract all players + seeds from a tournament draw by scanning all matches.
-    Returns [{"name": str, "seed": int|None}, ...] deduplicated and sorted by seed.
+    Fetch Sackmann CSV for tour+year, find the tournament matching tourney_query.
+    Returns (rows, matched_tourney_name).
     """
-    all_matches: List[dict] = []
-    page = 0
-    while True:
-        try:
-            data = await _sofa_get(
-                f"unique-tournament/{tournament_id}/season/{season_id}/events/last/{page}"
-            )
-        except Exception:
-            break
-        events = data.get("events", [])
-        if not events:
-            break
-        all_matches.extend(events)
-        if not data.get("hasNextPage", False):
-            break
-        page += 1
+    url = _sack_csv_url(tour, year, doubles)
+    rows = await _fetch_csv(url)
+    if not rows:
+        return [], ""
 
-    seen: Dict[str, dict] = {}
-    for match in all_matches:
-        for side in ("home", "away"):
-            team = match.get(f"{side}Team", {})
-            name = (team.get("name") or team.get("shortName") or "").strip()
-            if not name:
-                continue
-            key = _norm(name)
-            if key in seen:
-                continue
-            # Seed is sometimes in the team dict directly
-            seed = team.get("seed") or team.get("ranking") or None
-            try:
-                seed = int(seed) if seed else None
-            except (ValueError, TypeError):
-                seed = None
-            seen[key] = {"name": name, "seed": seed}
+    # Find best-matching tournament name
+    q = _norm(tourney_query)
+    names = list({r.get("tourney_name", "") for r in rows if r.get("tourney_name")})
+    best_name = ""
+    best_score = 0.0
+    for name in names:
+        score = _name_sim(q, _norm(name))
+        if score > best_score:
+            best_score = score
+            best_name = name
+    if best_score < 0.3:
+        return [], ""
 
-    players = list(seen.values())
-    # Sort: seeded first (by seed number), then unseeded alphabetically
-    players.sort(key=lambda p: (0 if p["seed"] is None else 1, p["seed"] or 9999, p["name"].lower()))
-    # Actually: seeded (ascending) first, then unseeded
-    seeded   = sorted([p for p in players if p["seed"] is not None], key=lambda p: p["seed"])
-    unseeded = sorted([p for p in players if p["seed"] is None],     key=lambda p: p["name"].lower())
-    return seeded + unseeded
+    return [r for r in rows if r.get("tourney_name") == best_name], best_name
+
+async def _sack_list_tournaments(tour: str, year: str, query: str = "", doubles: bool = False) -> List[str]:
+    """Return sorted list of tournament names in a CSV, optionally filtered by query."""
+    url = _sack_csv_url(tour, year, doubles)
+    rows = await _fetch_csv(url)
+    names = sorted({r.get("tourney_name", "") for r in rows if r.get("tourney_name")})
+    if query:
+        q = _norm(query)
+        names = [n for n in names if q in _norm(n)]
+    return names
+
+# ── Match data helpers ────────────────────────────────────────
 
 def _name_sim(a: str, b: str) -> float:
     a_parts = set(_norm(a).split())
@@ -362,73 +335,81 @@ def _name_sim(a: str, b: str) -> float:
         return 0.0
     return len(a_parts & b_parts) / max(len(a_parts), len(b_parts))
 
-def _sofa_player_name(side_dict: dict) -> str:
-    """Extract player name from SofaScore homeTeam/awayTeam dict."""
-    return (side_dict.get("name") or side_dict.get("shortName") or "").strip()
-
-def _sofa_player_rank(side_dict: dict) -> int:
-    """Extract player ranking from SofaScore team dict."""
-    rank = side_dict.get("ranking") or side_dict.get("rankingPoints") or 0
-    try:
-        return int(rank)
-    except (ValueError, TypeError):
-        return 0
-
-def _match_side(player_name: str, match: dict) -> Optional[str]:
-    """Return 'home' or 'away' if this player is in the match."""
-    for side in ("home", "away"):
-        name = _sofa_player_name(match.get(f"{side}Team", match.get(f"{side}Score", {})))
-        if name and _name_sim(player_name, name) >= 0.45:
-            return side
-    return None
-
-def _sofa_sets(match: dict, side: str) -> Tuple[int, int]:
-    """Return (sets_won, sets_lost) from SofaScore match data."""
-    home_score = match.get("homeScore", {})
-    away_score = match.get("awayScore", {})
-    my_score  = home_score if side == "home" else away_score
-    opp_score = away_score if side == "home" else home_score
+def _sack_parse_score(score: str) -> Tuple[int, int]:
+    """Parse a Sackmann score string like '6-3 7-5 4-6' into (sets_won_by_winner, sets_lost_by_winner)."""
+    if not score:
+        return 0, 0
     won = lost = 0
-    period = 1
-    while True:
-        key = f"period{period}"
-        my_g  = my_score.get(key)
-        opp_g = opp_score.get(key)
-        if my_g is None or opp_g is None:
-            break
+    import re as _re
+    for set_score in score.strip().split():
+        # Strip tiebreak notation e.g. "7-6(5)"
+        clean = _re.sub(r'\(\d+\)', '', set_score)
+        parts = clean.split("-")
+        if len(parts) != 2:
+            continue
         try:
-            if int(my_g) > int(opp_g):
+            a, b = int(parts[0]), int(parts[1])
+            if a > b:
                 won += 1
-            elif int(opp_g) > int(my_g):
+            elif b > a:
                 lost += 1
-        except (ValueError, TypeError):
-            pass
-        period += 1
+        except ValueError:
+            continue
     return won, lost
 
-def _sofa_winner(match: dict) -> Optional[str]:
-    """Return 'home' or 'away' for the winner, or None."""
-    winner_code = match.get("winnerCode")
-    if winner_code == 1:
-        return "home"
-    if winner_code == 2:
-        return "away"
-    return None
+def _sack_round_canonical(raw: str) -> Optional[str]:
+    return _SACK_ROUND_MAP.get(raw.strip().upper())
 
-def _sofa_round(match: dict) -> Optional[str]:
-    """Extract and normalise round from SofaScore match."""
-    rnd = match.get("roundInfo", {})
-    name = rnd.get("name") or rnd.get("nameCode") or ""
-    if name:
-        canonical = _normalize_round(str(name))
+def _safe_int(val: Any, default: int = 0) -> int:
+    try:
+        return int(val) if val not in (None, "", "NA") else default
+    except (ValueError, TypeError):
+        return default
+
+def _calc_player_stats(
+    player_name: str,
+    all_matches: List[dict],
+) -> Tuple[int, int, int, Optional[str], bool]:
+    """
+    all_matches is a list of Sackmann CSV rows for one tournament.
+    Returns (sets_won, sets_lost, net_upset_pts, furthest_round_canonical, won_final).
+    """
+    sets_won = sets_lost = upset_pts = 0
+    best_round: Optional[str] = None
+    best_order = -1
+    won_final = False
+    pkey = _norm(player_name)
+
+    for row in all_matches:
+        w_name = row.get("winner_name", "")
+        l_name = row.get("loser_name", "")
+        is_winner = _name_sim(pkey, _norm(w_name)) >= 0.45
+        is_loser  = _name_sim(pkey, _norm(l_name)) >= 0.45
+        if not is_winner and not is_loser:
+            continue
+
+        w_rank = _safe_int(row.get("winner_rank"), 0)
+        l_rank = _safe_int(row.get("loser_rank"), 0)
+        my_rank  = w_rank if is_winner else l_rank
+        opp_rank = l_rank if is_winner else w_rank
+
+        sw, sl = _sack_parse_score(row.get("score", ""))
+        if is_loser:
+            sw, sl = sl, sw  # flip for loser
+        sets_won  += sw
+        sets_lost += sl
+
+        upset_pts += _compute_upset_pts(my_rank, opp_rank, is_winner)
+
+        canonical = _sack_round_canonical(row.get("round", ""))
         if canonical:
-            return canonical
-    slug = str(rnd.get("slug", ""))
-    if slug:
-        canonical = _normalize_round(slug.replace("-", " "))
-        if canonical:
-            return canonical
-    return None
+            order = ROUND_ORDER.get(canonical, -1)
+            if order > best_order:
+                best_order = order
+                best_round = canonical
+                won_final = is_winner
+
+    return sets_won, sets_lost, upset_pts, best_round, won_final
 
 def _compute_upset_pts(my_rank: int, opp_rank: int, player_won: bool) -> int:
     if my_rank <= 0 or opp_rank <= 0:
@@ -439,46 +420,6 @@ def _compute_upset_pts(my_rank: int, opp_rank: int, player_won: bool) -> int:
     if not player_won and diff > 0:
         return -diff * 3
     return 0
-
-def _calc_player_stats(
-    player_name: str,
-    all_matches: List[dict],
-) -> Tuple[int, int, int, Optional[str], bool]:
-    """Return (sets_won, sets_lost, net_upset_pts, furthest_round_canonical, won_final)."""
-    sets_won = sets_lost = upset_pts = 0
-    best_round: Optional[str] = None
-    best_order = -1
-    won_final = False
-
-    for match in all_matches:
-        side = _match_side(player_name, match)
-        if side is None:
-            continue
-        opp_side = "away" if side == "home" else "home"
-
-        my_rank  = _sofa_player_rank(match.get(f"{side}Team", {}))
-        opp_rank = _sofa_player_rank(match.get(f"{opp_side}Team", {}))
-
-        winner = _sofa_winner(match)
-        if winner is None:
-            continue
-        player_won = (winner == side)
-
-        sw, sl = _sofa_sets(match, side)
-        sets_won  += sw
-        sets_lost += sl
-        upset_pts += _compute_upset_pts(my_rank, opp_rank, player_won)
-
-        canonical = _sofa_round(match)
-        if canonical:
-            order = ROUND_ORDER.get(canonical, -1)
-            if order > best_order:
-                best_order = order
-                best_round = canonical
-                # Track if they won the match that determined their furthest round
-                won_final = player_won
-
-    return sets_won, sets_lost, upset_pts, best_round, won_final
 
 def _build_fetched_rows(
     fantasy_t: dict,
@@ -493,7 +434,6 @@ def _build_fetched_rows(
         if round_key is None:
             warnings.append(f"⚠️ No matches found for **{pname}** — defaulted to R128")
             round_key = "R128"
-        # Winner of the Final → Champion
         if round_key == "Finalist" and won_final:
             round_key = "Champion"
         tourn_pts = round_points_map.get(round_key, 0)
@@ -510,6 +450,7 @@ def _build_fetched_rows(
             "total":             total,
         })
     return rows, warnings
+
 
 # ============================================================
 # Results parsing
@@ -1175,45 +1116,6 @@ class FantasyLeaderboardView(discord.ui.View):
 # API fetch UI: tournament picker + confirm
 # ============================================================
 
-class TournamentPickSelect(discord.ui.Select):
-    def __init__(self, owner_view, api_tournaments: List[dict]):
-        opts = []
-        for i, tr in enumerate(api_tournaments[:25]):
-            name  = tr.get("tournament_name", f"Tournament {i+1}")
-            etype = tr.get("event_type_type", "")
-            label = f"{name}  [{etype}]"[:100] if etype else name[:100]
-            opts.append(discord.SelectOption(label=label, value=str(i)))
-        super().__init__(placeholder="Choose the correct tournament…", min_values=1, max_values=1, options=opts)
-        self.owner_view = owner_view
-
-    async def callback(self, interaction: discord.Interaction):
-        await self.owner_view.on_select(interaction, int(self.values[0]))
-
-
-class TournamentPickView(discord.ui.View):
-    def __init__(self, cog, user_id: int, fantasy_t: dict, api_tournaments: List[dict]):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.user_id = user_id
-        self.fantasy_t = fantasy_t
-        self.api_tournaments = api_tournaments
-        self.add_item(TournamentPickSelect(self, api_tournaments))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-            return False
-        return True
-
-    async def on_select(self, interaction: discord.Interaction, idx: int):
-        chosen = self.api_tournaments[idx]
-        name = chosen.get("name", chosen.get("slug", "?"))
-        sofa_id = str(chosen.get("id", ""))
-        await interaction.response.edit_message(
-            content=f"⏳ Fetching matches for **{name}**...", view=None)
-        await self.cog._fetch_and_preview(interaction, self.fantasy_t, sofa_id)
-
-
 class FetchConfirmView(discord.ui.View):
     def __init__(self, cog, user_id: int, tournament_id: str, rows: List[dict]):
         super().__init__(timeout=300)
@@ -1376,20 +1278,30 @@ class FantasyCog(commands.Cog):
 
     @f_admin.command(
         name="draw-fetch",
-        description="Admin: auto-create a fantasy tournament by fetching the draw from SofaScore.",
+        description="Admin: auto-create a fantasy tournament by fetching the draw from Sackmann CSVs.",
     )
     @app_commands.autocomplete(category_id=_ac_category)
     @app_commands.describe(
         tournament_name="Name for this fantasy tournament",
         category_id="Category to assign it to",
-        sofa_id="SofaScore tournament ID or full SofaScore URL",
+        tourney_query="Tournament name as it appears in data (e.g. 'Australian Open', 'Wimbledon')",
+        year="Season year (e.g. 2025)",
+        tour="ATP or WTA",
+        doubles="Fetch doubles draw instead of singles",
     )
+    @app_commands.choices(tour=[
+        app_commands.Choice(name="ATP", value="ATP"),
+        app_commands.Choice(name="WTA", value="WTA"),
+    ])
     async def fantasy_draw_fetch(
         self,
         interaction: discord.Interaction,
         tournament_name: str,
         category_id: str,
-        sofa_id: str,
+        tourney_query: str,
+        year: str,
+        tour: Optional[str] = "ATP",
+        doubles: Optional[bool] = False,
     ):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
@@ -1398,35 +1310,35 @@ class FantasyCog(commands.Cog):
         if not cat:
             return await interaction.response.send_message("❌ Category not found.", ephemeral=True)
 
-        if sofa_id.startswith("http"):
-            parsed = _parse_sofa_url(sofa_id)
-            if not parsed:
-                return await interaction.response.send_message("❌ Could not extract ID from URL.", ephemeral=True)
-            sofa_id = parsed
-
         await interaction.response.defer(ephemeral=True)
-
-        # Get most recent season
         try:
-            seasons = await _sofa_get_seasons(sofa_id)
-        except Exception as e:
-            return await interaction.followup.send(f"❌ Failed to fetch seasons: `{e}`", ephemeral=True)
-        if not seasons:
-            return await interaction.followup.send("❌ No seasons found. Check the ID.", ephemeral=True)
-
-        season_id = str(seasons[0].get("id", ""))
-        season_name = seasons[0].get("name", season_id)
-
-        try:
-            players = await _sofa_get_draw_players(sofa_id, season_id)
+            rows, matched_name = await _sack_fetch_matches(tour or "ATP", year, tourney_query, bool(doubles))
         except Exception as e:
             return await interaction.followup.send(f"❌ Failed to fetch draw: `{e}`", ephemeral=True)
 
-        if not players:
+        if not rows:
             return await interaction.followup.send(
-                "❌ No players found in draw. The tournament may not have started yet.", ephemeral=True)
+                f"❌ No matches found for `{tourney_query}` {year} {tour}. "
+                "Try `/fantasy-admin tournament-search` to find the exact name.", ephemeral=True)
 
-        # Build tournament
+        # Extract players from match rows
+        seen: Dict[str, dict] = {}
+        for row in rows:
+            for side in (("winner_name", "winner_seed"), ("loser_name", "loser_seed")):
+                name = row.get(side[0], "").strip()
+                seed_raw = row.get(side[1], "")
+                if not name:
+                    continue
+                key = _norm(name)
+                if key in seen:
+                    continue
+                seed = _safe_int(seed_raw) if seed_raw not in ("", "NA", None) else None
+                seen[key] = {"name": name, "seed": seed}
+
+        seeded   = sorted([p for p in seen.values() if p["seed"]], key=lambda p: p["seed"])
+        unseeded = sorted([p for p in seen.values() if not p["seed"]], key=lambda p: p["name"].lower())
+        players  = seeded + unseeded
+
         tid = _mk_id("fantasy")
         tournament = {
             "id": tid,
@@ -1449,11 +1361,9 @@ class FantasyCog(commands.Cog):
         data["tournaments"].append(tournament)
         _save(data)
 
-        seeded_count   = sum(1 for p in players if p["seed"] is not None)
-        unseeded_count = len(players) - seeded_count
         lines = [
-            f"**Draw fetched — {season_name}**",
-            f"**{len(players)} players** ({seeded_count} seeded, {unseeded_count} unseeded)",
+            f"**Draw fetched — {matched_name} {year}**",
+            f"**{len(players)} players** ({len(seeded)} seeded, {len(unseeded)} unseeded)",
             "",
             f"**Tournament:** {tournament_name} (`{tid}`)",
             f"**Category:** {cat.get('title')}",
@@ -1546,47 +1456,66 @@ class FantasyCog(commands.Cog):
 
     @f_admin.command(
         name="tournament-search",
-        description="Admin: search SofaScore to find a tournament ID for use with tournament-fetch.",
+        description="Admin: search Sackmann CSVs to find exact tournament names for draw-fetch / tournament-fetch.",
     )
-    @app_commands.describe(query="Tournament name (e.g. 'Australian Open', 'Wimbledon')")
+    @app_commands.describe(
+        query="Partial tournament name (e.g. 'Australian', 'Wimbledon')",
+        year="Season year (e.g. 2025)",
+        tour="ATP or WTA",
+        doubles="Search doubles CSV instead of singles",
+    )
+    @app_commands.choices(tour=[
+        app_commands.Choice(name="ATP", value="ATP"),
+        app_commands.Choice(name="WTA", value="WTA"),
+    ])
     async def fantasy_tournament_search(
         self,
         interaction: discord.Interaction,
         query: str,
+        year: str,
+        tour: Optional[str] = "ATP",
+        doubles: Optional[bool] = False,
     ):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         try:
-            results = await _sofa_search(query)
+            names = await _sack_list_tournaments(tour or "ATP", year, query, bool(doubles))
         except Exception as e:
-            return await interaction.followup.send(f"❌ Search failed: `{e}`", ephemeral=True)
-        if not results:
+            return await interaction.followup.send(f"❌ Failed to fetch data: `{e}`", ephemeral=True)
+        if not names:
             return await interaction.followup.send(
-                f"❌ No tennis tournaments found for `{query}`.", ephemeral=True)
-        lines = [f"**Tournament Search — {query}**", ""]
-        for t in results[:20]:
-            tid  = t.get("id", "?")
-            name = t.get("name", t.get("slug", "?"))
-            cat  = t.get("category", {}).get("name", "")
-            lines.append(f"`{tid}` — **{name}**" + (f" — {cat}" if cat else ""))
-        lines.append("\nUse the ID with `/fantasy-admin tournament-fetch`.")
+                f"❌ No tournaments found matching `{query}` in {tour} {year}.", ephemeral=True)
+        lines = [f"**Tournament Search — {query} ({tour} {year})**", ""]
+        for n in names[:40]:
+            lines.append(f"• {n}")
+        lines.append("\nUse exact name with `/fantasy-admin draw-fetch` or `tournament-fetch`.")
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @f_admin.command(
         name="tournament-fetch",
-        description="Admin: auto-fetch results from SofaScore and complete a fantasy tournament.",
+        description="Admin: auto-fetch results and complete a fantasy tournament.",
     )
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     @app_commands.describe(
         tournament_id="Fantasy tournament to complete",
-        sofa_id="SofaScore tournament ID (from tournament-search), OR paste a full SofaScore URL",
+        tourney_query="Tournament name (e.g. 'Australian Open'). Use tournament-search to find exact name.",
+        year="Season year (e.g. 2025)",
+        tour="ATP or WTA",
+        doubles="Fetch doubles results",
     )
+    @app_commands.choices(tour=[
+        app_commands.Choice(name="ATP", value="ATP"),
+        app_commands.Choice(name="WTA", value="WTA"),
+    ])
     async def fantasy_tournament_fetch(
         self,
         interaction: discord.Interaction,
         tournament_id: str,
-        sofa_id: str,
+        tourney_query: str,
+        year: str,
+        tour: Optional[str] = "ATP",
+        doubles: Optional[bool] = False,
     ):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
@@ -1594,51 +1523,28 @@ class FantasyCog(commands.Cog):
         t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
         if not t:
             return await interaction.response.send_message("❌ Fantasy tournament not found.", ephemeral=True)
-
-        # Accept either a raw ID or a full SofaScore URL
-        if sofa_id.startswith("http"):
-            parsed = _parse_sofa_url(sofa_id)
-            if not parsed:
-                return await interaction.response.send_message(
-                    "❌ Could not extract tournament ID from URL.", ephemeral=True)
-            sofa_id = parsed
-
         await interaction.response.defer(ephemeral=True)
-        await self._fetch_and_preview(interaction, t, sofa_id)
+        await self._fetch_and_preview(interaction, t, tourney_query, year, tour or "ATP", bool(doubles))
 
     async def _fetch_and_preview(
         self,
         interaction: discord.Interaction,
         fantasy_t: dict,
-        sofa_tournament_id: str,
+        tourney_query: str,
+        year: str,
+        tour: str,
+        doubles: bool = False,
     ) -> None:
-        # Get seasons and pick the most recent
         try:
-            seasons = await _sofa_get_seasons(sofa_tournament_id)
+            all_matches, matched_name = await _sack_fetch_matches(tour, year, tourney_query, doubles)
         except Exception as e:
-            await interaction.followup.send(f"❌ Failed to fetch seasons: `{e}`", ephemeral=True)
-            return
-
-        if not seasons:
-            await interaction.followup.send(
-                "❌ No seasons found for this tournament. Check the ID.", ephemeral=True)
-            return
-
-        # Most recent season first
-        season = seasons[0]
-        season_id = str(season.get("id", ""))
-        season_name = season.get("name", season_id)
-
-        try:
-            all_matches = await _sofa_get_all_matches(sofa_tournament_id, season_id)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Failed to fetch matches: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Failed to fetch data: `{e}`", ephemeral=True)
             return
 
         if not all_matches:
             await interaction.followup.send(
-                f"❌ No finished matches found for season **{season_name}**. "
-                "The tournament may still be in progress, or try a different ID.",
+                f"❌ No matches found for `{tourney_query}` in {tour} {year}. "
+                "Use `/fantasy-admin tournament-search` to find the exact tournament name.",
                 ephemeral=True)
             return
 
@@ -1650,7 +1556,7 @@ class FantasyCog(commands.Cog):
 
         lines = [
             f"**Auto-Fetch Preview — {fantasy_t.get('name')}**",
-            f"*SofaScore ID: {sofa_tournament_id}  •  Season: {season_name}  •  {len(all_matches)} matches*",
+            f"*Source: {matched_name} {year} ({tour})  •  {len(all_matches)} matches*",
             "",
         ]
         if warnings:
