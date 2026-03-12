@@ -1134,8 +1134,14 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
+        all_ids = [x.get("id","") for x in data.get("tournaments", [])]
+        all_names = [x.get("name","") for x in data.get("tournaments", [])]
+        print(f"[fantasy_end] received={tournament_id!r} known_ids={all_ids} known_names={all_names}")
         t = _find_tournament(data, tournament_id)
-        if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
+        if not t:
+            return await interaction.response.send_message(
+                f"❌ Not found. Received: `{tournament_id}`\nKnown IDs: {', '.join(all_ids) or 'none'}",
+                ephemeral=True)
         await interaction.response.send_modal(EndResultsModal(self, interaction.user.id, tournament_id))
 
 
