@@ -249,6 +249,13 @@ def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
     Full+ : Player | Round | sets_won | sets_lost | upset_pts | match log text
     match log is semicolon-separated match summaries, e.g.:
       d. Djokovic 6-3 7-5 +120; d. Zverev 4-6 6-3 7-5 +80
+
+    SCORING FORMULAS (calculated externally, pasted in):
+      Set pts (auto): sets_won * 5 - sets_lost * 2
+      Upset pts WIN:  sets_won^3 * (opp_rank/player_rank)^1.5 * dominance * 3
+      Upset pts LOSS: sets_won   * (opp_rank/player_rank)^1.5 * dominance * 0.6
+      Dominance = player_games_won / total_games_in_match
+      W/O and retirements: 0 upset pts, set pts only
     """
     rows = []
     errors = []
