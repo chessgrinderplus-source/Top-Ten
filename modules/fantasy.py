@@ -60,6 +60,18 @@ def _delete_tournament(data: dict, tournament_id: str, guild_id: Optional[int]) 
     data["tournaments"] = kept
     return removed
 
+
+def _find_tournament(data: dict, tournament_id: str) -> Optional[dict]:
+    """Find tournament by ID, falling back to case-insensitive name match."""
+    ts = data.get("tournaments", [])
+    # Exact ID match first
+    t = next((x for x in ts if x.get("id") == tournament_id), None)
+    if t:
+        return t
+    # Name fallback (for when autocomplete times out and user typed the name)
+    q = tournament_id.strip().lower()
+    return next((x for x in ts if x.get("name", "").strip().lower() == q), None)
+
 def _is_admin(member: discord.Member) -> bool:
     return member.guild_permissions.administrator
 
@@ -1004,18 +1016,21 @@ class FantasyCog(commands.Cog):
 
     async def _ac_any_tournament(self, interaction: discord.Interaction, cur: str):
         """All tournaments including drafts (for admin commands)."""
-        data = _load()
-        gid = interaction.guild.id if interaction.guild else 0
-        c = cur.lower(); out = []
-        for t in data.get("tournaments", []):
-            if t.get("guild_id") not in (0, gid): continue
-            tid = t.get("id",""); name = t.get("name","")
-            draft = "" if _is_created(t) else " [DRAFT]"
-            if c in tid.lower() or c in name.lower() or not c:
-                out.append(app_commands.Choice(
-                    name=f"{name}{draft} [{_status_key(t)}]"[:100], value=tid))
-            if len(out) >= 25: break
-        return out
+        try:
+            data = _load()
+            gid = interaction.guild.id if interaction.guild else 0
+            c = cur.lower(); out = []
+            for t in data.get("tournaments", []):
+                if t.get("guild_id") not in (0, gid): continue
+                tid = t.get("id",""); name = t.get("name","")
+                draft = "" if _is_created(t) else " [DRAFT]"
+                if c in tid.lower() or c in name.lower() or not c:
+                    out.append(app_commands.Choice(
+                        name=f"{name}{draft} [{_status_key(t)}]"[:100], value=tid))
+                if len(out) >= 25: break
+            return out
+        except Exception:
+            return []
 
     # ── Categories ────────────────────────────────────────────────────────────
 
@@ -1089,7 +1104,7 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
         t["picks_open"] = False; t["closed_at"] = t.get("closed_at") or _now_unix(); _save(data)
         await interaction.response.send_message(f"✅ Closed: **{t.get('name')}** (`{t.get('id')}`)")
@@ -1100,7 +1115,7 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
         gid = interaction.guild.id if interaction.guild else None
         if gid is not None and t.get("guild_id") not in (0, gid):
@@ -1119,14 +1134,14 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
         await interaction.response.send_modal(EndResultsModal(self, interaction.user.id, tournament_id))
 
 
     async def _fantasy_create_set_unseeded(self, interaction: discord.Interaction, tournament_id: str, unseeded_text: str):
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
         seeds = t.get("players", [])
         seed_keys = {_player_key(p["name"]) for p in seeds}
@@ -1137,7 +1152,7 @@ class FantasyCog(commands.Cog):
 
     async def _fantasy_create_finalize_preview(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
         lines = [f"**Tournament:** {t.get('name')} (`{t.get('id')}`)",
                  f"**Category:** {t.get('category_title')} (`{t.get('category_id')}`)", "",
@@ -1153,7 +1168,7 @@ class FantasyCog(commands.Cog):
 
     async def _fantasy_create_confirm(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.edit_message(content="❌ Not found.", embed=None, view=None)
         _mark_created(t); _save(data)
         await interaction.response.edit_message(
@@ -1163,7 +1178,7 @@ class FantasyCog(commands.Cog):
     async def _fantasy_end_submit(self, interaction: discord.Interaction, tournament_id: str, results_text: str):
         try:
             data = _load()
-            t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+            t = _find_tournament(data, tournament_id)
             if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
 
             category_id = t.get("category_id")
@@ -1227,7 +1242,7 @@ class FantasyCog(commands.Cog):
         note: str = "",
     ) -> None:
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t:
             if interaction.response.is_done():
                 await interaction.edit_original_response(content="❌ Tournament not found.", embed=None, view=None)
@@ -1307,7 +1322,7 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
         pool = [PlayerEntry(name=p["name"], seed=p.get("seed")) for p in t.get("players", [])]
@@ -1329,7 +1344,7 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
         pool = [PlayerEntry(name=p["name"], seed=p.get("seed")) for p in t.get("players", [])]
@@ -1352,7 +1367,7 @@ class FantasyCog(commands.Cog):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
 
@@ -1420,7 +1435,7 @@ class FantasyCog(commands.Cog):
     @app_commands.autocomplete(tournament_id=_ac_open_tournament)
     async def fantasy_join(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         msg = _require_created_or_admin(interaction, t)
         if msg: return await interaction.response.send_message(msg, ephemeral=True)
         if not t.get("picks_open", True):
@@ -1433,7 +1448,7 @@ class FantasyCog(commands.Cog):
                                  user_id: int, picks: List[PlayerEntry],
                                  force_save: bool = False):
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
         if not force_save and not t.get("picks_open", True):
             return await interaction.response.send_message("❌ Picks are closed for this tournament.", ephemeral=True)
@@ -1450,7 +1465,7 @@ class FantasyCog(commands.Cog):
     async def fantasy_roster_view(self, interaction: discord.Interaction, tournament_id: str,
                                    user: Optional[discord.Member] = None):
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         msg = _require_created_or_admin(interaction, t)
         if msg: return await interaction.response.send_message(msg, ephemeral=True)
 
@@ -1494,7 +1509,7 @@ class FantasyCog(commands.Cog):
     @app_commands.autocomplete(tournament_id=_ac_tournament)
     async def fantasy_results(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         msg = _require_created_or_admin(interaction, t)
         if msg: return await interaction.response.send_message(msg, ephemeral=True)
         if not t.get("results_entered"):
@@ -1513,7 +1528,7 @@ class FantasyCog(commands.Cog):
     @app_commands.autocomplete(tournament_id=_ac_tournament)
     async def fantasy_user_results(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
-        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        t = _find_tournament(data, tournament_id)
         msg = _require_created_or_admin(interaction, t)
         if msg: return await interaction.response.send_message(msg, ephemeral=True)
         if not t.get("results_entered"):
