@@ -985,9 +985,94 @@ class TournamentEndSelectView(discord.ui.View):
         super().__init__(timeout=60)
         self.add_item(TournamentEndSelect(cog, user_id, tournaments))
 
+
+class CloseScheduleTimeModal(discord.ui.Modal, title="Schedule Auto-Close"):
+    close_time = discord.ui.TextInput(
+        label="Close at (YYYY-MM-DD HH:MM UTC)",
+        placeholder="2025-01-20 18:00",
+        max_length=20,
+    )
+
+    def __init__(self, cog, user_id: int, tournament_id: str):
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        import datetime
+        raw = str(self.close_time).strip()
+        try:
+            dt = datetime.datetime.strptime(raw, "%Y-%m-%d %H:%M").replace(
+                tzinfo=datetime.timezone.utc)
+            ts = int(dt.timestamp())
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Invalid format. Use: `YYYY-MM-DD HH:MM` (UTC)", ephemeral=True)
+        if ts <= int(time.time()):
+            return await interaction.response.send_message(
+                "❌ That time is in the past.", ephemeral=True)
+        data = _load()
+        t = _find_tournament(data, self.tournament_id)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        t["auto_close_at"] = ts
+        _save(data)
+        await interaction.response.send_message(
+            f"✅ **{t.get('name')}** will auto-close <t:{ts}:R> (<t:{ts}:f>).", ephemeral=True)
+
+
+class CloseScheduleSelect(discord.ui.Select):
+    def __init__(self, cog, user_id: int, tournaments: list):
+        self.cog = cog
+        self.user_id = user_id
+        opts = [discord.SelectOption(label=t.get("name","?")[:100], value=t.get("id",""))
+                for t in tournaments[:25]]
+        super().__init__(placeholder="Pick a tournament…", min_values=1, max_values=1, options=opts)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        await interaction.response.send_modal(
+            CloseScheduleTimeModal(self.cog, self.user_id, self.values[0]))
+
+class CloseScheduleSelectView(discord.ui.View):
+    def __init__(self, cog, user_id: int, tournaments: list):
+        super().__init__(timeout=60)
+        self.add_item(CloseScheduleSelect(cog, user_id, tournaments))
+
+
+class CloseScheduleEditSelect(discord.ui.Select):
+    def __init__(self, cog, user_id: int, tournaments: list):
+        self.cog = cog
+        self.user_id = user_id
+        self.tournaments = tournaments
+        opts = [discord.SelectOption(label=t.get("name","?")[:100], value=t.get("id",""))
+                for t in tournaments[:25]]
+        super().__init__(placeholder="Select to delete schedule…", min_values=1, max_values=1, options=opts)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        tid = self.values[0]
+        data = _load()
+        t = _find_tournament(data, tid)
+        if not t:
+            return await interaction.response.send_message("❌ Not found.", ephemeral=True)
+        t.pop("auto_close_at", None)
+        _save(data)
+        await interaction.response.send_message(
+            f"🗑️ Auto-close schedule removed for **{t.get('name')}**.", ephemeral=True)
+
+class CloseScheduleEditView(discord.ui.View):
+    def __init__(self, cog, user_id: int, tournaments: list):
+        super().__init__(timeout=60)
+        self.add_item(CloseScheduleEditSelect(cog, user_id, tournaments))
+
 class FantasyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._auto_close_task: Optional[asyncio.Task] = None
 
     fantasy      = app_commands.Group(name="fantasy",       description="Fantasy tournament commands.")
     f_admin      = app_commands.Group(name="fantasy-admin", description="Admin: manage fantasy tournaments & categories.")
@@ -1120,6 +1205,38 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_modal(
             SeedsModal(self, interaction.user.id, tournament_name.strip(), category_id, cat.get("title","")))
 
+
+    @f_admin.command(name="close-schedule", description="Admin: schedule auto-close for a fantasy tournament.")
+    async def fantasy_close_schedule(self, interaction: discord.Interaction):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        gid = interaction.guild.id if interaction.guild else 0
+        ts = [t for t in data.get("tournaments", [])
+              if t.get("guild_id") in (0, gid) and t.get("picks_open", True) and _is_created(t)]
+        if not ts:
+            return await interaction.response.send_message("❌ No open tournaments to schedule.", ephemeral=True)
+        view = CloseScheduleSelectView(self, interaction.user.id, ts)
+        await interaction.response.send_message("Select a tournament to schedule auto-close for:",
+                                                 view=view, ephemeral=True)
+
+    @f_admin.command(name="close-schedule-edit", description="Admin: view/edit/delete scheduled auto-closes.")
+    async def fantasy_close_schedule_edit(self, interaction: discord.Interaction):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        gid = interaction.guild.id if interaction.guild else 0
+        scheduled = [t for t in data.get("tournaments", [])
+                     if t.get("guild_id") in (0, gid) and t.get("auto_close_at")]
+        if not scheduled:
+            return await interaction.response.send_message("ℹ️ No scheduled auto-closes.", ephemeral=True)
+        lines = []
+        for t in scheduled:
+            ts = t.get("auto_close_at", 0)
+            lines.append(f"**{t.get('name')}** (`{t.get('id')}`) — closes <t:{ts}:R> (<t:{ts}:f>)")
+        view = CloseScheduleEditView(self, interaction.user.id, scheduled)
+        embed = discord.Embed(title="Scheduled Auto-Closes", description="\n".join(lines))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @f_admin.command(name="tournament-close", description="Admin: close a fantasy (no more pick edits).")
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
@@ -1261,6 +1378,32 @@ class FantasyCog(commands.Cog):
             await interaction.response.send_message(f"❌ Error: `{type(e).__name__}: {e}`",
                                                      view=view, ephemeral=True)
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if not self._auto_close_task or self._auto_close_task.done():
+            self._auto_close_task = asyncio.create_task(self._auto_close_loop())
+
+    async def _auto_close_loop(self):
+        await asyncio.sleep(10)
+        while True:
+            try:
+                now = int(time.time())
+                data = _load()
+                changed = False
+                for t in data.get("tournaments", []):
+                    ac = t.get("auto_close_at")
+                    if ac and now >= ac and t.get("picks_open", True) and _is_created(t):
+                        t["picks_open"] = False
+                        t["closed_at"] = t.get("closed_at") or now
+                        t.pop("auto_close_at", None)
+                        changed = True
+                        print(f"[fantasy] Auto-closed {t.get('id')} — {t.get('name')}")
+                if changed:
+                    _save(data)
+            except Exception as e:
+                print(f"[fantasy] auto-close loop error: {e}")
+            await asyncio.sleep(30)
+
     async def _apply_results_data(
         self,
         interaction: discord.Interaction,
@@ -1299,6 +1442,36 @@ class FantasyCog(commands.Cog):
             await interaction.edit_original_response(content=None, embed=pager._embed(), view=pager)
         else:
             await interaction.response.send_message(embed=pager._embed(), view=pager, ephemeral=True)
+
+        # DM all users with their roster + total points
+        asyncio.create_task(self._dm_results(t, rows))
+
+    async def _dm_results(self, t: dict, rows: List[dict]):
+        """DM every user their roster and points after a tournament ends."""
+        await asyncio.sleep(1)
+        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
+        results = {_player_key(r["player"]): r for r in rows}
+        rosters = t.get("rosters") or {}
+        tourn_name = t.get("name", "?")
+
+        for uid_str, roster in rosters.items():
+            try:
+                user = await self.bot.fetch_user(int(uid_str))
+                total = 0
+                pick_lines = []
+                for name in roster[:5]:
+                    seed = seed_map.get(_player_key(name))
+                    label = _fmt_player(seed, name)
+                    r = results.get(_player_key(name))
+                    pts = int(r["total"]) if r else 0
+                    total += pts
+                    pick_lines.append(f"{'  ' if not r else ''}{label} — **{pts}** ({r.get('round','?') if r else 'no result'})")
+                desc = [f"**Fantasy Results — {tourn_name}**", "",
+                        "**Your Picks:**"] + pick_lines + ["", f"**Your Total: {total}**"]
+                embed = discord.Embed(title="Fantasy Tournament Complete!", description="\n".join(desc))
+                await user.send(embed=embed)
+            except Exception as e:
+                print(f"[fantasy] DM failed for {uid_str}: {e}")
 
     # ── Leaderboard admin ─────────────────────────────────────────────────────
 
@@ -1467,9 +1640,11 @@ class FantasyCog(commands.Cog):
         msg = _require_created_or_admin(interaction, t)
         if msg: return await interaction.response.send_message(msg, ephemeral=True)
         if not t.get("picks_open", True):
-            return await interaction.response.send_message("❌ This fantasy is closed.", ephemeral=True)
+            return await interaction.response.send_message("❌ This fantasy is closed — picks are locked.", ephemeral=True)
         pool = [PlayerEntry(name=p["name"], seed=p.get("seed")) for p in t.get("players", [])]
-        view = JoinFantasyView(self, interaction.user.id, tournament_id, pool)
+        has_roster = str(interaction.user.id) in (t.get("rosters") or {})
+        header = "✏️ Edit your roster — pick 5 new players to replace your current picks." if has_roster else None
+        view = JoinFantasyView(self, interaction.user.id, tournament_id, pool, header=header)
         await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
 
     async def _save_user_roster(self, interaction: discord.Interaction, tournament_id: str,
