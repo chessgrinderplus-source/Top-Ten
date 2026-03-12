@@ -1463,11 +1463,12 @@ class FantasyCog(commands.Cog):
 
     async def _dm_results(self, t: dict, rows: List[dict]):
         """DM every user their roster and points after a tournament ends."""
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
         seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
         results = {_player_key(r["player"]): r for r in rows}
         rosters = t.get("rosters") or {}
         tourn_name = t.get("name", "?")
+        print(f"[fantasy] _dm_results: {len(rosters)} users to DM for {tourn_name!r}")
 
         for uid_str, roster in rosters.items():
             try:
@@ -1480,13 +1481,17 @@ class FantasyCog(commands.Cog):
                     r = results.get(_player_key(name))
                     pts = int(r["total"]) if r else 0
                     total += pts
-                    pick_lines.append(f"{'  ' if not r else ''}{label} — **{pts}** ({r.get('round','?') if r else 'no result'})")
-                desc = [f"**Fantasy Results — {tourn_name}**", "",
+                    round_str = r.get("round", "?") if r else "no result"
+                    pick_lines.append(f"{label} - **{pts}** ({round_str})")
+                desc = [f"**Fantasy Results - {tourn_name}**", "",
                         "**Your Picks:**"] + pick_lines + ["", f"**Your Total: {total}**"]
                 embed = discord.Embed(title="Fantasy Tournament Complete!", description="\n".join(desc))
                 await user.send(embed=embed)
+                print(f"[fantasy] DM sent to {uid_str}")
+            except discord.Forbidden:
+                print(f"[fantasy] DM blocked by {uid_str} (DMs disabled)")
             except Exception as e:
-                print(f"[fantasy] DM failed for {uid_str}: {e}")
+                print(f"[fantasy] DM failed for {uid_str}: {type(e).__name__}: {e}")
 
     # ── Leaderboard admin ─────────────────────────────────────────────────────
 
