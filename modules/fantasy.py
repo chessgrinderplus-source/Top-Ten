@@ -1124,6 +1124,42 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_modal(EndResultsModal(self, interaction.user.id, tournament_id))
 
 
+    async def _fantasy_create_set_unseeded(self, interaction: discord.Interaction, tournament_id: str, unseeded_text: str):
+        data = _load()
+        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        if not t: return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        seeds = t.get("players", [])
+        seed_keys = {_player_key(p["name"]) for p in seeds}
+        names = _parse_multiline_list(unseeded_text)
+        t["players"] = seeds + [{"name": n, "seed": None} for n in names if _player_key(n) not in seed_keys]
+        _save(data)
+        await self._fantasy_create_finalize_preview(interaction, tournament_id)
+
+    async def _fantasy_create_finalize_preview(self, interaction: discord.Interaction, tournament_id: str):
+        data = _load()
+        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        if not t: return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        lines = [f"**Tournament:** {t.get('name')} (`{t.get('id')}`)",
+                 f"**Category:** {t.get('category_title')} (`{t.get('category_id')}`)", "",
+                 "**Players:**"]
+        for p in t.get("players", []):
+            lines.append(f"- {_fmt_player(p.get('seed'), p.get('name'))}")
+        embed = discord.Embed(title="Confirm Fantasy Creation", description="\n".join(lines)[:3900])
+        view = ConfirmCreateView(self, interaction.user.id, tournament_id)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=None, embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    async def _fantasy_create_confirm(self, interaction: discord.Interaction, tournament_id: str):
+        data = _load()
+        t = next((x for x in data.get("tournaments", []) if x.get("id") == tournament_id), None)
+        if not t: return await interaction.response.edit_message(content="❌ Not found.", embed=None, view=None)
+        _mark_created(t); _save(data)
+        await interaction.response.edit_message(
+            content=f"✅ Fantasy tournament **confirmed**!\n**Name:** {t.get('name')}\n**ID:** `{t.get('id')}`",
+            embed=None, view=None)
+
     async def _fantasy_end_submit(self, interaction: discord.Interaction, tournament_id: str, results_text: str):
         try:
             data = _load()
