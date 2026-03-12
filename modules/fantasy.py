@@ -34,6 +34,7 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     p = _path()
+    print(f"[fantasy] _save path={p!r} tournaments={[t.get('id') for t in data.get('tournaments',[])]}")
     save_json(p, data)
     # Verify write succeeded (Railway ephemeral FS guard)
     try:
@@ -962,6 +963,28 @@ class FetchConfirmView(discord.ui.View):
 # Cog
 # ============================================================
 
+
+class TournamentEndSelect(discord.ui.Select):
+    def __init__(self, cog, user_id: int, tournaments: list):
+        self.cog = cog
+        self.user_id = user_id
+        opts = []
+        for t in tournaments[:25]:
+            label = f"{t.get('name','?')} [{_status_key(t)}]"[:100]
+            opts.append(discord.SelectOption(label=label, value=t.get("id","")))
+        super().__init__(placeholder="Pick a tournament…", min_values=1, max_values=1, options=opts)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        await interaction.response.send_modal(
+            EndResultsModal(self.cog, self.user_id, self.values[0]))
+
+class TournamentEndSelectView(discord.ui.View):
+    def __init__(self, cog, user_id: int, tournaments: list):
+        super().__init__(timeout=60)
+        self.add_item(TournamentEndSelect(cog, user_id, tournaments))
+
 class FantasyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -1128,21 +1151,20 @@ class FantasyCog(commands.Cog):
         view = ConfirmDeleteTournamentView(self, interaction.user.id, tournament_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @f_admin.command(name="tournament-end", description="Admin: submit results manually and complete a fantasy tournament.")
-    @app_commands.autocomplete(tournament_id=_ac_any_tournament)
-    async def fantasy_end(self, interaction: discord.Interaction, tournament_id: str):
+    @f_admin.command(name="tournament-end", description="Admin: submit results and complete a fantasy tournament.")
+    async def fantasy_end(self, interaction: discord.Interaction):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
-        all_ids = [x.get("id","") for x in data.get("tournaments", [])]
-        all_names = [x.get("name","") for x in data.get("tournaments", [])]
-        print(f"[fantasy_end] received={tournament_id!r} known_ids={all_ids} known_names={all_names}")
-        t = _find_tournament(data, tournament_id)
-        if not t:
+        gid = interaction.guild.id if interaction.guild else 0
+        ts = [t for t in data.get("tournaments", [])
+              if t.get("guild_id") in (0, gid) and not t.get("results_entered")]
+        if not ts:
             return await interaction.response.send_message(
-                f"❌ Not found. Received: `{tournament_id}`\nKnown IDs: {', '.join(all_ids) or 'none'}",
-                ephemeral=True)
-        await interaction.response.send_modal(EndResultsModal(self, interaction.user.id, tournament_id))
+                "❌ No tournaments awaiting results.", ephemeral=True)
+        view = TournamentEndSelectView(self, interaction.user.id, ts)
+        await interaction.response.send_message(
+            "Select the tournament to enter results for:", view=view, ephemeral=True)
 
 
     async def _fantasy_create_set_unseeded(self, interaction: discord.Interaction, tournament_id: str, unseeded_text: str):
