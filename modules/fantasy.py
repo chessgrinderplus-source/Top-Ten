@@ -245,17 +245,20 @@ def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
     """
     Parse results pasted from Claude chat.
     Short : Player | Round
-    Full  : Player | Round | sets_won | sets_lost | upset_pts
-    Full+ : Player | Round | sets_won | sets_lost | upset_pts | match log text
+    Full  : Player | Round | sets_won | sets_lost | performance_pts | upset_pts
+    Full+ : Player | Round | sets_won | sets_lost | performance_pts | upset_pts | match log text
     match log is semicolon-separated match summaries, e.g.:
       d. Djokovic 6-3 7-5 +120; d. Zverev 4-6 6-3 7-5 +80
 
     SCORING FORMULAS (calculated externally, pasted in):
       Set pts (auto): sets_won * 5 - sets_lost * 2
-      Upset pts WIN:  sets_won^3 * (opp_rank/player_rank)^1.5 * dominance * 3
-      Upset pts LOSS: sets_won   * (opp_rank/player_rank)^1.5 * dominance * 0.6
+      Performance pts (favourite wins, player_rank < opp_rank):
+        sets_won^3 * (player_rank/opp_rank)^0.5 * dominance * 25
+      Upset pts WIN (underdog, player_rank > opp_rank):
+        sets_won^3 * (player_rank/opp_rank)^1.5 * dominance * 3
+      Upset pts LOSS: sets_won * (player_rank/opp_rank)^1.5 * dominance * 0.6
       Dominance = player_games_won / total_games_in_match
-      W/O and retirements: 0 upset pts, set pts only
+      W/O and retirements: 0 performance/upset pts, set pts only
     """
     rows = []
     errors = []
@@ -275,20 +278,22 @@ def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
         if _normalize_round(round_text) is None:
             errors.append(f"Line {idx}: unrecognised round '{round_text}'. Valid: {', '.join(ROUND_CANONICAL)}")
             continue
-        sets_won = sets_lost = upset_pts = 0
+        sets_won = sets_lost = performance_pts = upset_pts = 0
         match_log = ""
         if len(parts) >= 5:
             try:
-                sets_won  = int(parts[2])
-                sets_lost = int(parts[3])
-                upset_pts = int(parts[4])
+                sets_won        = int(parts[2])
+                sets_lost       = int(parts[3])
+                performance_pts = int(parts[4])
+                upset_pts       = int(parts[5]) if len(parts) >= 6 else 0
             except ValueError:
-                errors.append(f"Line {idx}: sets_won / sets_lost / upset_pts must be integers.")
+                errors.append(f"Line {idx}: numeric fields must be integers.")
                 continue
-            if len(parts) >= 6:
-                match_log = " | ".join(parts[5:]).strip()
+            if len(parts) >= 7:
+                match_log = " | ".join(parts[6:]).strip()
         rows.append({"player": name, "round": round_text,
                      "sets_won": sets_won, "sets_lost": sets_lost,
+                     "performance_pts": performance_pts,
                      "upset_pts": upset_pts, "match_log": match_log})
     return rows, errors
 
@@ -736,6 +741,7 @@ class RosterPickMenuView(discord.ui.View):
         lines = [f"**{header} — {r.get('round','')}**", "",
                  f"**Tournament Pts:** {r.get('tournament_points',0):+}",
                  f"**Set Pts:** {r.get('set_points',0):+}  ({r.get('sets_won',0)}W / {r.get('sets_lost',0)}L sets)",
+                 f"**Performance Pts:** {r.get('performance_points',0):+}",
                  f"**Upset Pts:** {r.get('upset_points',0):+}", "",
                  f"**Total: {r.get('total',0)}**"]
         log = r.get("match_log", "")
@@ -781,11 +787,11 @@ class RetryEndView(discord.ui.View):
 
 class EndResultsModal(discord.ui.Modal, title="Fantasy End — Paste Results"):
     results = discord.ui.TextInput(
-        label="Player | Round | SW | SL | Upset | Match Log",
+        label="Player|Round|SW|SL|Perf|Upset|Match Log",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=4000,
-        placeholder="Alcaraz | Champion | 21 | 3 | 180 | d. Djokovic +120; d. Zverev +60",
+        placeholder="Alcaraz | Champion | 21 | 3 | 340 | 0 | d. Zverev 6-4 6-2 +85; d. Djokovic 6-3 6-4 +97",
     )
 
     def __init__(self, cog, user_id: int, tournament_id: str, default_text: str = ""):
@@ -1361,9 +1367,10 @@ class FantasyCog(commands.Cog):
                 tourn_pts = round_points_map.get(canonical, 0)
                 sw        = r.get("sets_won", 0)
                 sl        = r.get("sets_lost", 0)
+                perf      = r.get("performance_pts", 0)
                 upset     = r.get("upset_pts", 0)
                 set_pts   = sw * 5 - sl * 2
-                total     = tourn_pts + set_pts + upset
+                total     = tourn_pts + set_pts + perf + upset
                 final_rows.append({
                     "player":            r["player"],
                     "round":             canonical,
@@ -1371,12 +1378,13 @@ class FantasyCog(commands.Cog):
                     "sets_lost":         sl,
                     "tournament_points": tourn_pts,
                     "set_points":        set_pts,
+                    "performance_points": perf,
                     "upset_points":      upset,
                     "total":             total,
                     "match_log":         r.get("match_log", ""),
                 })
 
-            has_full = any(r.get("sets_won") or r.get("upset_pts") for r in rows)
+            has_full = any(r.get("sets_won") or r.get("upset_pts") or r.get("performance_pts") for r in rows)
             note = "" if has_full else "ℹ️ Set & upset points not included. Paste full format from Claude chat for complete scoring."
             await self._apply_results_data(interaction, tournament_id, final_rows,
                                             title="Results Saved", note=note)
@@ -1436,12 +1444,12 @@ class FantasyCog(commands.Cog):
         lines = [f"✅ **{title}** — {t.get('name')}", ""]
         if note:
             lines += [note, ""]
-        lines.append("Player — Round — Total (Tourn + Sets + Upset) | W-L")
+        lines.append("Player — Round — Total (Tourn + Sets + Perf + Upset) | W-L")
         lines.append("")
         for r in sorted(rows, key=lambda x: x["total"], reverse=True):
             lines.append(
                 f"**{r['player']}** — {r['round']} — **{r['total']}** "
-                f"({r['tournament_points']} + {r['set_points']} + {r['upset_points']}) "
+                f"({r['tournament_points']} + {r['set_points']} + {r.get('performance_points',0)} + {r['upset_points']}) "
                 f"| {r.get('sets_won', 0)}W-{r.get('sets_lost', 0)}L"
             )
         pager = PagerView(_chunk_pages(lines), interaction.user.id, title)
