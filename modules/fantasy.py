@@ -951,8 +951,19 @@ class RosterPickMenuView(discord.ui.View):
             lines += ["", "**Match Results:**"]
             for match in log.split(";"):
                 m = match.strip()
-                if m:
-                    lines.append(f"  {m}")
+                if not m:
+                    continue
+                # Extract net points if present at end e.g. "d. Djokovic 6-3 7-5 +120"
+                # Split off the last token if it looks like a +/- number
+                parts = m.rsplit(" ", 1)
+                if len(parts) == 2 and parts[1].lstrip("+-").isdigit():
+                    desc, pts = parts[0].strip(), parts[1].strip()
+                    sign = "+" if not pts.startswith("-") else ""
+                    if pts.startswith("+") or pts.startswith("-"):
+                        sign = ""
+                    lines.append(f"{desc} | {sign}{pts}")
+                else:
+                    lines.append(m)
         embed = discord.Embed(title="Pick Breakdown", description="\n".join(lines))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -978,19 +989,11 @@ class RetryEndView(discord.ui.View):
 
 class EndResultsModal(discord.ui.Modal, title="Fantasy End — Paste Results"):
     results = discord.ui.TextInput(
-        label="Player | Round | sets_won | sets_lost | upset_pts",
+        label="Player | Round | SW | SL | Upset | Match Log",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=4000,
-        placeholder=(
-            "Full format (from Claude chat):\n"
-            "Alcaraz | Champion | 21 | 3 | 180 | d. Djokovic 6-3 7-5 +120; d. Zverev 4-6 6-3 7-5 +60\n"
-            "Djokovic | Finalist | 13 | 7 | 95\n"
-            "Fields: Player | Round | sets_won | sets_lost | upset_pts | match log (optional)\n"
-            "\n"
-            "Short format (round points only):\n"
-            "Alcaraz | Champion"
-        ),
+        placeholder="Alcaraz | Champion | 21 | 3 | 180 | d. Djokovic +120; d. Zverev +60",
     )
 
     def __init__(self, cog, user_id: int, tournament_id: str, default_text: str = ""):
