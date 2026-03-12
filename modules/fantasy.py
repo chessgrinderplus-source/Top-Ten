@@ -459,8 +459,11 @@ def _build_fetched_rows(
 def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
     """
     Parse results pasted from Claude chat.
-    Short:  Player | Round
-    Full:   Player | Round | sets_won | sets_lost | upset_pts
+    Short : Player | Round
+    Full  : Player | Round | sets_won | sets_lost | upset_pts
+    Full+ : Player | Round | sets_won | sets_lost | upset_pts | match log text
+    match log is semicolon-separated match summaries, e.g.:
+      d. Djokovic 6-3 7-5 +120; d. Zverev 4-6 6-3 7-5 +80
     """
     rows = []
     errors = []
@@ -481,16 +484,20 @@ def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
             errors.append(f"Line {idx}: unrecognised round '{round_text}'. Valid: {', '.join(ROUND_CANONICAL)}")
             continue
         sets_won = sets_lost = upset_pts = 0
+        match_log = ""
         if len(parts) >= 5:
             try:
                 sets_won  = int(parts[2])
                 sets_lost = int(parts[3])
                 upset_pts = int(parts[4])
             except ValueError:
-                errors.append(f"Line {idx}: sets_won/sets_lost/upset_pts must be integers.")
+                errors.append(f"Line {idx}: sets_won / sets_lost / upset_pts must be integers.")
                 continue
+            if len(parts) >= 6:
+                match_log = " | ".join(parts[5:]).strip()
         rows.append({"player": name, "round": round_text,
-                     "sets_won": sets_won, "sets_lost": sets_lost, "upset_pts": upset_pts})
+                     "sets_won": sets_won, "sets_lost": sets_lost,
+                     "upset_pts": upset_pts, "match_log": match_log})
     return rows, errors
 
 # ============================================================
@@ -935,10 +942,17 @@ class RosterPickMenuView(discord.ui.View):
                                   description=f"**{header}**\n\nℹ️ Results not entered yet.")
             return await interaction.response.send_message(embed=embed, ephemeral=True)
         lines = [f"**{header} — {r.get('round','')}**", "",
-                 f"**Tournament Pts:** +{r.get('tournament_points',0)}",
-                 f"**Set Pts:** +{r.get('set_points',0)}  ({r.get('sets_won',0)}W / {r.get('sets_lost',0)}L)",
+                 f"**Tournament Pts:** {r.get('tournament_points',0):+}",
+                 f"**Set Pts:** {r.get('set_points',0):+}  ({r.get('sets_won',0)}W / {r.get('sets_lost',0)}L sets)",
                  f"**Upset Pts:** {r.get('upset_points',0):+}", "",
-                 f"**Total Points:** {r.get('total',0)}"]
+                 f"**Total: {r.get('total',0)}**"]
+        log = r.get("match_log", "")
+        if log:
+            lines += ["", "**Match Results:**"]
+            for match in log.split(";"):
+                m = match.strip()
+                if m:
+                    lines.append(f"  {m}")
         embed = discord.Embed(title="Pick Breakdown", description="\n".join(lines))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -970,13 +984,12 @@ class EndResultsModal(discord.ui.Modal, title="Fantasy End — Paste Results"):
         max_length=4000,
         placeholder=(
             "Full format (from Claude chat):\n"
-            "Alcaraz | Champion | 21 | 3 | 0\n"
-            "Djokovic | Finalist | 13 | 7 | 6\n"
-            "Sinner | Semi-Final | 16 | 4 | -6\n"
+            "Alcaraz | Champion | 21 | 3 | 180 | d. Djokovic 6-3 7-5 +120; d. Zverev 4-6 6-3 7-5 +60\n"
+            "Djokovic | Finalist | 13 | 7 | 95\n"
+            "Fields: Player | Round | sets_won | sets_lost | upset_pts | match log (optional)\n"
             "\n"
-            "Short format (no set/upset pts):\n"
-            "Alcaraz | Champion\n"
-            "Djokovic | Finalist"
+            "Short format (round points only):\n"
+            "Alcaraz | Champion"
         ),
     )
 
@@ -1619,16 +1632,16 @@ class FantasyCog(commands.Cog):
                 view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
                 return await interaction.response.send_message("\n".join(msg), view=view, ephemeral=True)
 
-            # Build final rows — uses set/upset pts if provided (full format from Claude chat)
+            # Build final rows — uses set/upset pts + match log if provided (full format from Claude chat)
             final_rows = []
             for r in rows:
-                canonical  = _normalize_round(r["round"]) or r["round"]
-                tourn_pts  = round_points_map.get(canonical, 0)
-                sw         = r.get("sets_won", 0)
-                sl         = r.get("sets_lost", 0)
-                upset      = r.get("upset_pts", 0)
-                set_pts    = sw * 5 - sl * 2
-                total      = tourn_pts + set_pts + upset
+                canonical = _normalize_round(r["round"]) or r["round"]
+                tourn_pts = round_points_map.get(canonical, 0)
+                sw        = r.get("sets_won", 0)
+                sl        = r.get("sets_lost", 0)
+                upset     = r.get("upset_pts", 0)
+                set_pts   = sw * 5 - sl * 2
+                total     = tourn_pts + set_pts + upset
                 final_rows.append({
                     "player":            r["player"],
                     "round":             canonical,
@@ -1638,6 +1651,7 @@ class FantasyCog(commands.Cog):
                     "set_points":        set_pts,
                     "upset_points":      upset,
                     "total":             total,
+                    "match_log":         r.get("match_log", ""),
                 })
 
             has_full = any(r.get("sets_won") or r.get("upset_pts") for r in rows)
