@@ -68,6 +68,7 @@ def _set_yearly_archive_url(year: int, guild_id: int, url: str) -> None:
 
 # In-flight tournament sim tasks: match_id → asyncio.Task
 _ACTIVE_SIMS: Dict[str, "asyncio.Task[None]"] = {}
+_SIM_MSG_LINKS: Dict[str, str] = {}  # match_id → jump URL of the sim message
 
 def _del_comp(tid: str) -> bool:
     """Atomically delete a tournament from the DB. Returns True if it existed."""
@@ -128,13 +129,19 @@ ROUND_DISPLAY: Dict[str, str] = {
     "F":    "Final",        "W":   "Winner",
 }
 
+_SUP_TRANS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+def _score_for_sheet(score: str) -> str:
+    """Convert tiebreak annotations from (4) to superscript ⁴ for Google Sheets."""
+    import re
+    return re.sub(r'\((\d+)\)', lambda m: m.group(1).translate(_SUP_TRANS), score or "")
+
+
 def _rnd(r: str) -> str:
     """Return full display name for a round code."""
     return ROUND_DISPLAY.get(r, r)
 
 # ── Seed display helper ───────────────────────────────────────────────────────
-_SUP_TRANS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
-
 def _seed_sup(n) -> str:
     """Convert a seed number to Unicode superscript, e.g. 1→¹, 12→¹²."""
     if n is None:
@@ -298,13 +305,14 @@ def _court_name(tourn: dict, court_key: str) -> str:
     venues = tourn.get("venues", {})
     venue_id = venues.get(court_key)
     if venue_id:
-        # Try resolving the venue ID to a real name
         name = _venue_name_from_id(venue_id)
         if name:
             return name
-        # venue_id might itself already be a display name (legacy behaviour)
-        if not re.match(r'^[a-f0-9-]{8,}$', venue_id, re.I):
-            return venue_id  # looks like a plain name, not a UUID
+        # Value might itself already be a display name (legacy / plain-text entry)
+        if not re.match(r'^[a-f0-9\-]{8,}$', venue_id, re.I):
+            return venue_id
+        # UUID that didn't resolve — return the raw ID so it's visible
+        return venue_id
     return COURT_DISPLAY.get(court_key, court_key)
 
 DEFAULT_DAY_SESSION   = "11:00"
@@ -1427,15 +1435,28 @@ def _write_bracket_values(ws, tourn: dict, guild) -> None:
 
             # Per-set scores: skip if walkover or BYE (leave score cols blank)
             if score and score != "BYE" and not m.get("walkover") and (p1_uid or p2_uid):
+                import re as _re
                 sets = score.replace(",", " ").split()
                 for offset, uid in [(0, p1_uid), (_BK_NAME_H, p2_uid)]:
                     row = s_row + offset
                     for si, s_val in enumerate(sets[:max_sets]):
-                        # Parse the score from the perspective of this player
-                        parts = s_val.split("-")
+                        # s_val may look like "7-6(4)" — extract base and tiebreak
+                        tb_m    = _re.search(r'\((\d+)\)', s_val)
+                        tb_str  = tb_m.group(1).translate(_SUP_TRANS) if tb_m else ""
+                        base    = _re.sub(r'\(\d+\)', '', s_val)
+                        parts   = base.split("-")
                         if len(parts) == 2:
-                            p1_games, p2_games = parts[0], parts[1]
-                            cell_val = p1_games if uid == p1_uid else p2_games
+                            try:
+                                g1, g2 = int(parts[0]), int(parts[1])
+                                if uid == p1_uid:
+                                    games = g1
+                                    # superscript on loser's cell (lower count)
+                                    cell_val = str(games) + (tb_str if tb_str and g1 < g2 else "")
+                                else:
+                                    games = g2
+                                    cell_val = str(games) + (tb_str if tb_str and g2 < g1 else "")
+                            except ValueError:
+                                cell_val = parts[0] if uid == p1_uid else parts[1]
                         else:
                             cell_val = s_val
                         sc = _col_letter(score_col + si)
@@ -1521,7 +1542,7 @@ def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict, guild=None) -> 
             day, ts_cell, _rnd(m.get("round", "")),
             court, p1, p2,
             m.get("status", ""),
-            "Walkover" if m.get("walkover") else ("" if m.get("score") == "BYE" else m.get("score", "")),
+            "Walkover" if m.get("walkover") else ("" if m.get("score") == "BYE" else _score_for_sheet(m.get("score", ""))),
             winner,
         ])
 
@@ -2234,6 +2255,7 @@ async def _run_tournament_match_sim(
 
         # Roll conditions from the venue, then apply time-of-day modifiers
         cond = _roll_conditions_for_venue(guild.id, court_venue_id)
+        print(f"[tourn-sim] {match_id}: court_venue_id={court_venue_id!r} → surface={cond.surface!r} venue={cond.venue_name!r}")
         tod  = _time_of_day_conditions(scheduled_time)
         cond.temp_c     = max(-5, min(45, cond.temp_c + tod["temp_delta"]))
         cond.humidity_pct = max(0, min(100, cond.humidity_pct + tod["humidity_delta"]))
@@ -2292,6 +2314,7 @@ async def _run_tournament_match_sim(
                    f"{'🌧️ Rain' if cond.is_raining else '☀️ Clear'}\n"
                    f"Best of {best_of}  ·  Surface: {cond.surface.title()}")
         msg = await channel.send(opening)
+        _SIM_MSG_LINKS[match_id] = msg.jump_url
 
         # Run the actual sim loop (the real matchsim engine)
         sim_cog = bot.cogs.get("MatchSimCog") or bot.cogs.get("matchsim")
@@ -2332,7 +2355,7 @@ async def _run_tournament_match_sim(
                   if hasattr(state, "set_tb_loser_points") and idx < len(state.set_tb_loser_points)
                   else None)
             if tb is not None:
-                score_parts.append(f"{g1}-{g2}[{tb}]")
+                score_parts.append(f"{g1}-{g2}({tb})")
             else:
                 score_parts.append(f"{g1}-{g2}")
         score_str = " ".join(score_parts)
@@ -2430,6 +2453,7 @@ async def _run_tournament_match_sim(
         traceback.print_exc()
     finally:
         _ACTIVE_SIMS.pop(match_id, None)
+        _SIM_MSG_LINKS.pop(match_id, None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3376,6 +3400,24 @@ class TournamentsCog(commands.Cog):
 
         match["winner_id"] = wid; match["loser_id"] = lid
         match["walkover"] = walkover
+
+        # Normalize score to always be from p1's perspective.
+        # Admin enters from winner's perspective; if winner is p2, reverse each set.
+        if not walkover and score and wid == p2:
+            import re as _re
+            normalized_sets = []
+            for part in score.replace(",", " ").split():
+                tb_match = _re.search(r'\((\d+)\)', part)
+                suffix   = tb_match.group(0) if tb_match else ""
+                base     = _re.sub(r'\(\d+\)', '', part)
+                halves   = base.split("-", 1)
+                try:
+                    ga, gb = int(halves[0]), int(halves[1])
+                    normalized_sets.append(f"{gb}-{ga}{suffix}")
+                except (ValueError, IndexError):
+                    normalized_sets.append(part)
+            score = " ".join(normalized_sets)
+
         match["score"] = "" if walkover else score
         match["status"] = "completed"
 
@@ -3439,8 +3481,7 @@ class TournamentsCog(commands.Cog):
         wname = winner_m.display_name if winner_m else f"UID:{wid}"
         lname = loser_m.display_name  if loser_m  else (f"UID:{lid}" if lid else "BYE")
         result_str = "by walkover" if walkover else score
-        pts_str = f"\n🏅 {lname} awarded **{loser_pts}pts**" if loser_pts and not walkover else ""
-        msg = f"✅ **{_rnd(rnd)}** result: **{wname}** def. **{lname}** {result_str}{pts_str}"
+        msg = f"✅ **{_rnd(rnd)}** result: **{wname}** def. **{lname}** {result_str}"
         await _reply(i, msg)
 
     # ── /tournament match-view ────────────────────────────────────────────
@@ -3474,9 +3515,16 @@ class TournamentsCog(commands.Cog):
             emb.add_field(name="Player 1", value=_mn(p1_id, match.get("seed1")), inline=True)
             emb.add_field(name="Player 2", value=_mn(p2_id, match.get("seed2")), inline=True)
             emb.add_field(name="Court",    value=court,                           inline=True)
+            watch_parts = []
             if t.get("result_channel_id"):
                 ch = i.guild.get_channel(int(t["result_channel_id"]))
-                if ch: emb.add_field(name="Watch live", value=ch.mention, inline=False)
+                if ch:
+                    watch_parts.append(ch.mention)
+            jump = _SIM_MSG_LINKS.get(match_id)
+            if jump:
+                watch_parts.append(f"[Jump to match]({jump})")
+            if watch_parts:
+                emb.add_field(name="Watch live", value="  ·  ".join(watch_parts), inline=False)
             return await _reply(i, embed=emb)
 
         # ── Completed ─────────────────────────────────────────────────────
@@ -3619,6 +3667,7 @@ class TournamentsCog(commands.Cog):
                     pass
             finally:
                 _ACTIVE_SIMS.pop(match_id, None)
+                _SIM_MSG_LINKS.pop(match_id, None)
 
         task = asyncio.create_task(_run_and_report())
         _ACTIVE_SIMS[match_id] = task

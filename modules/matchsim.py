@@ -860,6 +860,17 @@ def _roll_conditions_for_venue(guild_id: int, venue_id: Optional[str]) -> MatchC
     if not venue_id:
         return cond
     v = _get_venue(venue_id)
+    # If lookup by ID failed, try matching by name across all venues
+    if not v:
+        try:
+            all_venues = _get_venues()
+            for vid, vdata in all_venues.items():
+                if (vdata.get("name") or "").lower() == venue_id.lower():
+                    v = vdata
+                    venue_id = vid
+                    break
+        except Exception:
+            pass
     if not v:
         return cond
     cond.venue_id = venue_id
@@ -2773,6 +2784,11 @@ def format_sets(sets: List[Tuple[int, int]], current: Tuple[int, int], include_c
         parts.append(f"{current[0]}-{current[1]}")
     return " | ".join(parts) if parts else "—"
 
+_SUP_TRANS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+def _to_sup(n) -> str:
+    return str(n).translate(_SUP_TRANS)
+
 def format_completed_sets_winner_labeled(state: MatchState) -> str:
     parts = []
     for i, (a, b) in enumerate(state.sets):
@@ -2780,7 +2796,7 @@ def format_completed_sets_winner_labeled(state: MatchState) -> str:
         def fmt(x: int, y: int, tb_loser: Optional[int]) -> str:
             s = f"{x}-{y}"
             if tb_loser is not None and ((x == 7 and y == 6) or (x == 6 and y == 7)):
-                s += f"[{tb_loser}]"
+                s += f"({tb_loser})"
             return s
         if a > b:
             parts.append(f"{state.p1.name} {fmt(a,b,tb)}")
@@ -3011,7 +3027,7 @@ def build_score_text(state: MatchState) -> str:
     rally_info = f"\nRally Length: **{state.last_rally_shots}** shot(s)" if state.last_rally_shots is not None else ""
     last = f"\nLast Point: {state.last_point_desc}{serve_info}{rally_info}\n"
 
-    draw_snap = state.draw_snapshot
+    draw_snap = state.draw_snapshot if not state.is_tournament_match else ""
     draw_part = f"\n{draw_snap}" if draw_snap else ""
     return header + set_line + games_line + game_line + big_line + serve_line + last + draw_part
 
