@@ -874,7 +874,7 @@ def _roll_conditions_for_venue(guild_id: int, venue_id: Optional[str]) -> MatchC
     if not v:
         return cond
     cond.venue_id = venue_id
-    cond.venue_name = str(v.get("name", "Venue"))
+    cond.venue_name = str(v.get("name", "")) or venue_id.replace("-", " ").title()
     cond.tournament_id = str(v.get("tournament_id")) if v.get("tournament_id") else None
     cond.surface = str(v.get("surface", "hard"))
     cond.roof = bool(v.get("roof", False))

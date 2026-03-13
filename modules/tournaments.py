@@ -132,9 +132,8 @@ ROUND_DISPLAY: Dict[str, str] = {
 _SUP_TRANS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 def _score_for_sheet(score: str) -> str:
-    """Convert tiebreak annotations from (4) to superscript ⁴ for Google Sheets."""
-    import re
-    return re.sub(r'\((\d+)\)', lambda m: m.group(1).translate(_SUP_TRANS), score or "")
+    """Return score string for Google Sheets — keep (4) as-is, readable."""
+    return score or ""
 
 
 def _rnd(r: str) -> str:
@@ -1442,7 +1441,7 @@ def _write_bracket_values(ws, tourn: dict, guild) -> None:
                     for si, s_val in enumerate(sets[:max_sets]):
                         # s_val may look like "7-6(4)" — extract base and tiebreak
                         tb_m    = _re.search(r'\((\d+)\)', s_val)
-                        tb_str  = tb_m.group(1).translate(_SUP_TRANS) if tb_m else ""
+                        tb_str  = f"({tb_m.group(1)})" if tb_m else ""
                         base    = _re.sub(r'\(\d+\)', '', s_val)
                         parts   = base.split("-")
                         if len(parts) == 2:
@@ -2249,7 +2248,17 @@ async def _run_tournament_match_sim(
             await channel.send(f"❌ Sim for `{match_id}` failed: member `{missing}` not found in guild.")
             return
 
-        # Build profiles with fatigue applied
+        from modules.players import ensure_player_for_member as _epfm
+        # Decay fatigue on the raw rows first, then save, then build profiles
+        p1_row = apply_passive_fatigue_decay(_epfm(guild, p1_mem))
+        p2_row = apply_passive_fatigue_decay(_epfm(guild, p2_mem))
+        try:
+            set_fatigue_for_user_id(guild, p1_id, int(float(p1_row.get("fatigue", 0))))
+            set_fatigue_for_user_id(guild, p2_id, int(float(p2_row.get("fatigue", 0))))
+        except Exception as _fe:
+            print(f"[tourn-sim] fatigue pre-save failed: {_fe}")
+
+        # Build profiles (will re-read the now-saved fatigue row)
         p1_prof = _to_profile_user(guild, p1_mem)
         p2_prof = _to_profile_user(guild, p2_mem)
 
@@ -2257,19 +2266,11 @@ async def _run_tournament_match_sim(
         cond = _roll_conditions_for_venue(guild.id, court_venue_id)
         print(f"[tourn-sim] {match_id}: court_venue_id={court_venue_id!r} → surface={cond.surface!r} venue={cond.venue_name!r}")
         tod  = _time_of_day_conditions(scheduled_time)
-        cond.temp_c     = max(-5, min(45, cond.temp_c + tod["temp_delta"]))
+        cond.temp_c       = max(-5, min(45, cond.temp_c + tod["temp_delta"]))
         cond.humidity_pct = max(0, min(100, cond.humidity_pct + tod["humidity_delta"]))
-        cond.wind_kmh   = max(0, int(cond.wind_kmh * tod["wind_mult"]))
+        cond.wind_kmh     = max(0, int(cond.wind_kmh * tod["wind_mult"]))
         if tod["is_night"] and not cond.roof:
-            # Night conditions: slight extra humidity, slight chill already applied
             cond.humidity_pct = min(100, cond.humidity_pct + 3)
-
-        # Persist the fatigue that was decayed by _to_profile_user before the match starts
-        try:
-            set_fatigue_for_user_id(guild, p1_id, int(p1_prof.fatigue))
-            set_fatigue_for_user_id(guild, p2_id, int(p2_prof.fatigue))
-        except Exception as _fe:
-            print(f"[tourn-sim] fatigue pre-save failed: {_fe}")
 
         t = _get_comp(t_id)  # fresh read before building state
         cur_match = next((m for m in (t or {}).get("matches", []) if m["match_id"] == match_id), None)
