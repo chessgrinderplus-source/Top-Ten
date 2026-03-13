@@ -1130,6 +1130,8 @@ class MatchState:
     tournament_name: str = ""
     tournament_round: str = ""
     draw_snapshot: str = ""
+    # (min_sec, max_sec) override for tournament point delays; None = use normal MATCH_SPEED_MULT
+    point_delay_range: Optional[Tuple[float, float]] = None
 
 @dataclass
 class MatchStats:
@@ -4679,8 +4681,12 @@ class MatchSimCog(commands.Cog):
                 break
 
             base_delay_sec = point_delay_seconds(int(shots or 1), pressure=state.in_tiebreak)
-            if state.is_tournament_match:
-                await asyncio.sleep(random.uniform(20.0, 40.0))
+            if state.point_delay_range is not None:
+                lo, hi = state.point_delay_range
+                if lo == 0 and hi == 0:
+                    pass  # instant — no sleep
+                else:
+                    await asyncio.sleep(random.uniform(lo, hi))
             else:
                 await asyncio.sleep(max(0.0, base_delay_sec * MATCH_SPEED_MULT))
             try:

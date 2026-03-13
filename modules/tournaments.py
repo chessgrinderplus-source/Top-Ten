@@ -1314,7 +1314,7 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                                          p_row + _BK_NAME_H, score_col + si + 1,
                                          {"backgroundColor": bg if is_bye else sc2,
                                           "textFormat": {"fontFamily": fn, "bold": (cell_txt == fc2),
-                                                         "fontSize": 9, "foregroundColor": cell_txt},
+                                                         "fontSize": 11, "foregroundColor": cell_txt},
                                           "verticalAlignment": "MIDDLE",
                                           "horizontalAlignment": "CENTER"}))
 
@@ -2227,6 +2227,7 @@ async def _run_tournament_match_sim(
     guild, seed1: Optional[int], seed2: Optional[int],
     scheduled_time: Optional[str] = None,
     court_venue_id: Optional[str] = None,
+    point_delay_range: Optional[tuple] = None,  # (min_sec, max_sec); None = normal speed
 ) -> None:
     """Run a real live matchsim for a tournament match, post point-by-point to channel."""
     try:
@@ -2265,6 +2266,7 @@ async def _run_tournament_match_sim(
         # Roll conditions from the venue, then apply time-of-day modifiers
         cond = _roll_conditions_for_venue(guild.id, court_venue_id)
         print(f"[tourn-sim] {match_id}: court_venue_id={court_venue_id!r} → surface={cond.surface!r} venue={cond.venue_name!r}")
+
         tod  = _time_of_day_conditions(scheduled_time)
         cond.temp_c       = max(-5, min(45, cond.temp_c + tod["temp_delta"]))
         cond.humidity_pct = max(0, min(100, cond.humidity_pct + tod["humidity_delta"]))
@@ -2276,12 +2278,23 @@ async def _run_tournament_match_sim(
         cur_match = next((m for m in (t or {}).get("matches", []) if m["match_id"] == match_id), None)
         cur_round = (cur_match or {}).get("round", "")
 
+        # Override venue_name from the tournament's court display name — venue data
+        # often has generic names like "Default", while the tournament stores the real name.
+        if t and court_venue_id:
+            for ck, vid in t.get("venues", {}).items():
+                if vid == court_venue_id:
+                    label = _court_name(t, ck)
+                    if label and label not in ("Default", ""):
+                        cond.venue_name = label
+                    break
+
         state = MatchState(
             match_id=match_id, p1=p1_prof, p2=p2_prof,
             best_of=best_of, conditions=cond,
             is_tournament_match=True,
             tournament_name=(t or {}).get("name", ""),
             tournament_round=cur_round,
+            point_delay_range=point_delay_range,
         )
 
         # Build draw snapshot for display during the live sim
@@ -3227,13 +3240,14 @@ class TournamentsCog(commands.Cog):
     @tournament.command(name="match-edit", description="(Admin) Edit a match's time or court.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match,
-                                new_court_key=_ac_court_key)
+                                new_court_key=_ac_court_key, new_venue_id=_ac_venue)
     async def tourn_match_edit(self, i: discord.Interaction,
                                tournament_id: str, match_id: str,
                                new_time:      Optional[str] = None,
                                not_before:    Optional[str] = None,
                                followed_by:   Optional[str] = None,
-                               new_court_key: Optional[str] = None):
+                               new_court_key: Optional[str] = None,
+                               new_venue_id:  Optional[str] = None):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         t = _get_comp(tournament_id)
@@ -3277,6 +3291,12 @@ class TournamentsCog(commands.Cog):
             match["court_key"]      = new_court_key
             match["court_venue_id"] = t["venues"].get(new_court_key)
             changes.append(f"Court → {COURT_DISPLAY.get(new_court_key, new_court_key)}")
+
+        # ── Venue override (replaces venue for this match without changing court assignment) ──
+        if new_venue_id:
+            vname = _venue_name_from_id(new_venue_id) or new_venue_id
+            match["court_venue_id"] = new_venue_id
+            changes.append(f"Venue → {vname}")
 
         # ── Time change ──
         if new_time:
@@ -3581,35 +3601,49 @@ class TournamentsCog(commands.Cog):
             except Exception:
                 pass
 
-        # Career stats comparison
+        # Season stats comparison + season H2H
         if p1_id and p2_id:
+            cur_year = str(datetime.now(timezone.utc).year)
             sdb = _stats_db(); sg = _stats_guild(sdb, i.guild.id)
-            def _career_line(uid):
+            def _season_line(uid):
                 p = sg.get(str(uid))
                 if not p: return "No data"
-                mp = p.get("matches_played",0); mw = p.get("matches_won",0)
-                wp = round(mw/mp*100,1) if mp else 0
-                fsi = p.get("first_serve_in",0); fst = max(p.get("first_serve_total",1),1)
-                aces = p.get("aces",0)
-                tbp  = p.get("tiebreaks_played",0); tbw = p.get("tiebreaks_won",0)
+                yr = p.get("year", {}).get(cur_year)
+                if not yr: return "No data this season"
+                mp = yr.get("matches_played", 0); mw = yr.get("matches_won", 0)
+                wp = round(mw / mp * 100, 1) if mp else 0
+                aces = yr.get("aces", 0); dfs = yr.get("double_faults", 0)
+                fsi  = yr.get("first_serve_in", 0)
+                fst  = max(yr.get("first_serve_total", 1), 1)
+                tbp  = yr.get("tiebreaks_played", 0); tbw = yr.get("tiebreaks_won", 0)
                 return (f"**{mw}–{mp-mw}** ({wp}%)\n"
-                        f"1st Srv: {round(fsi/fst*100,1)}%  Aces: {aces}\n"
+                        f"1st Srv: {round(fsi/fst*100,1)}%  Aces: {aces}  DFs: {dfs}\n"
                         f"Tiebreaks: {tbw}/{tbp}\n"
-                        f"Titles: {p.get('titles',0)}  SF: {p.get('semis',0)}")
-            emb.add_field(name=f"📊 {_mn(p1_id)} Career",  value=_career_line(p1_id), inline=True)
-            emb.add_field(name=f"📊 {_mn(p2_id)} Career",  value=_career_line(p2_id), inline=True)
+                        f"Titles: {yr.get('titles',0)}  SF: {yr.get('semis',0)}")
+            emb.add_field(name=f"📊 {_mn(p1_id)} {cur_year}", value=_season_line(p1_id), inline=True)
+            emb.add_field(name=f"📊 {_mn(p2_id)} {cur_year}", value=_season_line(p2_id), inline=True)
 
-            # H2H preview
+            # H2H this season
             h2h_db = _h2h_db()
             key = _h2h_key(p1_id, p2_id)
             h2h_rec = h2h_db.get("h2h", {}).get(str(i.guild.id), {}).get(key)
             if h2h_rec and h2h_rec.get("matches"):
-                ms = h2h_rec["matches"]
-                w1 = sum(1 for m in ms if int(m.get("winner",0))==p1_id)
-                w2 = len(ms)-w1
-                emb.add_field(name="⚔️ Career H2H",
-                              value=f"**{_mn(p1_id)}** {w1} – {w2} **{_mn(p2_id)}**",
-                              inline=False)
+                all_ms  = h2h_rec["matches"]
+                # Season H2H (filter by year)
+                szn_ms  = [m for m in all_ms
+                           if m.get("date", "").startswith(cur_year)]
+                # Career H2H totals
+                c_w1 = sum(1 for m in all_ms if int(m.get("winner", 0)) == p1_id)
+                c_w2 = len(all_ms) - c_w1
+                career_str = f"Career: **{_mn(p1_id)}** {c_w1} – {c_w2} **{_mn(p2_id)}**"
+                if szn_ms:
+                    s_w1 = sum(1 for m in szn_ms if int(m.get("winner", 0)) == p1_id)
+                    s_w2 = len(szn_ms) - s_w1
+                    h2h_val = (f"{cur_year}: **{_mn(p1_id)}** {s_w1} – {s_w2} **{_mn(p2_id)}**\n"
+                               + career_str)
+                else:
+                    h2h_val = f"{cur_year}: First meeting this season\n" + career_str
+                emb.add_field(name="⚔️ H2H", value=h2h_val, inline=False)
 
         if t.get("sheet_url"):
             emb.add_field(name="📊 Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
@@ -3620,10 +3654,26 @@ class TournamentsCog(commands.Cog):
     @tournament.command(name="match-sim", description="(Admin) Immediately trigger a live sim for a scheduled match.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match)
+    @app_commands.choices(speed=[
+        app_commands.Choice(name="Instant",  value="instant"),
+        app_commands.Choice(name="Fast",     value="fast"),
+        app_commands.Choice(name="Normal",   value="normal"),
+        app_commands.Choice(name="Slow",     value="slow"),
+    ])
     async def tourn_match_sim(self, i: discord.Interaction,
-                              tournament_id: str, match_id: str):
+                              tournament_id: str, match_id: str,
+                              speed: str = "normal"):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
+
+        # Map speed → (min_sec, max_sec) per point
+        _SPEED_RANGES = {
+            "instant": (0.0,  0.0),
+            "fast":    (3.0,  8.0),
+            "normal":  (20.0, 40.0),
+            "slow":    (60.0, 90.0),
+        }
+        delay_range = _SPEED_RANGES.get(speed, (20.0, 40.0))
 
         t = _get_comp(tournament_id)
         if not t:
@@ -3648,7 +3698,8 @@ class TournamentsCog(commands.Cog):
                 channel = rc
 
         best_of = int(t.get("best_of", 3))
-        await _reply(i, f"▶️ Starting sim for **{match_id}** now…", ephemeral=True)
+        speed_label = {"instant": "⚡ Instant", "fast": "🐇 Fast", "normal": "🎾 Normal", "slow": "🐢 Slow"}.get(speed, speed)
+        await _reply(i, f"▶️ Starting sim for **{match_id}** ({speed_label})…", ephemeral=True)
 
         async def _run_and_report():
             try:
@@ -3658,6 +3709,7 @@ class TournamentsCog(commands.Cog):
                     match.get("seed1"), match.get("seed2"),
                     scheduled_time=match.get("scheduled_time"),
                     court_venue_id=match.get("court_venue_id"),
+                    point_delay_range=delay_range,
                 )
             except Exception as e:
                 import traceback
