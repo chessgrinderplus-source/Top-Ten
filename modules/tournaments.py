@@ -132,6 +132,132 @@ def _rnd(r: str) -> str:
     """Return full display name for a round code."""
     return ROUND_DISPLAY.get(r, r)
 
+# ── Seed display helper ───────────────────────────────────────────────────────
+_SUP_TRANS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+def _seed_sup(n) -> str:
+    """Convert a seed number to Unicode superscript, e.g. 1→¹, 12→¹²."""
+    if n is None:
+        return ""
+    return str(n).translate(_SUP_TRANS)
+
+
+def _draw_snapshot_text(t: dict, match_id: str, guild) -> str:
+    """Return a monospace code-block draw snapshot: prev round | current | next round.
+    Shows 2 matches in the current round (the focus match + its pair-partner),
+    their previous-round feeders, and the next-round slot.
+    """
+    matches = t.get("matches", [])
+    rnds    = _rounds(int(t.get("bracket_size", 8)))
+
+    cur = next((m for m in matches if m["match_id"] == match_id), None)
+    if not cur:
+        return ""
+
+    rnd  = cur["round"]
+    ridx = rnds.index(rnd) if rnd in rnds else -1
+    if ridx < 0:
+        return ""
+
+    NW = 15  # player name column width
+
+    def _n(uid, seed=None) -> str:
+        if uid is None:
+            return "TBD"
+        mb = guild.get_member(uid) if guild else None
+        name = (mb.display_name if mb else f"User:{uid}")[:NW]
+        return f"{_seed_sup(seed)}{name}" if seed else name
+
+    def rnd_ms(r):
+        return sorted([m for m in matches if m["round"] == r], key=lambda m: m["match_id"])
+
+    cur_all  = rnd_ms(rnd)
+    cur_idx  = next((i for i, m in enumerate(cur_all) if m["match_id"] == match_id), -1)
+    if cur_idx < 0:
+        return ""
+
+    has_prev = ridx > 0
+    has_next = ridx + 1 < len(rnds)
+    prev_all = rnd_ms(rnds[ridx - 1]) if has_prev else []
+    next_all = rnd_ms(rnds[ridx + 1]) if has_next else []
+
+    # The two current-round matches to display (the focus pair)
+    pair_start = (cur_idx // 2) * 2
+    show_idxs  = [pair_start, pair_start + 1]
+    show_ms    = [cur_all[i] for i in show_idxs if i < len(cur_all)]
+
+    lines: List[str] = []
+
+    prev_hdr = f"◄ {_rnd(rnds[ridx-1])}"[:NW+2] if has_prev else ""
+    cur_hdr  = f"● {_rnd(rnd)}"[:NW+2]
+    next_hdr = f"{_rnd(rnds[ridx+1])} ►"[:NW+2] if has_next else ""
+
+    if has_prev:
+        hdr = f"{prev_hdr:<{NW+2}}  {cur_hdr:<{NW+2}}  {next_hdr}"
+    else:
+        hdr = f"{cur_hdr:<{NW+2}}  {next_hdr}"
+    lines.append(hdr)
+    lines.append("─" * len(hdr))
+
+    for si, sm in enumerate(show_ms):
+        sm_idx = next((j for j, m in enumerate(cur_all) if m["match_id"] == sm["match_id"]), -1)
+        if sm_idx < 0:
+            continue
+
+        is_focus  = sm["match_id"] == match_id
+        focus_tag = "▶" if is_focus else " "
+        sm_wid    = sm.get("winner_id")
+        p1n = _n(sm.get("player1_id"), sm.get("seed1"))[:NW]
+        p2n = _n(sm.get("player2_id"), sm.get("seed2"))[:NW]
+
+        def _mark(name: str, uid, wid) -> str:
+            if wid and uid and uid == wid:
+                return f"✓{name}"
+            return f" {name}"
+
+        # ── Next-round info ────────────────────────────────────────────────
+        nslot = sm_idx // 2
+        next_m = next_all[nslot] if nslot < len(next_all) else None
+        nwid   = next_m.get("winner_id") if next_m else None
+        next_n = _n(nwid)[:NW] if nwid else "TBD"
+
+        # ── Previous-round feeders ─────────────────────────────────────────
+        if has_prev:
+            pa = prev_all[sm_idx * 2]     if sm_idx * 2     < len(prev_all) else None
+            pb = prev_all[sm_idx * 2 + 1] if sm_idx * 2 + 1 < len(prev_all) else None
+
+            def _pn(m, slot):
+                if m is None:
+                    return "TBD"
+                uid  = m.get("player1_id") if slot == 1 else m.get("player2_id")
+                seed = m.get("seed1")      if slot == 1 else m.get("seed2")
+                return _n(uid, seed)[:NW]
+
+            pa1n = _pn(pa, 1); pa2n = _pn(pa, 2); pa_w = pa.get("winner_id") if pa else None
+            pb1n = _pn(pb, 1); pb2n = _pn(pb, 2); pb_w = pb.get("winner_id") if pb else None
+
+            lines.append(f" {_mark(pa1n, pa.get('player1_id') if pa else None, pa_w):{NW+2}}")
+            lines.append(f" {_mark(pa2n, pa.get('player2_id') if pa else None, pa_w):{NW+2}}─┐  {focus_tag}{_mark(p1n, sm.get('player1_id'), sm_wid):{NW+2}}")
+            if has_next:
+                lines.append(f" {'':>{NW+3}}  ├──  {next_n:{NW}}")
+            else:
+                lines.append(f" {'':>{NW+3}}  ├──")
+            lines.append(f" {_mark(pb1n, pb.get('player1_id') if pb else None, pb_w):{NW+2}}─┘  {focus_tag}{_mark(p2n, sm.get('player2_id'), sm_wid):{NW+2}}")
+            lines.append(f" {_mark(pb2n, pb.get('player2_id') if pb else None, pb_w):{NW+2}}")
+        else:
+            # No prev round — just current + next
+            lines.append(f" {focus_tag}{_mark(p1n, sm.get('player1_id'), sm_wid):{NW+2}}─┐")
+            if has_next:
+                lines.append(f" {'':{NW+5}}├──  {next_n:{NW}}")
+            else:
+                lines.append(f" {'':{NW+5}}├──")
+            lines.append(f" {focus_tag}{_mark(p2n, sm.get('player2_id'), sm_wid):{NW+2}}─┘")
+
+        if si < len(show_ms) - 1:
+            lines.append("")
+
+    return "```\n" + "\n".join(lines) + "\n```"
+
 COURT_KEYS_ORDERED = (
     ["main_stage", "stage_2", "stage_3", "stage_4"]
     + [f"other_{i}" for i in range(1, 11)]
@@ -2121,15 +2247,35 @@ async def _run_tournament_match_sim(
             # Night conditions: slight extra humidity, slight chill already applied
             cond.humidity_pct = min(100, cond.humidity_pct + 3)
 
-        state = MatchState(match_id=match_id, p1=p1_prof, p2=p2_prof,
-                           best_of=best_of, conditions=cond)
+        # Persist the fatigue that was decayed by _to_profile_user before the match starts
+        try:
+            set_fatigue_for_user_id(guild, p1_id, int(p1_prof.fatigue))
+            set_fatigue_for_user_id(guild, p2_id, int(p2_prof.fatigue))
+        except Exception as _fe:
+            print(f"[tourn-sim] fatigue pre-save failed: {_fe}")
+
+        t = _get_comp(t_id)  # fresh read before building state
+        cur_match = next((m for m in (t or {}).get("matches", []) if m["match_id"] == match_id), None)
+        cur_round = (cur_match or {}).get("round", "")
+
+        state = MatchState(
+            match_id=match_id, p1=p1_prof, p2=p2_prof,
+            best_of=best_of, conditions=cond,
+            is_tournament_match=True,
+            tournament_name=(t or {}).get("name", ""),
+            tournament_round=cur_round,
+        )
+
+        # Build draw snapshot for display during the live sim
+        try:
+            state.draw_snapshot = _draw_snapshot_text(t, match_id, guild) if t else ""
+        except Exception:
+            state.draw_snapshot = ""
 
         def _mn(uid, seed):
             mb = guild.get_member(uid)
             n  = mb.display_name if mb else f"User:{uid}"
             return f"({seed}) {n}" if seed else n
-
-        t = _get_comp(t_id)  # fresh read
         court_label = ""
         if t:
             for ck, vid in t.get("venues", {}).items():
@@ -2188,14 +2334,14 @@ async def _run_tournament_match_sim(
             print(f"[tourn-sim] {match_id}: sets tied, defaulting to p1 win")
             wid, lid = p1_id, p2_id
 
-        # Build score string with tiebreak annotations
+        # Build score string with tiebreak annotations using brackets
         score_parts = []
         for idx, (g1, g2) in enumerate(state.sets):
             tb = (state.set_tb_loser_points[idx]
                   if hasattr(state, "set_tb_loser_points") and idx < len(state.set_tb_loser_points)
                   else None)
             if tb is not None:
-                score_parts.append(f"{g1}-{g2}({tb})")
+                score_parts.append(f"{g1}-{g2}[{tb}]")
             else:
                 score_parts.append(f"{g1}-{g2}")
         score_str = " ".join(score_parts)
@@ -3253,9 +3399,8 @@ class TournamentsCog(commands.Cog):
         winner_m = i.guild.get_member(wid)
 
         if lid and loser_pts > 0:
-            _award_points(guild_id, lid, loser_pts, tournament_id, rnd,
-                          name=loser_m.display_name if loser_m else "")
-            t.setdefault("awarded_points",{}).setdefault(str(lid),{})[rnd] = loser_pts
+            # Defer to /tournament complete — store in pending_points
+            t.setdefault("pending_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
 
         # Propagate winner into next round
         rnds = _rounds(int(t.get("bracket_size",8)))
@@ -3452,6 +3597,20 @@ class TournamentsCog(commands.Cog):
         guild_id     = i.guild.id
         champ_m      = i.guild.get_member(cid)
         champ_name   = champ_m.display_name if champ_m else f"UID:{cid}"
+
+        # ── Flush all deferred (pending) points first ─────────────────────
+        pending = t.pop("pending_points", {})
+        for uid_str, rnd_map in pending.items():
+            try:
+                uid = int(uid_str)
+                for prnd, pts in rnd_map.items():
+                    if pts > 0:
+                        mem = i.guild.get_member(uid)
+                        _award_points(guild_id, uid, pts, tournament_id, prnd,
+                                      name=mem.display_name if mem else "")
+                        t.setdefault("awarded_points", {}).setdefault(uid_str, {})[prnd] = pts
+            except Exception as _pe:
+                print(f"[tourn-complete] pending flush error for {uid_str}: {_pe}")
 
         # Award champion
         _award_points(guild_id, cid, champ_pts, tournament_id, "W", name=champ_name)

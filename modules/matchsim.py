@@ -1113,6 +1113,12 @@ class MatchState:
     last_rally_shots: Optional[int] = None
     conditions: MatchConditions | None = None
     started_at: float = field(default_factory=monotonic)
+    match_id: Optional[str] = None
+    # Tournament context
+    is_tournament_match: bool = False
+    tournament_name: str = ""
+    tournament_round: str = ""
+    draw_snapshot: str = ""
 
 @dataclass
 class MatchStats:
@@ -2774,7 +2780,7 @@ def format_completed_sets_winner_labeled(state: MatchState) -> str:
         def fmt(x: int, y: int, tb_loser: Optional[int]) -> str:
             s = f"{x}-{y}"
             if tb_loser is not None and ((x == 7 and y == 6) or (x == 6 and y == 7)):
-                s += f"({tb_loser})"
+                s += f"[{tb_loser}]"
             return s
         if a > b:
             parts.append(f"{state.p1.name} {fmt(a,b,tb)}")
@@ -2892,13 +2898,19 @@ def _set_or_match_point_label(state: MatchState) -> Optional[str]:
     g1, g2 = state.current_games
     pa, pb = state.game_points
 
+    # Championship Point label for tournament Finals
+    is_final = (state.tournament_round == "F")
+
+    def _match_label() -> str:
+        return "Championship Point" if is_final else "Match Point"
+
     if state.in_tiebreak:
         t1, t2 = state.tiebreak_points
         target = tb_target_for_set(state.best_of, len(state.sets))
         if t1 >= target - 1 and t1 > t2:
-            return "Match Point" if near_match_p1 else "Set Point"
+            return _match_label() if near_match_p1 else "Set Point"
         if t2 >= target - 1 and t2 > t1:
-            return "Match Point" if near_match_p2 else "Set Point"
+            return _match_label() if near_match_p2 else "Set Point"
         return None
 
     bp = _break_point_label(state)
@@ -2906,11 +2918,11 @@ def _set_or_match_point_label(state: MatchState) -> Optional[str]:
         if state.server_idx == 0:
             new_g1, new_g2 = g1, g2 + 1
             if new_g2 >= 6 and abs(new_g2 - new_g1) >= 2:
-                return "Match Point" if near_match_p2 else "Set Point"
+                return _match_label() if near_match_p2 else "Set Point"
         else:
             new_g1, new_g2 = g1 + 1, g2
             if new_g1 >= 6 and abs(new_g1 - new_g2) >= 2:
-                return "Match Point" if near_match_p1 else "Set Point"
+                return _match_label() if near_match_p1 else "Set Point"
     return None
 
 def build_score_text(state: MatchState) -> str:
@@ -2919,8 +2931,22 @@ def build_score_text(state: MatchState) -> str:
     won2 = sum(1 for a, b in state.sets if b > a)
     match_over = (won1 >= sets_needed) or (won2 >= sets_needed)
 
-    header = f"🎾 **Match Simulation**\n**{state.p1.name}** vs **{state.p2.name}**\n"
-    header += f"Format: Best of {state.best_of} (First to {sets_needed} sets)\n\n"
+    # Tournament context header
+    tourn_name  = state.tournament_name
+    tourn_round = state.tournament_round
+    _ROUND_DISPLAY = {
+        "R128": "Round of 128", "R64": "Round of 64", "R32": "Round of 32",
+        "R16":  "Round of 16",  "QF":  "Quarterfinal", "SF": "Semifinal",
+        "F":    "Final",        "W":   "Winner",
+    }
+    if tourn_name:
+        rnd_label = _ROUND_DISPLAY.get(tourn_round, tourn_round or "") if tourn_round else ""
+        header = f"🏆 **{tourn_name}** — {rnd_label}\n"
+        header += f"**{state.p1.name}** vs **{state.p2.name}**\n"
+        header += f"Format: Best of {state.best_of} (First to {sets_needed} sets)\n\n"
+    else:
+        header = f"🎾 **Match Simulation**\n**{state.p1.name}** vs **{state.p2.name}**\n"
+        header += f"Format: Best of {state.best_of} (First to {sets_needed} sets)\n\n"
 
     cond = getattr(state, "conditions", None)
     if cond:
@@ -2985,7 +3011,9 @@ def build_score_text(state: MatchState) -> str:
     rally_info = f"\nRally Length: **{state.last_rally_shots}** shot(s)" if state.last_rally_shots is not None else ""
     last = f"\nLast Point: {state.last_point_desc}{serve_info}{rally_info}\n"
 
-    return header + set_line + games_line + game_line + big_line + serve_line + last
+    draw_snap = state.draw_snapshot
+    draw_part = f"\n{draw_snap}" if draw_snap else ""
+    return header + set_line + games_line + game_line + big_line + serve_line + last + draw_part
 
 def bot_toss_choice(bot_row: Optional[Dict[str, Any]]) -> str:
     if not bot_row or not isinstance(bot_row, dict):
@@ -4635,7 +4663,10 @@ class MatchSimCog(commands.Cog):
                 break
 
             base_delay_sec = point_delay_seconds(int(shots or 1), pressure=state.in_tiebreak)
-            await asyncio.sleep(max(0.0, base_delay_sec * MATCH_SPEED_MULT))
+            if state.is_tournament_match:
+                await asyncio.sleep(random.uniform(20.0, 40.0))
+            else:
+                await asyncio.sleep(max(0.0, base_delay_sec * MATCH_SPEED_MULT))
             try:
                 server_prof = state.p1 if state.server_idx == 0 else state.p2
                 rest_slider = int(getattr(server_prof, "lo_time_btwn_points", 50))
@@ -4644,7 +4675,8 @@ class MatchSimCog(commands.Cog):
                 recover     = rest_sec * 0.03
                 state.p1.stamina = clamp(state.p1.stamina + recover, STAMINA_MIN, STAMINA_START)
                 state.p2.stamina = clamp(state.p2.stamina + recover, STAMINA_MIN, STAMINA_START)
-                await asyncio.sleep(rest_sec * 0.00001)
+                if not state.is_tournament_match:
+                    await asyncio.sleep(rest_sec * 0.00001)
             except Exception:
                 pass
 
@@ -4680,18 +4712,19 @@ class MatchSimCog(commands.Cog):
 
         payout_line = ""
         try:
-            is_bot_match = bool(getattr(state.p2, "is_bot", False))
-            wager_amt    = int(getattr(state, "wager", 0))
-            if is_bot_match:
-                bot_name   = getattr(state, "bot_name", None)
-                bot_row    = _bot_get(bot_name) if bot_name else None
-                bot_reward = int((bot_row or {}).get("reward", 250))
-                payout_line = f"🏅 **Bot Win Reward:** +**{bot_reward if winner_idx == 0 else 0}** coins"
-            else:
-                if wager_amt > 0:
-                    payout_line = f"💰 **Payout:** Winner +**{wager_amt*2}** coins (wager **{wager_amt}** each)"
+            if not state.is_tournament_match:
+                is_bot_match = bool(getattr(state.p2, "is_bot", False))
+                wager_amt    = int(getattr(state, "wager", 0))
+                if is_bot_match:
+                    bot_name   = getattr(state, "bot_name", None)
+                    bot_row    = _bot_get(bot_name) if bot_name else None
+                    bot_reward = int((bot_row or {}).get("reward", 250))
+                    payout_line = f"🏅 **Bot Win Reward:** +**{bot_reward if winner_idx == 0 else 0}** coins"
                 else:
-                    payout_line = f"💰 **Payout:** Winner +**250** coins"
+                    if wager_amt > 0:
+                        payout_line = f"💰 **Payout:** Winner +**{wager_amt*2}** coins (wager **{wager_amt}** each)"
+                    else:
+                        payout_line = f"💰 **Payout:** Winner +**250** coins"
         except Exception:
             payout_line = ""
 
@@ -4704,9 +4737,15 @@ class MatchSimCog(commands.Cog):
                     venue_line = f"🏟️ **{getattr(c, 'venue_name', None) or 'Venue'}**\n"
             except Exception:
                 pass
+            # Tournament context in result
+            tourn_name  = state.tournament_name
+            tourn_round = state.tournament_round
+            _RD = {"R128":"Round of 128","R64":"Round of 64","R32":"Round of 32",
+                   "R16":"Round of 16","QF":"Quarterfinal","SF":"Semifinal","F":"Final"}
+            tourn_line = f"🏆 **{tourn_name}** — {_RD.get(tourn_round, tourn_round or '')}\n" if tourn_name else ""
             result  = format_completed_sets_winner_labeled(state)
             content = (
-                f"{venue_line}"
+                f"{tourn_line}{venue_line}"
                 f"🏁 **Result:** {result}\n"
                 f"✅ Winner: **{winner_name}**\n\n"
                 + (f"{payout_line}\n\n" if payout_line else "\n")
@@ -4716,27 +4755,28 @@ class MatchSimCog(commands.Cog):
         except Exception:
             pass
 
-        # ----- Payout -----
+        # ----- Payout (non-tournament only) -----
         try:
-            is_bot_match = bool(getattr(state.p2, "is_bot", False))
-            wager_amt    = int(getattr(state, "wager", 0))
-            if is_bot_match:
-                if winner_idx == 0 and state.p1.user_id is not None:
-                    bot_name   = getattr(state, "bot_name", None)
-                    bot_row    = _bot_get(bot_name) if bot_name else None
-                    bot_reward = max(0, int((bot_row or {}).get("reward", 250)))
-                    add_balance(state.p1.user_id, bot_reward)
-            else:
-                winner_user_id = state.p1.user_id if winner_idx == 0 else state.p2.user_id
-                if winner_user_id is not None:
-                    add_balance(winner_user_id, wager_amt * 2 if wager_amt > 0 else 250)
+            if not state.is_tournament_match:
+                is_bot_match = bool(getattr(state.p2, "is_bot", False))
+                wager_amt    = int(getattr(state, "wager", 0))
+                if is_bot_match:
+                    if winner_idx == 0 and state.p1.user_id is not None:
+                        bot_name   = getattr(state, "bot_name", None)
+                        bot_row    = _bot_get(bot_name) if bot_name else None
+                        bot_reward = max(0, int((bot_row or {}).get("reward", 250)))
+                        add_balance(state.p1.user_id, bot_reward)
+                else:
+                    winner_user_id = state.p1.user_id if winner_idx == 0 else state.p2.user_id
+                    if winner_user_id is not None:
+                        add_balance(winner_user_id, wager_amt * 2 if wager_amt > 0 else 250)
         except Exception:
             pass
 
-        # ----- Win reward: unspent stat points -----
+        # ----- Win reward: unspent stat points (non-tournament only) -----
         try:
             is_bot_sim = bool(getattr(state, "bots_sim", False))
-            if not is_bot_sim:
+            if not is_bot_sim and not state.is_tournament_match:
                 winner_prof = state.p1 if winner_idx == 0 else state.p2
                 loser_prof  = state.p2 if winner_idx == 0 else state.p1
                 reward_pts  = calculate_match_win_reward(winner_prof, loser_prof)
