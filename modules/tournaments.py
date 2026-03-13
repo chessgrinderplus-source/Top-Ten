@@ -2216,15 +2216,9 @@ async def _run_tournament_match_sim(
             apply_passive_fatigue_decay,
         )
         from modules.players import get_player_row, set_fatigue_for_user_id
-        import matchsim as _ms_mod
     except ImportError as e:
         print(f"[tourn-sim] matchsim import failed: {e}")
-        return
-
-    # Temporarily override the global MATCH_SPEED_MULT in matchsim so tournament
-    # sims run at TOURN_SIM_SPEED_MULT. Restore after.
-    _orig_speed = getattr(_ms_mod, "MATCH_SPEED_MULT", 1.0)
-    _ms_mod.MATCH_SPEED_MULT = TOURN_SIM_SPEED_MULT
+        raise
 
     try:
         p1_mem = guild.get_member(p1_id)
@@ -2317,10 +2311,6 @@ async def _run_tournament_match_sim(
         print(f"[tourn-sim] sim error for {match_id}: {e}")
         traceback.print_exc()
         raise  # let _run_and_report surface this to the channel
-    finally:
-        # Restore original speed
-        try: _ms_mod.MATCH_SPEED_MULT = _orig_speed
-        except Exception: pass
 
     # ── Post-sim: persist result ──────────────────────────────────────────
     try:
