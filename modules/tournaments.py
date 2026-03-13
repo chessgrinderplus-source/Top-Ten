@@ -3576,6 +3576,51 @@ class TournamentsCog(commands.Cog):
         emb.set_footer(text=f"Match ID: {match_id}")
         await _reply(i, embed=emb)
 
+    # ── /tournament match-sim ─────────────────────────────────────────────
+    @tournament.command(name="match-sim", description="(Admin) Immediately trigger a live sim for a scheduled match.")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(tournament_id=_ac_comp_all, match_id=_ac_match)
+    async def tourn_match_sim(self, i: discord.Interaction,
+                              tournament_id: str, match_id: str):
+        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
+            return await _reply(i, "❌ Admin only.", ephemeral=True)
+
+        t = _get_comp(tournament_id)
+        if not t:
+            return await _reply(i, "❌ Tournament not found.", ephemeral=True)
+
+        match = next((m for m in t.get("matches", []) if m["match_id"] == match_id), None)
+        if not match:
+            return await _reply(i, "❌ Match not found.", ephemeral=True)
+        if match.get("status") == "completed":
+            return await _reply(i, "❌ Match is already completed.", ephemeral=True)
+        if not match.get("player1_id") or not match.get("player2_id"):
+            return await _reply(i, "❌ Match doesn't have both players assigned yet.", ephemeral=True)
+        if match_id in _ACTIVE_SIMS:
+            return await _reply(i, "❌ This match sim is already running.", ephemeral=True)
+
+        # Resolve result channel, fall back to current channel
+        channel = i.channel
+        rc_id = t.get("result_channel_id")
+        if rc_id:
+            rc = i.guild.get_channel(int(rc_id))
+            if rc:
+                channel = rc
+
+        best_of = int(t.get("best_of", 3))
+        await _reply(i, f"▶️ Starting sim for **{match_id}** now…", ephemeral=True)
+
+        task = asyncio.create_task(
+            _run_tournament_match_sim(
+                self.bot, channel, match_id, tournament_id,
+                match["player1_id"], match["player2_id"], best_of, i.guild,
+                match.get("seed1"), match.get("seed2"),
+                scheduled_time=match.get("scheduled_time"),
+                court_venue_id=match.get("court_venue_id"),
+            )
+        )
+        _ACTIVE_SIMS[match_id] = task
+
     # ── /tournament complete ──────────────────────────────────────────────
     @tournament.command(name="complete", description="(Admin) Mark tournament finished and award champion points.")
     @app_commands.guild_only()
