@@ -2215,7 +2215,7 @@ async def _run_tournament_match_sim(
             _roll_conditions_for_venue, MatchState, build_score_text,
             apply_passive_fatigue_decay,
         )
-        from modules.players import get_player_row, set_fatigue_for_user_id
+        from modules.players import set_fatigue_for_user_id
     except ImportError as e:
         print(f"[tourn-sim] matchsim import failed: {e}")
         raise
