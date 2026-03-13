@@ -2230,7 +2230,8 @@ async def _run_tournament_match_sim(
         p1_mem = guild.get_member(p1_id)
         p2_mem = guild.get_member(p2_id)
         if not p1_mem or not p2_mem:
-            print(f"[tourn-sim] {match_id}: member not found in guild")
+            missing = p1_id if not p1_mem else p2_id
+            await channel.send(f"❌ Sim for `{match_id}` failed: member `{missing}` not found in guild.")
             return
 
         # Build profiles with fatigue applied
@@ -2315,7 +2316,7 @@ async def _run_tournament_match_sim(
         import traceback
         print(f"[tourn-sim] sim error for {match_id}: {e}")
         traceback.print_exc()
-        return
+        raise  # let _run_and_report surface this to the channel
     finally:
         # Restore original speed
         try: _ms_mod.MATCH_SPEED_MULT = _orig_speed
@@ -3610,15 +3611,26 @@ class TournamentsCog(commands.Cog):
         best_of = int(t.get("best_of", 3))
         await _reply(i, f"▶️ Starting sim for **{match_id}** now…", ephemeral=True)
 
-        task = asyncio.create_task(
-            _run_tournament_match_sim(
-                self.bot, channel, match_id, tournament_id,
-                match["player1_id"], match["player2_id"], best_of, i.guild,
-                match.get("seed1"), match.get("seed2"),
-                scheduled_time=match.get("scheduled_time"),
-                court_venue_id=match.get("court_venue_id"),
-            )
-        )
+        async def _run_and_report():
+            try:
+                await _run_tournament_match_sim(
+                    self.bot, channel, match_id, tournament_id,
+                    match["player1_id"], match["player2_id"], best_of, i.guild,
+                    match.get("seed1"), match.get("seed2"),
+                    scheduled_time=match.get("scheduled_time"),
+                    court_venue_id=match.get("court_venue_id"),
+                )
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                try:
+                    await channel.send(f"❌ Sim for `{match_id}` failed: `{e}`")
+                except Exception:
+                    pass
+            finally:
+                _ACTIVE_SIMS.pop(match_id, None)
+
+        task = asyncio.create_task(_run_and_report())
         _ACTIVE_SIMS[match_id] = task
 
     # ── /tournament complete ──────────────────────────────────────────────
