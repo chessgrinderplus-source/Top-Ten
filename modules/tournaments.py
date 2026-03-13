@@ -4416,37 +4416,6 @@ class TournamentsCog(commands.Cog):
         await _reply(i, f"{'✅' if deleted else '⚠️'} Deleted **{name}** (`{tournament_id}`)."
                      + ("" if deleted else "\n⚠️ Warning: tournament may not have been fully removed — check Railway logs."))
 
-    # ── /tournament purge-ghosts ─────────────────────────────────────────
-    @tournament.command(name="purge-ghosts",
-                        description="(Admin) Delete all cancelled/invalid ghost tournaments from the database.")
-    @app_commands.guild_only()
-    async def tourn_purge_ghosts(self, i: discord.Interaction):
-        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
-            return await _reply(i, "❌ Admin only.", ephemeral=True)
-
-        db = _comp_db()
-        tournaments = db.get("tournaments", {})
-        removed = []; kept = []
-
-        for tid, t in list(tournaments.items()):
-            st = t.get("status", "")
-            name = t.get("name", tid)
-            if st not in _ACTIVE_STATUSES:
-                removed.append(f"**{name}** (status: `{st or 'none'}`)")
-                del tournaments[tid]
-            else:
-                kept.append(name)
-
-        if removed:
-            _comp_save(db)
-
-        emb = discord.Embed(title="🧹 Ghost Purge Complete", color=discord.Color.orange())
-        emb.add_field(name=f"🗑️ Removed ({len(removed)})",
-                      value="\n".join(removed[:20]) or "None", inline=False)
-        emb.add_field(name=f"✅ Kept ({len(kept)})",
-                      value="\n".join(kept[:20]) or "None", inline=False)
-        await _reply(i, embed=emb)
-
     # ── /tournament cancel ───────────────────────────────────────────────
     @tournament.command(name="cancel", description="(Admin) Cancel a tournament and wipe all its data.")
     @app_commands.guild_only()
