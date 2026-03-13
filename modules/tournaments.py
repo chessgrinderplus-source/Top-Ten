@@ -132,8 +132,10 @@ ROUND_DISPLAY: Dict[str, str] = {
 _SUP_TRANS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 def _score_for_sheet(score: str) -> str:
-    """Return score string for Google Sheets — keep (4) as-is, readable."""
-    return score or ""
+    """Return score string for Google Sheets — convert (4) to superscript."""
+    if not score:
+        return ""
+    return re.sub(r'\((\d+)\)', lambda m: m.group(1).translate(_SUP_TRANS), score)
 
 
 def _rnd(r: str) -> str:
@@ -294,7 +296,20 @@ def _venue_name_from_id(venue_id: Optional[str]) -> Optional[str]:
             return v.get("name") or v.get("title") or None
     except Exception:
         pass
-    return None
+    return _pretty_venue_id(venue_id)
+
+def _pretty_venue_id(venue_id: str) -> str:
+    """Pretty-print a venue ID by skipping the first two dash-segments.
+    venue-ao-rod-laver-arena  ->  Rod Laver Arena
+    venue-wim-centre-court    ->  Centre Court
+    Falls back to the full ID if it has fewer than 3 segments."""
+    if not venue_id:
+        return venue_id
+    parts = venue_id.split("-")
+    if len(parts) >= 3:
+        return " ".join(p.capitalize() for p in parts[2:])
+    return venue_id.replace("-", " ").title()
+
 
 def _court_name(tourn: dict, court_key: str) -> str:
     """Return the display name for a court_key.
@@ -305,12 +320,14 @@ def _court_name(tourn: dict, court_key: str) -> str:
     venue_id = venues.get(court_key)
     if venue_id:
         name = _venue_name_from_id(venue_id)
-        if name:
+        if name and name not in ("Default", ""):
             return name
+        # venue IDs follow pattern venue-<tournament>-<name...>; pretty-print them
+        if venue_id.startswith("venue-"):
+            return _pretty_venue_id(venue_id)
         # Value might itself already be a display name (legacy / plain-text entry)
         if not re.match(r'^[a-f0-9\-]{8,}$', venue_id, re.I):
             return venue_id
-        # UUID that didn't resolve — return the raw ID so it's visible
         return venue_id
     return COURT_DISPLAY.get(court_key, court_key)
 
@@ -1298,7 +1315,9 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                         parts = _sets[si].split("-")
                         if len(parts) == 2:
                             try:
-                                g1, g2 = int(parts[0]), int(parts[1])
+                                import re as _re
+                                g1 = int(_re.sub(r"[^0-9].*", "", parts[0]))
+                                g2 = int(_re.sub(r"[^0-9].*", "", parts[1]))
                                 this_games  = g1 if uid == p1_uid else g2
                                 other_games = g2 if uid == p1_uid else g1
                                 if this_games > other_games:
@@ -2287,6 +2306,9 @@ async def _run_tournament_match_sim(
                     if label and label not in ("Default", ""):
                         cond.venue_name = label
                     break
+        # Final fallback: pretty-print the venue ID itself
+        if cond.venue_name in ("Default", "", None) and court_venue_id:
+            cond.venue_name = _pretty_venue_id(court_venue_id)
 
         state = MatchState(
             match_id=match_id, p1=p1_prof, p2=p2_prof,
@@ -3667,13 +3689,14 @@ class TournamentsCog(commands.Cog):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
 
         # Map speed → (min_sec, max_sec) per point
+        # A 3-setter ~150 pts: instant=0  fast~2-3min  normal~8-12min  slow~20-25min
         _SPEED_RANGES = {
-            "instant": (0.0,  0.0),
-            "fast":    (3.0,  8.0),
-            "normal":  (20.0, 40.0),
-            "slow":    (60.0, 90.0),
+            "instant": (0.0, 0.0),
+            "fast":    (0.8, 1.5),
+            "normal":  (3.0, 5.0),
+            "slow":    (7.0, 10.0),
         }
-        delay_range = _SPEED_RANGES.get(speed, (20.0, 40.0))
+        delay_range = _SPEED_RANGES.get(speed, (3.0, 5.0))
 
         t = _get_comp(tournament_id)
         if not t:

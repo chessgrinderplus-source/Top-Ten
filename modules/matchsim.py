@@ -874,7 +874,14 @@ def _roll_conditions_for_venue(guild_id: int, venue_id: Optional[str]) -> MatchC
     if not v:
         return cond
     cond.venue_id = venue_id
-    cond.venue_name = str(v.get("name", "")) or venue_id.replace("-", " ").title()
+    raw_name = str(v.get("name", "") or "")
+    if raw_name and raw_name not in ("Default", ""):
+        cond.venue_name = raw_name
+    elif venue_id and venue_id.startswith("venue-"):
+        parts = venue_id.split("-")
+        cond.venue_name = " ".join(p.capitalize() for p in parts[2:]) if len(parts) >= 3 else venue_id.replace("-", " ").title()
+    else:
+        cond.venue_name = venue_id.replace("-", " ").title() if venue_id else "Unknown"
     cond.tournament_id = str(v.get("tournament_id")) if v.get("tournament_id") else None
     cond.surface = str(v.get("surface", "hard"))
     cond.roof = bool(v.get("roof", False))
@@ -4424,6 +4431,45 @@ class MatchSimCog(commands.Cog):
         await self._run_match_loop(msg, state, guild=interaction.guild)
 
 
+    async def _toilet_break(self, msg: discord.Message, state: MatchState) -> None:
+        """Possibly pause for a comfort break after a set. ~15% chance for tournament matches,
+        ~8% for regular matches. One player takes the break."""
+        is_tourn = getattr(state, "is_tournament_match", False)
+        chance = 0.15 if is_tourn else 0.08
+        if random.random() > chance:
+            return
+        breaker_idx = random.randint(0, 1)
+        breaker = state.p1 if breaker_idx == 0 else state.p2
+        name = getattr(breaker, "name", None) or getattr(breaker, "display_name", None) or f"Player {breaker_idx + 1}"
+        flavour = random.choice([
+            f"🚽 **{name}** has requested a comfort break.",
+            f"🚽 **{name}** is taking a bathroom break.",
+            f"🚽 **{name}** heads off court for a comfort break.",
+            f"🚽 **{name}** has left the court for a toilet break.",
+        ])
+        try:
+            await msg.edit(content=build_score_text(state) + "\n\n" + flavour)
+        except Exception:
+            pass
+
+        # Scale break duration by point_delay_range so instant/fast sims aren't killed
+        dr = getattr(state, "point_delay_range", None)
+        if dr is not None:
+            lo, hi = dr
+            if lo == 0 and hi == 0:
+                delay = 0.0
+            else:
+                # toilet break ≈ 5–10× a normal point delay
+                delay = random.uniform(lo * 5, hi * 10)
+        else:
+            delay = random.uniform(60.0, 120.0)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        try:
+            await msg.edit(content=build_score_text(state))
+        except Exception:
+            pass
+
     async def _run_match_loop(self, msg: discord.Message, state: MatchState, guild: Optional[discord.Guild]):
         sets_needed = match_sets_needed(state.best_of)
         current_set_index = 0
@@ -4617,6 +4663,8 @@ class MatchSimCog(commands.Cog):
                     except Exception:
                         pass
 
+                    await self._toilet_break(msg, state)
+
                     state.game_points      = (0, 0)
                     state.in_tiebreak      = False
                     state.tiebreak_points  = (0, 0)
@@ -4671,6 +4719,8 @@ class MatchSimCog(commands.Cog):
                             await msg.edit(content=build_score_text(state), view=None)
                         except Exception:
                             pass
+
+                        await self._toilet_break(msg, state)
 
                         current_set_index  += 1
                         # server_idx already flipped after game_won above; no second flip needed
