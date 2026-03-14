@@ -132,10 +132,14 @@ ROUND_DISPLAY: Dict[str, str] = {
 _SUP_TRANS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 def _score_for_sheet(score: str) -> str:
-    """Return score string for Google Sheets — convert (4) to superscript."""
+    """Return score string for bracket cells — convert (4) to superscript digit."""
     if not score:
         return ""
     return re.sub(r'\((\d+)\)', lambda m: m.group(1).translate(_SUP_TRANS), score)
+
+def _score_plain(score: str) -> str:
+    """Return score string for schedule sheet — keep (4) parentheses notation."""
+    return score or ""
 
 
 def _rnd(r: str) -> str:
@@ -1296,8 +1300,8 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                 reqs.append(_fmt_req(ws_id, p_row, name_col,
                                      p_row + _BK_NAME_H, score_col,
                                      {"backgroundColor": bg if is_bye else sc1,
-                                      "textFormat": {"fontFamily": fn, "bold": is_w,
-                                                     "fontSize": 10, "foregroundColor": txt},
+                                      "textFormat": {"fontFamily": fn, "bold": bool(bold_names) and is_w,
+                                                     "fontSize": font_size_n, "foregroundColor": txt},
                                       "verticalAlignment": "MIDDLE",
                                       "horizontalAlignment": "LEFT",
                                       "padding": {"left": 6}}))
@@ -1332,8 +1336,8 @@ def _build_bracket_requests(ws_id: int, tourn: dict, guild) -> List[dict]:
                     reqs.append(_fmt_req(ws_id, p_row, score_col + si,
                                          p_row + _BK_NAME_H, score_col + si + 1,
                                          {"backgroundColor": bg if is_bye else sc2,
-                                          "textFormat": {"fontFamily": fn, "bold": (cell_txt == fc2),
-                                                         "fontSize": 11, "foregroundColor": cell_txt},
+                                          "textFormat": {"fontFamily": fn, "bold": bool(bold_scores) and (cell_txt == fc2),
+                                                         "fontSize": font_size_s, "foregroundColor": cell_txt},
                                           "verticalAlignment": "MIDDLE",
                                           "horizontalAlignment": "CENTER"}))
 
@@ -1441,11 +1445,13 @@ def _write_bracket_values(ws, tourn: dict, guild) -> None:
                 p1_uid = draw[mi * 2]     if len(draw) > mi * 2     else p1_uid
                 p2_uid = draw[mi * 2 + 1] if len(draw) > mi * 2 + 1 else p2_uid
 
+            _caps = bool(tourn.get("sheets_config", {}).get("caps_lock", False))
             for offset, uid in [(0, p1_uid), (_BK_NAME_H, p2_uid)]:
                 row = s_row + offset
                 nc  = _col_letter(name_col)
                 if uid:
                     name_str = _player_display(uid, draw, seeded, guild)
+                    if _caps: name_str = name_str.upper()
                     updates.append({"range": f"{nc}{row + 1}", "values": [[name_str]]})
                 elif ridx == 0 and score != "BYE":
                     # Empty slot (not a BYE match) — show TBD
@@ -1460,7 +1466,7 @@ def _write_bracket_values(ws, tourn: dict, guild) -> None:
                     for si, s_val in enumerate(sets[:max_sets]):
                         # s_val may look like "7-6(4)" — extract base and tiebreak
                         tb_m    = _re.search(r'\((\d+)\)', s_val)
-                        tb_str  = f"({tb_m.group(1)})" if tb_m else ""
+                        _sup_t = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"); tb_str = tb_m.group(1).translate(_sup_t) if tb_m else ""
                         base    = _re.sub(r'\(\d+\)', '', s_val)
                         parts   = base.split("-")
                         if len(parts) == 2:
@@ -1560,7 +1566,7 @@ def _setup_schedule_sheet(ss, ws2_id: int, tourn: dict, s: dict, guild=None) -> 
             day, ts_cell, _rnd(m.get("round", "")),
             court, p1, p2,
             m.get("status", ""),
-            "Walkover" if m.get("walkover") else ("" if m.get("score") == "BYE" else _score_for_sheet(m.get("score", ""))),
+            "Walkover" if m.get("walkover") else ("" if m.get("score") == "BYE" else _score_plain(m.get("score", ""))),
             winner,
         ])
 
@@ -2153,19 +2159,57 @@ async def _ac_user(i: discord.Interaction, cur: str) -> List[app_commands.Choice
         if len(out)>=25: break
     return out
 
-COMMON_FONTS = [
-    "Arial", "Roboto", "Roboto Mono", "Open Sans", "Lato", "Montserrat",
-    "Raleway", "Oswald", "Merriweather", "Playfair Display", "Ubuntu",
-    "Source Code Pro", "Courier New", "Georgia", "Times New Roman",
-    "Trebuchet MS", "Verdana", "Impact", "Nunito", "Poppins",
-    "Bebas Neue", "Barlow", "Exo 2", "Orbitron", "Rajdhani",
-    "Teko", "Anton", "Jost", "Inter", "Black Han Sans",
+# Full Google Fonts list (curated popular + sports-themed)
+GOOGLE_FONTS = [
+    "Abel", "Abril Fatface", "Aldrich", "Alegreya", "Anton", "Archivo",
+    "Archivo Black", "Archivo Narrow", "Arimo", "Arvo", "Asap", "Asap Condensed",
+    "Assistant", "Audiowide", "Barlow", "Barlow Condensed", "Barlow Semi Condensed",
+    "Bebas Neue", "Black Han Sans", "Black Ops One", "Bree Serif",
+    "Cabin", "Cairo", "Cantarell", "Cardo", "Chakra Petch", "Changa",
+    "Cinzel", "Comfortaa", "Commissioner", "Cousine", "Cuprum",
+    "DM Mono", "DM Sans", "DM Serif Display", "Dancing Script", "Dosis",
+    "Economica", "Electrolize", "Encode Sans", "Encode Sans Condensed",
+    "Exo", "Exo 2", "Fira Code", "Fira Mono", "Fira Sans", "Fira Sans Condensed",
+    "Fjalla One", "Francois One", "Geologica", "Goldman", "Graduate",
+    "Gruppo", "Hammersmith One", "Heebo", "Hind", "Hind Siliguri",
+    "IBM Plex Mono", "IBM Plex Sans", "IBM Plex Serif",
+    "Inconsolata", "Inter", "Inter Tight", "Italiana",
+    "Josefin Sans", "Josefin Slab", "Jost", "Judson",
+    "Kanit", "Karla", "Khand", "Kreon",
+    "Lato", "Lexend", "Lexend Deca", "Libre Baskerville", "Libre Franklin",
+    "Lilita One", "Literata", "Lobster", "Lora",
+    "Manrope", "Marcellus", "Maven Pro", "Merriweather", "Merriweather Sans",
+    "Michroma", "Montserrat", "Montserrat Alternates", "Muli",
+    "Mulish", "Nanum Gothic", "News Cycle", "Noto Sans", "Noto Serif",
+    "Nunito", "Nunito Sans", "Open Sans", "Open Sans Condensed",
+    "Orbitron", "Oswald", "Outfit", "Overpass", "Overpass Mono",
+    "Oxygen", "Pacifico", "Pathway Gothic One", "Play", "Playfair Display",
+    "Plus Jakarta Sans", "Poiret One", "Poppins", "Prompt", "Public Sans",
+    "PT Mono", "PT Sans", "PT Sans Caption", "PT Sans Narrow", "PT Serif",
+    "Quantico", "Questrial", "Quicksand",
+    "Racing Sans One", "Rajdhani", "Raleway", "Readex Pro", "Recursive",
+    "Red Hat Display", "Red Hat Mono", "Red Hat Text", "Reem Kufi",
+    "Righteous", "Roboto", "Roboto Condensed", "Roboto Flex", "Roboto Mono",
+    "Roboto Serif", "Roboto Slab", "Rubik", "Rubik Mono One",
+    "Russo One", "Saira", "Saira Condensed", "Saira Extra Condensed",
+    "Saira Semi Condensed", "Secular One", "Share Tech", "Share Tech Mono",
+    "Signika", "Signika Negative", "Six Caps", "Slabo 27px",
+    "Source Code Pro", "Source Sans 3", "Source Serif 4", "Space Grotesk",
+    "Space Mono", "Spectral", "Squada One", "Staatliches",
+    "Syncopate", "Teko", "Titillium Web", "Ubuntu", "Ubuntu Condensed",
+    "Ubuntu Mono", "Unbounded", "Urbanist", "Varela Round",
+    "Vollkorn", "Voltaire", "Work Sans", "Yanone Kaffeesatz", "Yantramanav",
+    "Zilla Slab",
+    # Classic web/system fonts also valid in Sheets
+    "Arial", "Comic Sans MS", "Courier New", "Georgia", "Impact",
+    "Times New Roman", "Trebuchet MS", "Verdana",
 ]
+GOOGLE_FONTS.sort()
 
 @_safe_ac
 async def _ac_font(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
     c = cur.lower()
-    return [app_commands.Choice(name=f, value=f) for f in COMMON_FONTS if c in f.lower()][:25]
+    return [app_commands.Choice(name=f, value=f) for f in GOOGLE_FONTS if c in f.lower()][:25]
 
 @_safe_ac
 async def _ac_court_key(i: discord.Interaction, cur: str) -> List[app_commands.Choice[str]]:
@@ -2211,33 +2255,42 @@ async def _ac_venue(i: discord.Interaction, cur: str) -> List[app_commands.Choic
 def _time_of_day_conditions(scheduled_time: Optional[str]) -> dict:
     """Return condition modifiers based on match start time (HH:MM).
 
-    Returns a dict with keys: temp_delta, humidity_delta, wind_mult, is_night.
+    Returns a dict with keys: temp_delta, humidity_delta, wind_mult, is_night,
+    cpi_mult, bounce_mult (multiply venue base values to amplify surface effects).
     Applied on top of the venue's rolled conditions.
     """
     if not scheduled_time:
-        return {"temp_delta": 0, "humidity_delta": 0, "wind_mult": 1.0, "is_night": False}
+        return {"temp_delta": 0, "humidity_delta": 0, "wind_mult": 1.0, "is_night": False,
+                "cpi_mult": 1.0, "bounce_mult": 1.0}
     try:
         h, m = map(int, scheduled_time.split(":")[:2])
     except Exception:
-        return {"temp_delta": 0, "humidity_delta": 0, "wind_mult": 1.0, "is_night": False}
+        return {"temp_delta": 0, "humidity_delta": 0, "wind_mult": 1.0, "is_night": False,
+                "cpi_mult": 1.0, "bounce_mult": 1.0}
 
-    # 06–09: early morning — cool, calm, dewier
+    # 06–09: early morning — cool, dewy, slow surface (high humidity slows ball)
     if 6 <= h < 9:
-        return {"temp_delta": -4, "humidity_delta": +10, "wind_mult": 0.6, "is_night": False}
+        return {"temp_delta": -8, "humidity_delta": +20, "wind_mult": 0.4, "is_night": False,
+                "cpi_mult": 0.82, "bounce_mult": 0.88}
     # 09–12: morning — warming up, mild breeze
     if 9 <= h < 12:
-        return {"temp_delta": -1, "humidity_delta": +5,  "wind_mult": 0.8, "is_night": False}
-    # 12–15: midday — peak heat, peak wind
+        return {"temp_delta": -3, "humidity_delta": +10, "wind_mult": 0.75, "is_night": False,
+                "cpi_mult": 0.93, "bounce_mult": 0.95}
+    # 12–15: midday peak — hot, fast surface, heavy wind
     if 12 <= h < 15:
-        return {"temp_delta": +4, "humidity_delta": -8,  "wind_mult": 1.3, "is_night": False}
-    # 15–18: afternoon — still hot, often windiest
+        return {"temp_delta": +10, "humidity_delta": -15, "wind_mult": 1.5, "is_night": False,
+                "cpi_mult": 1.18, "bounce_mult": 1.12}
+    # 15–18: afternoon — still hot, gustiest
     if 15 <= h < 18:
-        return {"temp_delta": +3, "humidity_delta": -5,  "wind_mult": 1.2, "is_night": False}
-    # 18–20: evening — cooling, calmer
+        return {"temp_delta": +8, "humidity_delta": -10, "wind_mult": 1.4, "is_night": False,
+                "cpi_mult": 1.12, "bounce_mult": 1.08}
+    # 18–20: evening — cooling down, calmer conditions
     if 18 <= h < 20:
-        return {"temp_delta": -1, "humidity_delta": 0,   "wind_mult": 0.9, "is_night": False}
-    # 20+: night session — artificial light, cooler, calmer wind
-    return {"temp_delta": -5, "humidity_delta": +3, "wind_mult": 0.5, "is_night": True}
+        return {"temp_delta": -2, "humidity_delta": +5, "wind_mult": 0.85, "is_night": False,
+                "cpi_mult": 1.0, "bounce_mult": 1.0}
+    # 20+: night — artificial light, cool, very calm, heavy/slow ball
+    return {"temp_delta": -10, "humidity_delta": +8, "wind_mult": 0.45, "is_night": True,
+            "cpi_mult": 0.88, "bounce_mult": 0.92}
 
 
 async def _run_tournament_match_sim(
@@ -2287,11 +2340,13 @@ async def _run_tournament_match_sim(
         print(f"[tourn-sim] {match_id}: court_venue_id={court_venue_id!r} → surface={cond.surface!r} venue={cond.venue_name!r}")
 
         tod  = _time_of_day_conditions(scheduled_time)
-        cond.temp_c       = max(-5, min(45, cond.temp_c + tod["temp_delta"]))
-        cond.humidity_pct = max(0, min(100, cond.humidity_pct + tod["humidity_delta"]))
-        cond.wind_kmh     = max(0, int(cond.wind_kmh * tod["wind_mult"]))
+        cond.temp_c          = max(-5, min(45, cond.temp_c + tod["temp_delta"]))
+        cond.humidity_pct    = max(0, min(100, cond.humidity_pct + tod["humidity_delta"]))
+        cond.wind_kmh        = max(0, int(cond.wind_kmh * tod["wind_mult"]))
+        cond.cpi_effective   = max(10, min(120, int(cond.cpi_effective * tod.get("cpi_mult", 1.0))))
+        cond.bounce_effective = max(10, min(120, int(cond.bounce_effective * tod.get("bounce_mult", 1.0))))
         if tod["is_night"] and not cond.roof:
-            cond.humidity_pct = min(100, cond.humidity_pct + 3)
+            cond.humidity_pct = min(100, cond.humidity_pct + 5)
 
         t = _get_comp(t_id)  # fresh read before building state
         cur_match = next((m for m in (t or {}).get("matches", []) if m["match_id"] == match_id), None)
@@ -2442,7 +2497,11 @@ async def _run_tournament_match_sim(
         cat_key = ROUND_TO_CAT_KEY.get(rnd)
         loser_pts = int(cat.get(cat_key, 0)) if cat_key else 0
         if lid and loser_pts > 0:
-            t.setdefault("pending_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
+            # Guard against duplicates: don't re-add if already in pending or awarded
+            already_pending = str(lid) in t.get("pending_points", {}) and rnd in t["pending_points"][str(lid)]
+            already_awarded = str(lid) in t.get("awarded_points", {}) and rnd in t["awarded_points"][str(lid)]
+            if not already_pending and not already_awarded:
+                t.setdefault("pending_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
 
         # Record H2H + stats
         try:
@@ -2844,8 +2903,21 @@ class TournamentsCog(commands.Cog):
             emb.add_field(name="📅 Timeline", value="\n".join(timeline), inline=False)
         if t.get("champion_name"):
             emb.add_field(name="🏆 Champion", value=f"**{t['champion_name']}**", inline=False)
-        if t.get("sheet_url"):
-            emb.add_field(name="📊 Live Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
+        if t.get("status") == STATUS_COMPLETED:
+            # Try to show archive URL for the year the tournament was completed
+            try:
+                completed_at = t.get("completed_at") or t.get("tournament_start_date", "")
+                yr = int(completed_at[:4]) if completed_at else now.year
+                archive_url = get_yearly_archive_url(yr, i.guild.id)
+            except Exception:
+                archive_url = None
+            if archive_url:
+                emb.add_field(name="📁 Archive", value=f"[View Archive]({archive_url})", inline=False)
+            elif t.get("sheet_url"):
+                emb.add_field(name="📊 Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
+        else:
+            if t.get("sheet_url"):
+                emb.add_field(name="📊 Live Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
         await _reply(i, embed=emb)
 
     # ── /tournament list ──────────────────────────────────────────────────
@@ -3475,8 +3547,11 @@ class TournamentsCog(commands.Cog):
         winner_m = i.guild.get_member(wid)
 
         if lid and loser_pts > 0:
-            # Defer to /tournament complete — store in pending_points
-            t.setdefault("pending_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
+            # Guard: don't duplicate pending_points or already-awarded points
+            already_pending = str(lid) in t.get("pending_points", {}) and rnd in t.get("pending_points", {}).get(str(lid), {})
+            already_awarded = str(lid) in t.get("awarded_points", {}) and rnd in t.get("awarded_points", {}).get(str(lid), {})
+            if not already_pending and not already_awarded:
+                t.setdefault("pending_points", {}).setdefault(str(lid), {})[rnd] = loser_pts
 
         # Propagate winner into next round
         rnds = _rounds(int(t.get("bracket_size",8)))
@@ -3590,87 +3665,184 @@ class TournamentsCog(commands.Cog):
                 p1n = _mn(p1_id); p2n = _mn(p2_id)
                 emb.add_field(name="⚔️ Career H2H",
                               value=f"**{p1n}** {w1} – {w2} **{p2n}**", inline=False)
-            if t.get("sheet_url"):
-                emb.add_field(name="📊 Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
+            # Bracket / archive link
+            if t.get("status") == STATUS_COMPLETED:
+                try:
+                    completed_at = t.get("completed_at") or t.get("tournament_start_date", "")
+                    _yr = int(completed_at[:4]) if completed_at else datetime.now(timezone.utc).year
+                    _archive_url = get_yearly_archive_url(_yr, i.guild.id)
+                except Exception:
+                    _archive_url = None
+                if _archive_url:
+                    emb.add_field(name="📁 Archive", value=f"[View Archive]({_archive_url})", inline=False)
+                elif t.get("sheet_url"):
+                    emb.add_field(name="📊 Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
+            elif t.get("sheet_url"):
+                emb.add_field(name="📊 Live Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
             return await _reply(i, embed=emb)
 
-        # ── Upcoming / Pending ────────────────────────────────────────────
-        emb = discord.Embed(
-            title=f"📋 {_rnd(rnd)} Preview — {t.get('name','')}",
-            color=discord.Color.blue())
-        emb.add_field(name="Player 1", value=_mn(p1_id, match.get("seed1")), inline=True)
-        emb.add_field(name="Player 2", value=_mn(p2_id, match.get("seed2")), inline=True)
-        emb.add_field(name="Court",    value=court,                           inline=True)
+        # ── Upcoming / Pending — 4-page paginated preview ────────────────
+        cur_year = str(datetime.now(timezone.utc).year)
+        sdb = _stats_db(); sg = _stats_guild(sdb, i.guild.id)
+        rdb = _rank_db();  rg = _rank_guild(rdb, i.guild.id)
+        h2h_db_p = _h2h_db()
+        h2h_key_p = _h2h_key(p1_id, p2_id) if p1_id and p2_id else None
+        h2h_rec_p = h2h_db_p.get("h2h", {}).get(str(i.guild.id), {}).get(h2h_key_p) if h2h_key_p else None
 
-        # Scheduled time
-        base_iso = t.get("tournament_start_date")
-        if base_iso and match.get("day") and match.get("scheduled_time"):
+        def _sched_ts() -> str:
+            base_iso = t.get("tournament_start_date")
+            if base_iso and match.get("day") and match.get("scheduled_time"):
+                try:
+                    import datetime as _dt2
+                    base_dt = _dt2.datetime.fromisoformat(base_iso).replace(
+                        hour=0, minute=0, second=0, microsecond=0, tzinfo=_dt2.timezone.utc)
+                    hh, mm2 = map(int, match["scheduled_time"].split(":")[:2])
+                    mdt = base_dt + _dt2.timedelta(days=int(match["day"])-1, hours=hh, minutes=mm2)
+                    tod2 = _time_of_day_conditions(match.get("scheduled_time"))
+                    sess = "🌙 Night" if tod2["is_night"] else ("☀️ Midday" if 11<=hh<15 else "🌤️ Day")
+                    ts2 = int(mdt.timestamp())
+                    return f"<t:{ts2}:F> (<t:{ts2}:R>) · {sess}"
+                except Exception:
+                    pass
+            return "TBD"
+
+        def _recent_form(uid, n=5) -> str:
+            p = sg.get(str(uid)) if uid else None
+            if not p: return "—"
+            history = p.get("match_history", [])[-n:]
+            if not history: return "—"
+            return " ".join("✅" if r.get("won") else "❌" for r in reversed(history))
+
+        def _best_result(uid) -> str:
+            p = sg.get(str(uid)) if uid else None
+            if not p: return "—"
+            ROUND_RANK = {"W":7,"F":6,"SF":5,"QF":4,"R16":3,"R32":2,"R64":1,"R128":0}
+            best_r, best_t = 0, ""
+            for th in p.get("tournament_history", []):
+                rr = ROUND_RANK.get(th.get("round",""), -1)
+                if rr > best_r: best_r = rr; best_t = th.get("tournament_name","?")
+            round_names = {7:"Winner",6:"Finalist",5:"Semifinalist",4:"Quarterfinalist",3:"R16",2:"R32",1:"R64"}
+            return f"{round_names.get(best_r,'—')} @ {best_t}" if best_t else "—"
+
+        def _ranking_history(uid) -> str:
+            re2 = rg.get(str(uid), {}) if uid else {}
+            hist = re2.get("history", [])
+            if not hist: return "—"
+            pts = [h.get("pts", h.get("points", h.get("delta", 0))) for h in hist[-6:]]
+            return " → ".join(str(p) for p in pts)
+
+        def _page1() -> discord.Embed:
+            emb2 = discord.Embed(
+                title=f"📋 {_rnd(rnd)} Preview — {t.get('name','')}",
+                color=discord.Color.blue(),
+                description=(f"**{_mn(p1_id,match.get('seed1'))}** vs **{_mn(p2_id,match.get('seed2'))}**"
+                             f" · {court}\n⏰ {_sched_ts()}"))
+            for uid in [p1_id, p2_id]:
+                p = sg.get(str(uid)) if uid else None
+                yr = (p or {}).get("year", {}).get(cur_year, {})
+                mp = yr.get("matches_played",0); mw = yr.get("matches_won",0)
+                wp = round(mw/mp*100,1) if mp else 0
+                fsi = yr.get("first_serve_in",0); fst = max(yr.get("first_serve_total",1),1)
+                tbp = yr.get("tiebreaks_played",0); tbw = yr.get("tiebreaks_won",0)
+                cur_rank = rg.get(str(uid),{}).get("rank","—") if uid else "—"
+                val = ("\n".join(filter(None,[
+                       f"**{mw}–{mp-mw}** ({wp}%) · Rank **#{cur_rank}**",
+                       f"1st Srv: {round(fsi/fst*100,1)}%  Aces: {yr.get('aces',0)}  DFs: {yr.get('double_faults',0)}",
+                       f"TBs: {tbw}/{tbp}  Titles: {yr.get('titles',0)}",
+                       f"Form: {_recent_form(uid)}",
+                       f"Best: {_best_result(uid)}"]))) if uid else "No data"
+                emb2.add_field(name=f"📊 {_mn(uid)} · {cur_year}", value=val, inline=True)
+            emb2.set_footer(text="Page 1/4 · Season Stats")
+            return emb2
+
+        def _page2() -> discord.Embed:
+            emb2 = discord.Embed(
+                title=f"🏅 Career Stats — {_mn(p1_id)} vs {_mn(p2_id)}",
+                color=discord.Color.purple())
+            cat_id = t.get("category_id","")
+            for uid in [p1_id, p2_id]:
+                p  = sg.get(str(uid)) if uid else None
+                re2 = rg.get(str(uid), {}) if uid else {}
+                mp = (p or {}).get("matches_played",0); mw = (p or {}).get("matches_won",0)
+                wp = round(mw/mp*100,1) if mp else 0
+                titles_all = (p or {}).get("titles",0)
+                titles_cat = sum(1 for th in (p or {}).get("tournament_history",[])
+                                 if th.get("round")=="W" and th.get("category_id")==cat_id)
+                career_high = re2.get("career_high_rank", re2.get("career_high_pts","—"))
+                coins = (p or {}).get("tournament_coins_earned",(p or {}).get("coins_earned",0))
+                val = ("\n".join([
+                       f"**{mw}–{mp-mw}** ({wp}%) career",
+                       f"Career High: **#{career_high}**",
+                       f"Pts History: {_ranking_history(uid)}",
+                       f"Titles (overall): {titles_all}  Titles (this cat): {titles_cat}",
+                       f"💰 Tournament earnings: {coins}"])) if uid else "No data"
+                emb2.add_field(name=f"🏅 {_mn(uid)}", value=val, inline=True)
+            emb2.set_footer(text="Page 2/4 · Career Stats")
+            return emb2
+
+        def _page3() -> discord.Embed:
+            emb2 = discord.Embed(
+                title=f"⚔️ Head to Head — {_mn(p1_id)} vs {_mn(p2_id)}",
+                color=discord.Color.orange())
+            if not h2h_rec_p or not h2h_rec_p.get("matches"):
+                emb2.description = "No previous meetings."
+            else:
+                all_ms = h2h_rec_p["matches"]
+                szn_ms = [m for m in all_ms if m.get("date","").startswith(cur_year)]
+                c_w1 = sum(1 for m in all_ms if int(m.get("winner",0))==p1_id)
+                c_w2 = len(all_ms)-c_w1
+                s_w1 = sum(1 for m in szn_ms if int(m.get("winner",0))==p1_id)
+                s_w2 = len(szn_ms)-s_w1
+                emb2.description = (f"**Career:** {_mn(p1_id)} **{c_w1}–{c_w2}** {_mn(p2_id)}\n"
+                                    f"**{cur_year}:** {_mn(p1_id)} **{s_w1}–{s_w2}** {_mn(p2_id)}")
+                lines = []
+                for m in reversed(all_ms[-12:]):
+                    w2 = int(m.get("winner",0)); wn = _mn(w2); ln = _mn(int(m.get("loser",0)))
+                    sc2 = m.get("score","—"); rnd2 = _rnd(m.get("round","?"))
+                    tn = (m.get("tournament_id") or "?")[:14]
+                    lines.append(f"**{wn}** def. {ln}  {sc2}  · {rnd2} ({tn})")
+                emb2.add_field(name=f"All Meetings ({len(all_ms)})", value="\n".join(lines) or "—", inline=False)
+            emb2.set_footer(text="Page 3/4 · Head to Head")
+            return emb2
+
+        def _page4() -> discord.Embed:
+            emb2 = discord.Embed(
+                title=f"📊 Bracket — {t.get('name','')}",
+                color=discord.Color.gold())
+            draw_snap = ""
             try:
-                import datetime as _dt2
-                base_dt = _dt2.datetime.fromisoformat(base_iso).replace(
-                    hour=0, minute=0, second=0, microsecond=0, tzinfo=_dt2.timezone.utc)
-                h2, mi2 = map(int, match["scheduled_time"].split(":")[:2])
-                match_dt = base_dt + _dt2.timedelta(days=int(match["day"]) - 1, hours=h2, minutes=mi2)
-                ts = int(match_dt.timestamp())
-                emb.add_field(name="⏰ Scheduled",
-                              value=f"<t:{ts}:F> (<t:{ts}:R>)", inline=False)
-                # Time of day note
-                tod = _time_of_day_conditions(match.get("scheduled_time"))
-                if tod["is_night"]:
-                    emb.add_field(name="🌙 Session", value="Night session", inline=True)
-                elif h2 >= 12:
-                    emb.add_field(name="☀️ Session", value="Day session", inline=True)
+                draw_snap = _draw_snapshot_text(t, match_id, i.guild)
             except Exception:
                 pass
+            if draw_snap:
+                emb2.description = draw_snap[:4000]
+            else:
+                emb2.description = "Draw snapshot not available."
+            if t.get("sheet_url"):
+                emb2.add_field(name="🔗 Live Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
+            emb2.set_footer(text="Page 4/4 · Bracket")
+            return emb2
 
-        # Season stats comparison + season H2H
-        if p1_id and p2_id:
-            cur_year = str(datetime.now(timezone.utc).year)
-            sdb = _stats_db(); sg = _stats_guild(sdb, i.guild.id)
-            def _season_line(uid):
-                p = sg.get(str(uid))
-                if not p: return "No data"
-                yr = p.get("year", {}).get(cur_year)
-                if not yr: return "No data this season"
-                mp = yr.get("matches_played", 0); mw = yr.get("matches_won", 0)
-                wp = round(mw / mp * 100, 1) if mp else 0
-                aces = yr.get("aces", 0); dfs = yr.get("double_faults", 0)
-                fsi  = yr.get("first_serve_in", 0)
-                fst  = max(yr.get("first_serve_total", 1), 1)
-                tbp  = yr.get("tiebreaks_played", 0); tbw = yr.get("tiebreaks_won", 0)
-                return (f"**{mw}–{mp-mw}** ({wp}%)\n"
-                        f"1st Srv: {round(fsi/fst*100,1)}%  Aces: {aces}  DFs: {dfs}\n"
-                        f"Tiebreaks: {tbw}/{tbp}\n"
-                        f"Titles: {yr.get('titles',0)}  SF: {yr.get('semis',0)}")
-            emb.add_field(name=f"📊 {_mn(p1_id)} {cur_year}", value=_season_line(p1_id), inline=True)
-            emb.add_field(name=f"📊 {_mn(p2_id)} {cur_year}", value=_season_line(p2_id), inline=True)
+        _pages = [_page1(), _page2(), _page3(), _page4()]
 
-            # H2H this season
-            h2h_db = _h2h_db()
-            key = _h2h_key(p1_id, p2_id)
-            h2h_rec = h2h_db.get("h2h", {}).get(str(i.guild.id), {}).get(key)
-            if h2h_rec and h2h_rec.get("matches"):
-                all_ms  = h2h_rec["matches"]
-                # Season H2H (filter by year)
-                szn_ms  = [m for m in all_ms
-                           if m.get("date", "").startswith(cur_year)]
-                # Career H2H totals
-                c_w1 = sum(1 for m in all_ms if int(m.get("winner", 0)) == p1_id)
-                c_w2 = len(all_ms) - c_w1
-                career_str = f"Career: **{_mn(p1_id)}** {c_w1} – {c_w2} **{_mn(p2_id)}**"
-                if szn_ms:
-                    s_w1 = sum(1 for m in szn_ms if int(m.get("winner", 0)) == p1_id)
-                    s_w2 = len(szn_ms) - s_w1
-                    h2h_val = (f"{cur_year}: **{_mn(p1_id)}** {s_w1} – {s_w2} **{_mn(p2_id)}**\n"
-                               + career_str)
-                else:
-                    h2h_val = f"{cur_year}: First meeting this season\n" + career_str
-                emb.add_field(name="⚔️ H2H", value=h2h_val, inline=False)
+        class PreviewPager(discord.ui.View):
+            def __init__(self_v):
+                super().__init__(timeout=180)
+                self_v.idx = 0
+                self_v._upd()
+            def _upd(self_v):
+                self_v.prev_b.disabled = self_v.idx == 0
+                self_v.next_b.disabled = self_v.idx == len(_pages)-1
+            @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+            async def prev_b(self_v, inter: discord.Interaction, _b):
+                self_v.idx = max(0, self_v.idx-1); self_v._upd()
+                await inter.response.edit_message(embed=_pages[self_v.idx], view=self_v)
+            @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+            async def next_b(self_v, inter: discord.Interaction, _b):
+                self_v.idx = min(len(_pages)-1, self_v.idx+1); self_v._upd()
+                await inter.response.edit_message(embed=_pages[self_v.idx], view=self_v)
 
-        if t.get("sheet_url"):
-            emb.add_field(name="📊 Bracket", value=f"[Open Sheet]({t['sheet_url']})", inline=False)
-        emb.set_footer(text=f"Match ID: {match_id}")
-        await _reply(i, embed=emb)
+        await _reply(i, embed=_pages[0], view=PreviewPager())
 
     # ── /tournament match-sim ─────────────────────────────────────────────
     @tournament.command(name="match-sim", description="(Admin) Immediately trigger a live sim for a scheduled match.")
@@ -3892,7 +4064,7 @@ class TournamentsCog(commands.Cog):
         await _reply(i, f"✅ Match results will be posted in {channel.mention}.")
 
     # ── /tournament set-style ─────────────────────────────────────────────
-    @tournament.command(name="set-style", description="(Admin) Set Google Sheets bracket colours and font.")
+    @tournament.command(name="set-style", description="(Admin) Set Google Sheets bracket colours, font, and formatting.")
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all, font=_ac_font)
     async def tourn_set_style(self, i: discord.Interaction, tournament_id: str,
@@ -3904,7 +4076,12 @@ class TournamentsCog(commands.Cog):
                               score_bg_color:    Optional[str] = None,
                               font:              Optional[str] = None,
                               header_bg_color:   Optional[str] = None,
-                              header_text_color: Optional[str] = None):
+                              header_text_color: Optional[str] = None,
+                              bold_names:        Optional[bool] = None,
+                              bold_scores:       Optional[bool] = None,
+                              font_size_name:    Optional[int]  = None,
+                              font_size_score:   Optional[int]  = None,
+                              caps_lock:         Optional[bool] = None):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         t = _get_comp(tournament_id)
@@ -3912,21 +4089,25 @@ class TournamentsCog(commands.Cog):
         sc = t.setdefault("sheets_config", {})
         for k, v in [("bg", background_color), ("fc1", name_color), ("fc2", winner_color),
                      ("fc3", loser_color), ("sc1", name_bg_color), ("sc2", score_bg_color),
-                     ("font", font), ("hdr_bg", header_bg_color), ("hdr_fc", header_text_color)]:
-            if v is not None: sc[k] = v.strip()
+                     ("font", font), ("hdr_bg", header_bg_color), ("hdr_fc", header_text_color),
+                     ("bold_names", bold_names), ("bold_scores", bold_scores),
+                     ("font_size_name", font_size_name), ("font_size_score", font_size_score),
+                     ("caps_lock", caps_lock)]:
+            if v is not None: sc[k] = v if isinstance(v, (bool, int)) else v.strip()
         _save_comp(tournament_id, t)
         labels = {"bg":"Background","fc1":"Name Colour","fc2":"Winner Colour",
                   "fc3":"Loser Colour","sc1":"Name-Row BG","sc2":"Score-Row BG","font":"Font",
-                  "hdr_bg":"Header Row BG","hdr_fc":"Header Row Text"}
+                  "hdr_bg":"Header BG","hdr_fc":"Header Text",
+                  "bold_names":"Bold Names","bold_scores":"Bold Scores",
+                  "font_size_name":"Name Size","font_size_score":"Score Size","caps_lock":"Caps Lock"}
         emb = discord.Embed(title="🎨 Style Updated", color=discord.Color.blurple())
-        for k, v in sc.items(): emb.add_field(name=labels.get(k,k), value=v, inline=True)
+        for k, v in sc.items(): emb.add_field(name=labels.get(k,k), value=str(v), inline=True)
         await _reply(i, embed=emb)
-        # Regenerate sheet if one already exists
         if t.get("sheet_url") and _sheets_ok():
             await _reply(i, "⏳ Regenerating bracket sheet…", ephemeral=True)
             try:
                 update_sheet(t, guild=i.guild)
-                await _reply(i, "✅ Sheet updated with new style.", ephemeral=True)
+                await _reply(i, "✅ Sheet updated.", ephemeral=True)
             except Exception as e:
                 await _reply(i, f"⚠️ Style saved but sheet update failed: {e}", ephemeral=True)
         elif t.get("draw") and not t.get("sheet_url") and _sheets_ok():
@@ -3935,6 +4116,73 @@ class TournamentsCog(commands.Cog):
             if url:
                 t["sheet_url"] = url; _save_comp(tournament_id, t)
                 await _reply(i, f"📊 Sheet created: {url}", ephemeral=True)
+
+    # ── /tournament style-preset ─────────────────────────────────────────────
+    @tournament.command(name="style-preset", description="(Admin) Save, load, or list style presets.")
+    @app_commands.guild_only()
+    @app_commands.choices(action=[
+        app_commands.Choice(name="save",   value="save"),
+        app_commands.Choice(name="load",   value="load"),
+        app_commands.Choice(name="list",   value="list"),
+        app_commands.Choice(name="delete", value="delete"),
+    ])
+    @app_commands.autocomplete(tournament_id=_ac_comp_all)
+    async def tourn_style_preset(self, i: discord.Interaction,
+                                 action: str,
+                                 preset_name: str,
+                                 tournament_id: Optional[str] = None):
+        if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
+            return await _reply(i, "❌ Admin only.", ephemeral=True)
+        # Presets stored in the comp_db under a top-level "style_presets" key per guild
+        db = _comp_db()
+        presets: dict = db.setdefault("style_presets", {}).setdefault(str(i.guild.id), {})
+
+        if action == "list":
+            if not presets:
+                return await _reply(i, "No style presets saved yet.", ephemeral=True)
+            emb = discord.Embed(title="🎨 Style Presets", color=discord.Color.blurple())
+            for name, cfg in list(presets.items())[:15]:
+                preview = ", ".join(f"{k}={v}" for k, v in list(cfg.items())[:4])
+                emb.add_field(name=name, value=preview or "—", inline=False)
+            return await _reply(i, embed=emb)
+
+        if action == "delete":
+            if preset_name not in presets:
+                return await _reply(i, f"❌ Preset `{preset_name}` not found.", ephemeral=True)
+            del presets[preset_name]
+            db["style_presets"][str(i.guild.id)] = presets
+            _save_json(_comp_path(), db)
+            return await _reply(i, f"✅ Preset `{preset_name}` deleted.")
+
+        if action == "save":
+            if not tournament_id:
+                return await _reply(i, "❌ Provide `tournament_id` to save from.", ephemeral=True)
+            t = _get_comp(tournament_id)
+            if not t: return await _reply(i, "❌ Tournament not found.", ephemeral=True)
+            sc = t.get("sheets_config", {})
+            if not sc:
+                return await _reply(i, "❌ This tournament has no style set yet.", ephemeral=True)
+            presets[preset_name] = dict(sc)
+            db["style_presets"][str(i.guild.id)] = presets
+            _save_json(_comp_path(), db)
+            return await _reply(i, f"✅ Preset `{preset_name}` saved ({len(sc)} settings).")
+
+        if action == "load":
+            if not tournament_id:
+                return await _reply(i, "❌ Provide `tournament_id` to apply preset to.", ephemeral=True)
+            if preset_name not in presets:
+                return await _reply(i, f"❌ Preset `{preset_name}` not found.", ephemeral=True)
+            t = _get_comp(tournament_id)
+            if not t: return await _reply(i, "❌ Tournament not found.", ephemeral=True)
+            t["sheets_config"] = dict(presets[preset_name])
+            _save_comp(tournament_id, t)
+            await _reply(i, f"✅ Preset `{preset_name}` applied to **{t.get('name', tournament_id)}**.")
+            if t.get("sheet_url") and _sheets_ok():
+                try:
+                    update_sheet(t, guild=i.guild)
+                    await _reply(i, "✅ Sheet regenerated.", ephemeral=True)
+                except Exception as e:
+                    await _reply(i, f"⚠️ Preset loaded but sheet update failed: {e}", ephemeral=True)
 
     # ═══════════════════════════════════════════════════════════════════════
     # /tournament point-defense

@@ -1139,6 +1139,12 @@ class MatchState:
     draw_snapshot: str = ""
     # (min_sec, max_sec) override for tournament point delays; None = use normal MATCH_SPEED_MULT
     point_delay_range: Optional[Tuple[float, float]] = None
+    # Crucial point tallies — per player, reset at appropriate scope
+    bp_tally: List[int] = field(default_factory=lambda: [0, 0])   # reset each game
+    sp_tally: List[int] = field(default_factory=lambda: [0, 0])   # reset each set
+    mp_tally: List[int] = field(default_factory=lambda: [0, 0])   # whole match
+    # "Serving for…" context — set at game start, shown all game
+    serving_context: str = ""
 
 @dataclass
 class MatchStats:
@@ -2911,7 +2917,9 @@ def _break_point_label(state: MatchState) -> Optional[str]:
     sp = pa if server_idx == 0 else pb
     rp = pb if server_idx == 0 else pa
     if (rp >= 3) and (rp - sp >= 1) and (rp >= 4 or rp == 3):
-        return "Break Point"
+        returner_idx = 1 - server_idx
+        n = state.bp_tally[returner_idx] + 1
+        return f"Break Point #{n}" if n > 1 else "Break Point"
     return None
 
 def _set_or_match_point_label(state: MatchState) -> Optional[str]:
@@ -2926,16 +2934,22 @@ def _set_or_match_point_label(state: MatchState) -> Optional[str]:
     # Championship Point label for tournament Finals
     is_final = (state.tournament_round == "F")
 
-    def _match_label() -> str:
-        return "Championship Point" if is_final else "Match Point"
+    def _match_label(player_idx: int) -> str:
+        n = state.mp_tally[player_idx] + 1
+        suffix = f" #{n}" if n > 1 else ""
+        return ("Championship Point" if is_final else "Match Point") + suffix
+
+    def _set_label(player_idx: int) -> str:
+        n = state.sp_tally[player_idx] + 1
+        return f"Set Point #{n}" if n > 1 else "Set Point"
 
     if state.in_tiebreak:
         t1, t2 = state.tiebreak_points
         target = tb_target_for_set(state.best_of, len(state.sets))
         if t1 >= target - 1 and t1 > t2:
-            return _match_label() if near_match_p1 else "Set Point"
+            return _match_label(0) if near_match_p1 else _set_label(0)
         if t2 >= target - 1 and t2 > t1:
-            return _match_label() if near_match_p2 else "Set Point"
+            return _match_label(1) if near_match_p2 else _set_label(1)
         return None
 
     bp = _break_point_label(state)
@@ -2943,12 +2957,49 @@ def _set_or_match_point_label(state: MatchState) -> Optional[str]:
         if state.server_idx == 0:
             new_g1, new_g2 = g1, g2 + 1
             if new_g2 >= 6 and abs(new_g2 - new_g1) >= 2:
-                return _match_label() if near_match_p2 else "Set Point"
+                return _match_label(1) if near_match_p2 else _set_label(1)
         else:
             new_g1, new_g2 = g1 + 1, g2
             if new_g1 >= 6 and abs(new_g1 - new_g2) >= 2:
-                return _match_label() if near_match_p1 else "Set Point"
+                return _match_label(0) if near_match_p1 else _set_label(0)
     return None
+
+def _compute_serving_context(state: MatchState) -> str:
+    """Return a persistent game-long label for serving context, or empty string."""
+    sets_needed = match_sets_needed(state.best_of)
+    won1 = sum(1 for a, b in state.sets if a > b)
+    won2 = sum(1 for a, b in state.sets if b > a)
+    g1, g2 = state.current_games
+    s = state.server_idx
+    is_final = (state.tournament_round == "F")
+    match_label = "Championship" if is_final else "Match"
+
+    # p1 serving
+    if s == 0:
+        # Serving for the match
+        if won1 == sets_needed - 1 and g1 >= 5 and g1 >= g2:
+            return f"Serving for the {match_label}"
+        # Serving for the set
+        if g1 >= 5 and g1 > g2:
+            return "Serving for the Set"
+        # Serving to stay in set (facing set point)
+        if g2 >= 5 and g2 > g1:
+            return "Serving to Stay in the Set"
+        # Serving to stay in match
+        if won2 == sets_needed - 1 and g2 >= 5 and g2 > g1:
+            return f"Serving to Stay in the {match_label}"
+    else:
+        # p2 serving
+        if won2 == sets_needed - 1 and g2 >= 5 and g2 >= g1:
+            return f"Serving for the {match_label}"
+        if g2 >= 5 and g2 > g1:
+            return "Serving for the Set"
+        if g1 >= 5 and g1 > g2:
+            return "Serving to Stay in the Set"
+        if won1 == sets_needed - 1 and g1 >= 5 and g1 > g2:
+            return f"Serving to Stay in the {match_label}"
+    return ""
+
 
 def build_score_text(state: MatchState) -> str:
     sets_needed = match_sets_needed(state.best_of)
@@ -3020,6 +3071,8 @@ def build_score_text(state: MatchState) -> str:
 
     big = _set_or_match_point_label(state) or _break_point_label(state)
     big_line  = f"🔥 **{big}**\n" if big and not match_over else ""
+    ctx = state.serving_context
+    ctx_line  = f"⚡ *{ctx}*\n" if ctx and not match_over else ""
     serve_line = f"Server: ➡️ {server_name(state)} ({side} side)\n"
 
     serve_info = ""
@@ -3038,7 +3091,7 @@ def build_score_text(state: MatchState) -> str:
 
     draw_snap = state.draw_snapshot if not state.is_tournament_match else ""
     draw_part = f"\n{draw_snap}" if draw_snap else ""
-    return header + set_line + games_line + game_line + big_line + serve_line + last + draw_part
+    return header + set_line + games_line + game_line + big_line + ctx_line + serve_line + last + draw_part
 
 def bot_toss_choice(bot_row: Optional[Dict[str, Any]]) -> str:
     if not bot_row or not isinstance(bot_row, dict):
@@ -4440,7 +4493,7 @@ class MatchSimCog(commands.Cog):
             return
         breaker_idx = random.randint(0, 1)
         breaker = state.p1 if breaker_idx == 0 else state.p2
-        name = getattr(breaker, "name", None) or getattr(breaker, "display_name", None) or f"Player {breaker_idx + 1}"
+        name = (breaker.name or f"Player {breaker_idx + 1}").split(" (")[0]  # strip seed suffix if any
         flavour = random.choice([
             f"🚽 **{name}** has requested a comfort break.",
             f"🚽 **{name}** is taking a bathroom break.",
@@ -4484,6 +4537,9 @@ class MatchSimCog(commands.Cog):
         max_games = _max_games_for_best_of(state.best_of)
         balls_schedule = set(_balls_change_times_upto(max_games))
 
+        # Compute serving context for the first game
+        state.serving_context = _compute_serving_context(state)
+
         while True:
             won1 = sum(1 for a, b in state.sets if a > b)
             won2 = sum(1 for a, b in state.sets if b > a)
@@ -4505,7 +4561,13 @@ class MatchSimCog(commands.Cog):
             if state.in_tiebreak and initial_tb_server_idx is not None:
                 state.server_idx = tiebreak_server_index(tb_point_number, initial_tb_server_idx)
 
-            was_break_point = (_break_point_label(state) == "Break Point")
+            # Crucial point detection (BEFORE point is played)
+            _cur_big   = _set_or_match_point_label(state)
+            _cur_bp    = _break_point_label(state)
+            was_break_point = (_cur_bp is not None)
+            was_set_point   = (_cur_big is not None and "Set Point" in _cur_big)
+            was_match_point = (_cur_big is not None and
+                               ("Match Point" in _cur_big or "Championship Point" in _cur_big))
             server_idx_pre = state.server_idx
             st: MatchStats = state.stats  # type: ignore
 
@@ -4519,6 +4581,34 @@ class MatchSimCog(commands.Cog):
                 sb["break_pts_chances"][1 - server_idx_pre] += 1
 
             winner_idx, desc, shots, meta = simulate_point(state)
+
+            # Update crucial-point tallies BEFORE the point changes game state
+            if was_break_point:
+                returner_idx = 1 - server_idx_pre
+                state.bp_tally[returner_idx] += 1
+            if was_set_point:
+                # Determine which player has set point
+                _is_tb = state.in_tiebreak
+                if _is_tb:
+                    t1, t2 = state.tiebreak_points
+                    tgt = tb_target_for_set(state.best_of, len(state.sets))
+                    if t1 >= tgt - 1 and t1 > t2: state.sp_tally[0] += 1
+                    elif t2 >= tgt - 1 and t2 > t1: state.sp_tally[1] += 1
+                else:
+                    bp_l = _break_point_label(state)
+                    if bp_l and server_idx_pre == 0: state.sp_tally[1] += 1
+                    elif bp_l: state.sp_tally[0] += 1
+            if was_match_point:
+                _is_tb = state.in_tiebreak
+                if _is_tb:
+                    t1, t2 = state.tiebreak_points
+                    tgt = tb_target_for_set(state.best_of, len(state.sets))
+                    if t1 >= tgt - 1 and t1 > t2: state.mp_tally[0] += 1
+                    elif t2 >= tgt - 1 and t2 > t1: state.mp_tally[1] += 1
+                else:
+                    bp_l = _break_point_label(state)
+                    if bp_l and server_idx_pre == 0: state.mp_tally[1] += 1
+                    elif bp_l: state.mp_tally[0] += 1
 
             ev = str(meta.get("event", "rally"))
             if ev in ("ace", "double_fault"):
@@ -4670,8 +4760,12 @@ class MatchSimCog(commands.Cog):
                     state.tiebreak_points  = (0, 0)
                     initial_tb_server_idx  = None
                     tb_point_number        = 0
+                    # Reset set-point tally and break-point tally each new set
+                    state.sp_tally = [0, 0]
+                    state.bp_tally = [0, 0]
                     current_set_index     += 1
                     state.server_idx       = 1 - state.server_idx
+                    state.serving_context  = _compute_serving_context(state)
 
             else:
                 pa, pb = state.game_points
@@ -4699,6 +4793,10 @@ class MatchSimCog(commands.Cog):
 
                     state.last_game_server_idx = state.server_idx  # type: ignore[attr-defined]
                     state.server_idx = 1 - state.server_idx
+                    # Reset break-point tally every game
+                    state.bp_tally = [0, 0]
+                    # Recompute serving context for the new game
+                    state.serving_context = _compute_serving_context(state)
 
                     if (g1 >= 6 or g2 >= 6) and abs(g1 - g2) >= 2:
                         # Commit the completed set, then reset for next set
@@ -4722,6 +4820,10 @@ class MatchSimCog(commands.Cog):
 
                         await self._toilet_break(msg, state)
 
+                        # Reset set-point tally each new set
+                        state.sp_tally = [0, 0]
+                        state.bp_tally = [0, 0]
+                        state.serving_context = _compute_serving_context(state)
                         current_set_index  += 1
                         # server_idx already flipped after game_won above; no second flip needed
 
