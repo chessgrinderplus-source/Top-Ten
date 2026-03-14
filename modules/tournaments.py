@@ -3283,26 +3283,6 @@ class TournamentsCog(commands.Cog):
                 "❌ Sheet creation failed — check the console for the full error.", ephemeral=True)
 
     # ── /tournament draw-view ─────────────────────────────────────────────
-    @tournament.command(name="draw-view", description="Open the live bracket Google Sheet.")
-    @app_commands.guild_only()
-    @app_commands.autocomplete(tournament_id=_ac_comp_all)
-    async def tourn_draw_view(self, i: discord.Interaction, tournament_id: str):
-        t = _get_comp(tournament_id)
-        if not t: return await _reply(i, "❌ Not found.", ephemeral=True)
-        if not t.get("draw"):
-            return await _reply(i, "❌ Draw not generated yet.", ephemeral=True)
-        url = t.get("sheet_url")
-        if not url:
-            return await _reply(i, 
-                "❌ No sheet available — Google Sheets is not configured or the draw was generated "
-                "before a service account was set up.", ephemeral=True)
-        emb = discord.Embed(title=f"📊 Live Bracket — {t.get('name','Tournament')}",
-                            color=discord.Color.gold(),
-                            description=f"[Open Google Sheets Bracket]({url})")
-        emb.add_field(name="Draw Size", value=str(t.get("bracket_size","?")), inline=True)
-        emb.add_field(name="Status",    value=t.get("status","?").upper(),    inline=True)
-        await _reply(i, embed=emb)
-
     # ── /tournament schedule-view ─────────────────────────────────────────
     @tournament.command(name="schedule-view", description="View the match schedule.")
     @app_commands.guild_only()
