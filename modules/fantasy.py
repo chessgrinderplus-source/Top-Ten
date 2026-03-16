@@ -977,6 +977,128 @@ class FetchConfirmView(discord.ui.View):
 # ============================================================
 
 
+# ============================================================
+# Chunked results entry (up to 6 parts + Done early)
+# ============================================================
+
+# In-memory staging: {(user_id, tournament_id): [line, line, ...]}
+_staged_results: Dict[Tuple[int, str], List[str]] = {}
+
+MAX_CHUNKS = 6
+
+class ChunkedResultsModal(discord.ui.Modal, title="Fantasy End — Results (chunk)"):
+    chunk_text = discord.ui.TextInput(
+        label="Player|Round|SW|SL|Perf|Upset|Match Log",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder="Alcaraz | Champion | 21 | 3 | 340 | 0 | d. Zverev 6-4 6-2 +85",
+    )
+
+    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int):
+        super().__init__(title=f"Results — Part {chunk_num} of {MAX_CHUNKS}")
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.chunk_num = chunk_num
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+        raw = str(self.chunk_text).strip()
+        key = (self.user_id, self.tournament_id)
+        existing = _staged_results.get(key, [])
+        new_lines = [l for l in raw.splitlines() if l.strip()]
+        _staged_results[key] = existing + new_lines
+        total_lines = len(_staged_results[key])
+        next_chunk = self.chunk_num + 1
+
+        if next_chunk > MAX_CHUNKS:
+            # Auto-finalize after the last chunk
+            await interaction.response.edit_message(
+                content=f"✅ Part {self.chunk_num} saved ({total_lines} players total). Finalizing…",
+                view=None,
+            )
+            await _finalize_chunked_results(self.cog, interaction, self.tournament_id)
+        else:
+            view = ChunkedResultsView(
+                self.cog, self.user_id, self.tournament_id,
+                chunk_num=next_chunk, lines_so_far=total_lines,
+            )
+            await interaction.response.edit_message(
+                content=(
+                    f"✅ Part {self.chunk_num} saved — **{total_lines}** players staged so far.\n"
+                    f"Click **Part {next_chunk}** to continue, or **Done** if all players are entered."
+                ),
+                view=view,
+            )
+
+
+async def _finalize_chunked_results(cog, interaction: discord.Interaction, tournament_id: str):
+    key = (interaction.user.id, tournament_id)
+    lines = _staged_results.pop(key, [])
+    combined = "\n".join(lines)
+    await cog._fantasy_end_submit(interaction, tournament_id, combined)
+
+
+class ChunkedResultsView(discord.ui.View):
+    """Shown between chunks. Has a 'Next Part' button and an early 'Done' button."""
+
+    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int, lines_so_far: int):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.chunk_num = chunk_num
+        self.lines_so_far = lines_so_far
+
+        next_btn = discord.ui.Button(
+            label=f"Part {chunk_num} →",
+            style=discord.ButtonStyle.primary,
+        )
+        next_btn.callback = self._next_callback
+        self.add_item(next_btn)
+
+        done_btn = discord.ui.Button(
+            label="✅ Done — Finalize",
+            style=discord.ButtonStyle.success,
+        )
+        done_btn.callback = self._done_callback
+        self.add_item(done_btn)
+
+        cancel_btn = discord.ui.Button(
+            label="✗ Cancel",
+            style=discord.ButtonStyle.danger,
+        )
+        cancel_btn.callback = self._cancel_callback
+        self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+            return False
+        return True
+
+    async def _next_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(
+            ChunkedResultsModal(self.cog, self.user_id, self.tournament_id, self.chunk_num)
+        )
+
+    async def _done_callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            content=f"✅ Finalizing {self.lines_so_far} players…", view=None
+        )
+        await _finalize_chunked_results(self.cog, interaction, self.tournament_id)
+
+    async def _cancel_callback(self, interaction: discord.Interaction):
+        key = (self.user_id, self.tournament_id)
+        _staged_results.pop(key, None)
+        await interaction.response.edit_message(
+            content="❌ Results entry cancelled. Staged data cleared.", view=None
+        )
+
+
 class TournamentEndSelect(discord.ui.Select):
     def __init__(self, cog, user_id: int, tournaments: list):
         self.cog = cog
@@ -990,8 +1112,18 @@ class TournamentEndSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-        await interaction.response.send_modal(
-            EndResultsModal(self.cog, self.user_id, self.values[0]))
+        # Clear any leftover staged data for this user+tournament
+        _staged_results.pop((self.user_id, self.values[0]), None)
+        view = ChunkedResultsView(self.cog, self.user_id, self.values[0],
+                                  chunk_num=1, lines_so_far=0)
+        await interaction.response.edit_message(
+            content=(
+                "📋 **Enter results in up to 6 parts.**\n"
+                "Click **Part 1 →** to open the first text box.\n"
+                "After each part, click the next button or **Done** when finished."
+            ),
+            view=view,
+        )
 
 class TournamentEndSelectView(discord.ui.View):
     def __init__(self, cog, user_id: int, tournaments: list):
