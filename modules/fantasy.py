@@ -1413,6 +1413,60 @@ class FantasyCog(commands.Cog):
         view = ConfirmDeleteTournamentView(self, interaction.user.id, tournament_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+    @f_admin.command(name="tournament-reassign-category", description="Admin: change a tournament's category (recomputes results if already entered).")
+    @app_commands.autocomplete(tournament_id=_ac_any_tournament, category_id=_ac_category)
+    async def fantasy_reassign_category(self, interaction: discord.Interaction,
+                                         tournament_id: str, category_id: str):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        t = _find_tournament(data, tournament_id)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
+        if not cat:
+            return await interaction.response.send_message("❌ Category not found.", ephemeral=True)
+
+        old_cat_title = t.get("category_title", t.get("category_id", "?"))
+        new_cat_title = cat.get("title", category_id)
+
+        # Update category fields
+        t["category_id"]    = category_id
+        t["category_title"] = new_cat_title
+
+        recomputed = 0
+        if t.get("results_entered") and t.get("results"):
+            round_points_map: Dict[str, int] = cat.get("round_points", {})
+            new_results = {}
+            for key, r in t["results"].items():
+                canonical              = r.get("round", "")
+                tourn_pts              = round_points_map.get(canonical, 0)
+                set_pts                = r.get("set_points", 0)
+                perf                   = r.get("performance_points", 0)
+                upset                  = r.get("upset_points", 0)
+                r["tournament_points"] = tourn_pts
+                r["total"]             = tourn_pts + set_pts + perf + upset
+                new_results[key]       = r
+                recomputed += 1
+            t["results"] = new_results
+
+        _save(data)
+
+        lines = [
+            f"✅ Category reassigned for **{t.get('name')}** (`{t.get('id')}`)",
+            f"**From:** {old_cat_title}",
+            f"**To:** {new_cat_title} (`{category_id}`)",
+        ]
+        if t.get("results_entered"):
+            if recomputed:
+                lines.append(f"♻️ Recomputed tournament points for **{recomputed}** players using new round-points map.")
+            else:
+                lines.append("ℹ️ Results are entered but no player data found to recompute.")
+        else:
+            lines.append("ℹ️ Results not yet entered — new category will apply when results are submitted.")
+
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
     @f_admin.command(name="tournament-end", description="Admin: submit results and complete a fantasy tournament.")
     async def fantasy_end(self, interaction: discord.Interaction):
         if not _is_admin(interaction.user):
