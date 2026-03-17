@@ -766,6 +766,229 @@ class RosterPickMenuView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ============================================================
+# Results multi-tab view (for /fantasy results)
+# ============================================================
+
+class ResultsMainView(discord.ui.View):
+    """
+    Three-tab view returned by /fantasy results:
+      📊 Player Results   — paginated ranked list of all players
+      🏆 User Leaderboard — paginated ranked list of all users
+      🔍 Player Breakdown — dropdown to inspect any player's detailed stats
+    """
+    TIMEOUT = 300
+
+    def __init__(self, user_id: int, t: dict, seed_map: Dict[str, Optional[int]]):
+        super().__init__(timeout=self.TIMEOUT)
+        self.user_id = user_id
+        self.t = t
+        self.seed_map = seed_map
+
+        # ── Tab 0: Player Results ───────────────────────────────────
+        results_sorted = sorted(
+            (t.get("results", {}) or {}).values(),
+            key=lambda r: int(r.get("total", 0)), reverse=True,
+        )
+        self.player_results = results_sorted
+        p_lines: List[str] = [
+            f"**Fantasy Results — {t.get('name')}**", "",
+            "Format: Rank. (Seed) Player — Total — Round", "",
+        ]
+        for i, r in enumerate(results_sorted, 1):
+            name = r.get("player", "")
+            seed = seed_map.get(_player_key(name))
+            p_lines.append(
+                f"{i}. {_fmt_player(seed, name)} — **{r.get('total', 0)}** — *{r.get('round', '')}*"
+            )
+        self.player_pages = _chunk_pages(p_lines)
+
+        # ── Tab 1: User Leaderboard ─────────────────────────────────
+        _data = _load()
+        scores = {uid: pts for uid, pts in _all_user_scores_for_tournament(t).items()
+                  if not _is_blacklisted(_data, uid)}
+        items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        ranks = _dense_ranks(scores)
+        u_header = [f"**User Leaderboard — {t.get('name')}**", "",
+                    "Format: Rank. User — Total Points", ""]
+        u_body = [f"{ranks.get(uid, 0)}. <@{uid}> — **{pts}**" for uid, pts in items]
+        u_pages: List[str] = []
+        for start in range(0, max(1, len(u_body)), 20):
+            u_pages.append("\n".join(u_header + u_body[start:start + 20]))
+        self.user_pages = u_pages or [
+            f"**User Leaderboard — {t.get('name')}**\n\nℹ️ No user rosters found."
+        ]
+
+        # State
+        self.tab = 0            # 0 = player results, 1 = user leaderboard, 2 = breakdown
+        self.page = 0           # current page for tabs 0 and 1
+        self.breakdown_page = 0 # which page of the player select we're on (25 per page)
+
+        self._rebuild()
+
+    # ── Internal helpers ────────────────────────────────────────────
+
+    def _cur_pages(self) -> List[str]:
+        return self.player_pages if self.tab == 0 else self.user_pages
+
+    def _embed(self) -> discord.Embed:
+        if self.tab == 2:
+            total = len(self.player_results)
+            bp_total = max(1, (total + 24) // 25)
+            desc = (
+                f"**Player Breakdown — {self.t.get('name')}**\n\n"
+                "Use the menu below to select a player and view their detailed score breakdown."
+            )
+            e = discord.Embed(title="Fantasy Results", description=desc)
+            foot = "Tab: 🔍 Player Breakdown"
+            if bp_total > 1:
+                foot += f" • Players page {self.breakdown_page + 1}/{bp_total}"
+            e.set_footer(text=foot)
+            return e
+        pages = self._cur_pages()
+        tab_name = "📊 Player Results" if self.tab == 0 else "🏆 User Leaderboard"
+        e = discord.Embed(title="Fantasy Results", description=pages[self.page])
+        e.set_footer(text=f"Tab: {tab_name} • Page {self.page + 1}/{len(pages)}")
+        return e
+
+    def _rebuild(self):
+        self.clear_items()
+
+        # ── Row 0: tab buttons ──────────────────────────────────────
+        tab_defs = [("📊 Player Results", 0), ("🏆 User Leaderboard", 1), ("🔍 Player Breakdown", 2)]
+        for label, idx in tab_defs:
+            btn = discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.primary if self.tab == idx else discord.ButtonStyle.secondary,
+                row=0,
+            )
+            async def _tab_cb(inter: discord.Interaction, v=self, t=idx):
+                if inter.user.id != v.user_id:
+                    return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                v.tab = t; v.page = 0; v._rebuild()
+                await inter.response.edit_message(embed=v._embed(), view=v)
+            btn.callback = _tab_cb
+            self.add_item(btn)
+
+        # ── Tabs 0 & 1: page navigation ────────────────────────────
+        if self.tab in (0, 1):
+            pages = self._cur_pages()
+            total = len(pages)
+            if total > 1:
+                prev = discord.ui.Button(
+                    label="◀ Prev", style=discord.ButtonStyle.secondary,
+                    disabled=(self.page == 0), row=1,
+                )
+                nxt = discord.ui.Button(
+                    label=f"Next ▶ ({self.page + 1}/{total})", style=discord.ButtonStyle.secondary,
+                    disabled=(self.page >= total - 1), row=1,
+                )
+                async def _prev_cb(inter: discord.Interaction, v=self):
+                    if inter.user.id != v.user_id:
+                        return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                    v.page = max(0, v.page - 1); v._rebuild()
+                    await inter.response.edit_message(embed=v._embed(), view=v)
+                async def _next_cb(inter: discord.Interaction, v=self):
+                    if inter.user.id != v.user_id:
+                        return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                    v.page = min(total - 1, v.page + 1); v._rebuild()
+                    await inter.response.edit_message(embed=v._embed(), view=v)
+                prev.callback = _prev_cb
+                nxt.callback = _next_cb
+                self.add_item(prev)
+                self.add_item(nxt)
+
+        # ── Tab 2: player breakdown ─────────────────────────────────
+        elif self.tab == 2:
+            total = len(self.player_results)
+            bp_total = max(1, (total + 24) // 25)
+            bp = max(0, min(self.breakdown_page, bp_total - 1))
+            self.breakdown_page = bp
+            start = bp * 25
+            slice_ = self.player_results[start:start + 25]
+
+            opts = []
+            for r in slice_:
+                name = r.get("player", "")
+                seed = self.seed_map.get(_player_key(name))
+                pts = int(r.get("total", 0))
+                opts.append(discord.SelectOption(
+                    label=f"{_fmt_player(seed, name)} — {pts}"[:100],
+                    value=name[:100],
+                ))
+            if opts:
+                sel = discord.ui.Select(
+                    placeholder="Pick a player for their breakdown…",
+                    min_values=1, max_values=1,
+                    options=opts,
+                    row=1,
+                )
+                async def _sel_cb(inter: discord.Interaction, v=self):
+                    if inter.user.id != v.user_id:
+                        return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                    picked = inter.data["values"][0]
+                    r_map = v.t.get("results", {}) or {}
+                    r = r_map.get(_player_key(picked))
+                    seed = v.seed_map.get(_player_key(picked))
+                    header = _fmt_player(seed, picked)
+                    if not r:
+                        emb = discord.Embed(title="Player Breakdown",
+                                            description=f"**{header}**\n\nℹ️ No result data found.")
+                        return await inter.response.send_message(embed=emb, ephemeral=True)
+                    lines = [
+                        f"**{header} — {r.get('round', '')}**", "",
+                        f"**Tournament Pts:** {r.get('tournament_points', 0):+}",
+                        f"**Set Pts:** {r.get('set_points', 0):+}  "
+                        f"({r.get('sets_won', 0)}W / {r.get('sets_lost', 0)}L sets)",
+                        f"**Performance Pts:** {r.get('performance_points', 0):+}",
+                        f"**Upset Pts:** {r.get('upset_points', 0):+}", "",
+                        f"**Total: {r.get('total', 0)}**",
+                    ]
+                    log = r.get("match_log", "")
+                    if log:
+                        lines += ["", "**Match Results:**"]
+                        for match in log.split(";"):
+                            m = match.strip()
+                            if not m:
+                                continue
+                            parts_m = m.rsplit(" ", 1)
+                            if len(parts_m) == 2 and parts_m[1].lstrip("+-").isdigit():
+                                desc_s, pts_s = parts_m[0].strip(), parts_m[1].strip()
+                                sign = "" if (pts_s.startswith("+") or pts_s.startswith("-")) else "+"
+                                lines.append(f"{desc_s} | {sign}{pts_s}")
+                            else:
+                                lines.append(m)
+                    emb = discord.Embed(title="Player Breakdown", description="\n".join(lines))
+                    await inter.response.send_message(embed=emb, ephemeral=True)
+                sel.callback = _sel_cb
+                self.add_item(sel)
+
+            # Player-select pagination (when >25 players)
+            if bp_total > 1:
+                bp_prev = discord.ui.Button(
+                    label="◀ Prev Players", style=discord.ButtonStyle.secondary,
+                    disabled=(bp == 0), row=2,
+                )
+                bp_next = discord.ui.Button(
+                    label=f"Next Players ▶ ({bp + 1}/{bp_total})", style=discord.ButtonStyle.secondary,
+                    disabled=(bp >= bp_total - 1), row=2,
+                )
+                async def _bp_prev(inter: discord.Interaction, v=self):
+                    if inter.user.id != v.user_id:
+                        return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                    v.breakdown_page = max(0, v.breakdown_page - 1); v._rebuild()
+                    await inter.response.edit_message(embed=v._embed(), view=v)
+                async def _bp_next(inter: discord.Interaction, v=self):
+                    if inter.user.id != v.user_id:
+                        return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                    v.breakdown_page = min(bp_total - 1, v.breakdown_page + 1); v._rebuild()
+                    await inter.response.edit_message(embed=v._embed(), view=v)
+                bp_prev.callback = _bp_prev
+                bp_next.callback = _bp_next
+                self.add_item(bp_prev)
+                self.add_item(bp_next)
+
+
+# ============================================================
 # Fantasy end retry UI
 # ============================================================
 
@@ -1924,13 +2147,7 @@ class FantasyCog(commands.Cog):
         if not t.get("results_entered"):
             return await interaction.response.send_message("❌ Results not submitted yet.", ephemeral=True)
         seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
-        results = sorted((t.get("results", {}) or {}).values(), key=lambda r: int(r.get("total",0)), reverse=True)
-        lines = [f"**Fantasy Results — {t.get('name')}**", "",
-                 "Format: Rank. (Seed) Player — Total — Round", ""]
-        for i, r in enumerate(results, 1):
-            name = r.get("player",""); seed = seed_map.get(_player_key(name))
-            lines.append(f"{i}. {_fmt_player(seed, name)} — **{r.get('total',0)}** — *{r.get('round','')}*")
-        view = PagerView(_chunk_pages(lines), interaction.user.id, "Fantasy Results")
+        view = ResultsMainView(interaction.user.id, t, seed_map)
         await interaction.response.send_message(embed=view._embed(), view=view)
 
     @fantasy.command(name="user-results", description="Show all users' total points for a completed tournament.")
