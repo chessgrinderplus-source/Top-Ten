@@ -5,12 +5,18 @@
       "title": "ATP 500"
     },
     {
-      "id": "fantasy-categ-fbdaeb97",
-      "title": "ATP Masters 1000"
-    },
-    {
       "id": "fantasy-categ-29c2d9cc",
-      "title": "ATP Masters 1000"
+      "title": "ATP Masters 1000",
+      "round_points": {
+        "Champion": 1000,
+        "Finalist": 600,
+        "Semi-Final": 360,
+        "Quarter-Final": 180,
+        "R16": 90,
+        "R32": 45,
+        "R64": 25,
+        "R128": 10
+      }
     }
   ],
   "tournaments": [
@@ -22,10 +28,10 @@
       "category_title": "ATP Masters 1000",
       "created": true,
       "picks_open": false,
-      "results_entered": false,
+      "results_entered": true,
       "opened_at": 1772982153,
       "closed_at": 1773001535,
-      "completed_at": null,
+      "completed_at": 1773705107,
       "players": [
         {
           "name": "Carlos Alcaraz",
@@ -238,6 +244,830 @@
           "Daniil Medvedev"
         ]
       },
+      "results": {
+        "carlos alcaraz": {
+          "player": "Carlos Alcaraz",
+          "round": "Semi-Final",
+          "sets_won": 8,
+          "sets_lost": 3,
+          "tournament_points": 360,
+          "set_points": 34,
+          "performance_points": 2,
+          "upset_points": 0,
+          "total": 396,
+          "match_log": "d. Dimitrov 6-2 6-3 +0; d. Rinderknech 6-7 6-3 6-2 +1; d. Ruud 6-1 7-6 +1; d. Norrie 6-3 6-4 +0; l. Medvedev 3-6 6-7 +0"
+        },
+        "jannik sinner": {
+          "player": "Jannik Sinner",
+          "round": "Champion",
+          "sets_won": 12,
+          "sets_lost": 0,
+          "tournament_points": 1000,
+          "set_points": 60,
+          "performance_points": 71,
+          "upset_points": 0,
+          "total": 1131,
+          "match_log": "d. Svrcina 6-1 6-1 +0; d. Shapovalov 6-3 6-2 +0; d. Fonseca 7-6 7-6 +1; d. Tien 6-1 6-2 +1; d. Zverev 6-2 6-4 +33; d. Medvedev 7-6 7-6 +36"
+        },
+        "novak djokovic": {
+          "player": "Novak Djokovic",
+          "round": "R16",
+          "sets_won": 5,
+          "sets_lost": 3,
+          "tournament_points": 90,
+          "set_points": 19,
+          "performance_points": 1,
+          "upset_points": 0,
+          "total": 110,
+          "match_log": "d. Majchrzak 4-6 6-1 6-2 +0; d. Kovacevic 6-4 1-6 6-4 +1; l. Draper 4-6 6-4 6-7 +0"
+        },
+        "alexander zverev": {
+          "player": "Alexander Zverev",
+          "round": "Semi-Final",
+          "sets_won": 8,
+          "sets_lost": 3,
+          "tournament_points": 360,
+          "set_points": 34,
+          "performance_points": 12,
+          "upset_points": 0,
+          "total": 406,
+          "match_log": "d. Berrettini 6-3 6-4 +0; d. Nakashima 7-6 5-7 6-4 +6; d. Tiafoe 6-3 6-4 +4; d. Fils 6-2 6-3 +2; l. Sinner 2-6 4-6 +0"
+        },
+        "alex de minaur": {
+          "player": "Alex De Minaur",
+          "round": "R32",
+          "sets_won": 2,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 6,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 51,
+          "match_log": "d. Korda 4-6 6-4 6-4 +0; l. Norrie 4-6 4-6 +0"
+        },
+        "taylor fritz": {
+          "player": "Taylor Fritz",
+          "round": "R32",
+          "sets_won": 2,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 6,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 51,
+          "match_log": "d. Fearnley 6-3 6-7 6-1 +0; l. Michelsen 4-6 6-7 +0"
+        },
+        "ben shelton": {
+          "player": "Ben Shelton",
+          "round": "R32",
+          "sets_won": 3,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 11,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 56,
+          "match_log": "d. Opelka 6-7 7-6 6-3 +0; l. Tien 6-7 6-4 3-6 +0"
+        },
+        "felix auger-aliassime": {
+          "player": "Felix Auger-Aliassime",
+          "round": "R16",
+          "sets_won": 4,
+          "sets_lost": 3,
+          "tournament_points": 90,
+          "set_points": 14,
+          "performance_points": 22,
+          "upset_points": 0,
+          "total": 126,
+          "match_log": "d. Monfils 6-7 6-3 6-4 +0; d. Diallo 6-7 6-3 6-3 +22; l. Fils 3-6 6-7 +0"
+        },
+        "alexander bublik": {
+          "player": "Alexander Bublik",
+          "round": "R32",
+          "sets_won": 3,
+          "sets_lost": 3,
+          "tournament_points": 45,
+          "set_points": 9,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 54,
+          "match_log": "d. Kopriva 3-6 7-6 6-2 +0; l. Hijikata 7-6 6-7 3-6 +0"
+        },
+        "daniil medvedev": {
+          "player": "Daniil Medvedev",
+          "round": "Finalist",
+          "sets_won": 10,
+          "sets_lost": 2,
+          "tournament_points": 600,
+          "set_points": 46,
+          "performance_points": 98,
+          "upset_points": 157,
+          "total": 901,
+          "match_log": "d. Tabilo 6-4 6-2 +0; d. Baez 6-4 6-0 +6; d. Michelsen 6-2 6-4 +8; d. Draper 6-1 7-5 +84; d. Alcaraz 6-3 7-6 +157; l. Sinner 6-7 6-7 +0"
+        },
+        "jakub mensik": {
+          "player": "Jakub Mensik",
+          "round": "R32",
+          "sets_won": 3,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 11,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 56,
+          "match_log": "d. Giron 7-5 7-6 +0; l. Davidovich Fokina 2-6 6-4 2-6 +0"
+        },
+        "casper ruud": {
+          "player": "Casper Ruud",
+          "round": "R16",
+          "sets_won": 4,
+          "sets_lost": 3,
+          "tournament_points": 90,
+          "set_points": 14,
+          "performance_points": 90,
+          "upset_points": 0,
+          "total": 194,
+          "match_log": "d. Shevchenko 6-1 7-6 +0; d. Vacherot 3-6 6-3 6-4 +90; l. Alcaraz 1-6 6-7 +0"
+        },
+        "jack draper": {
+          "player": "Jack Draper",
+          "round": "Quarter-Final",
+          "sets_won": 6,
+          "sets_lost": 3,
+          "tournament_points": 180,
+          "set_points": 24,
+          "performance_points": 67,
+          "upset_points": 195,
+          "total": 466,
+          "match_log": "d. Bautista Agut 3-6 6-3 6-2 +0; d. Cerundolo 6-1 7-5 +67; d. Djokovic 4-6 6-4 7-6 +195; l. Medvedev 1-6 5-7 +0"
+        },
+        "flavio cobolli": {
+          "player": "Flavio Cobolli",
+          "round": "R32",
+          "sets_won": 2,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 6,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 51,
+          "match_log": "d. Kecmanovic 3-6 6-3 6-4 +0; l. Tiafoe 1-6 2-6 +0"
+        },
+        "alejandro davidovich fokina": {
+          "player": "Alejandro Davidovich Fokina",
+          "round": "Quarter-Final",
+          "sets_won": 6,
+          "sets_lost": 4,
+          "tournament_points": 180,
+          "set_points": 22,
+          "performance_points": 189,
+          "upset_points": 79,
+          "total": 470,
+          "match_log": "d. Svajda 7-6 6-2 +0; d. Mensik 6-2 4-6 6-2 +79; d. Tien 4-6 6-1 7-6 +189; l. Sinner 0-6 2-6 +0"
+        },
+        "fransisco cerundolo": {
+          "player": "Fransisco Cerundolo",
+          "round": "R32",
+          "sets_won": 2,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 6,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 51,
+          "match_log": "d. Bonzi 6-4 5-7 7-6 +0; l. Draper 1-6 5-7 +0"
+        },
+        "frances tiafoe": {
+          "player": "Frances Tiafoe",
+          "round": "R16",
+          "sets_won": 4,
+          "sets_lost": 2,
+          "tournament_points": 90,
+          "set_points": 16,
+          "performance_points": 0,
+          "upset_points": 28,
+          "total": 134,
+          "match_log": "d. Brooksby 6-4 6-2 +0; d. Cobolli 6-1 6-2 +28; l. Zverev 3-6 4-6 +0"
+        },
+        "tommy paul": {
+          "player": "Tommy Paul",
+          "round": "R32",
+          "sets_won": 2,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 6,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 51,
+          "match_log": "d. Bergs 6-1 6-2 +0; l. Fonseca 2-6 3-6 +0"
+        },
+        "valentin vacherot": {
+          "player": "Valentin Vacherot",
+          "round": "R32",
+          "sets_won": 3,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 11,
+          "performance_points": 0,
+          "upset_points": 1,
+          "total": 57,
+          "match_log": "d. Borges 7-5 7-5 +0; l. Ruud 6-3 3-6 4-6 +1"
+        },
+        "learner tien": {
+          "player": "Learner Tien",
+          "round": "Quarter-Final",
+          "sets_won": 6,
+          "sets_lost": 4,
+          "tournament_points": 180,
+          "set_points": 22,
+          "performance_points": 0,
+          "upset_points": 210,
+          "total": 412,
+          "match_log": "d. Walton 7-6 7-6 +0; d. Shelton 7-6 4-6 6-3 +145; d. Davidovich Fokina 4-6 6-1 7-6 +65; l. Sinner 1-6 2-6 +0"
+        },
+        "arthur rinderknech": {
+          "player": "Arthur Rinderknech",
+          "round": "R32",
+          "sets_won": 1,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 1,
+          "performance_points": 0,
+          "upset_points": 7,
+          "total": 53,
+          "match_log": "d. J.M. Cerundolo w/o; l. Alcaraz 7-6 3-6 2-6 +7"
+        },
+        "cameron norrie": {
+          "player": "Cameron Norrie",
+          "round": "Quarter-Final",
+          "sets_won": 6,
+          "sets_lost": 2,
+          "tournament_points": 180,
+          "set_points": 26,
+          "performance_points": 8,
+          "upset_points": 70,
+          "total": 284,
+          "match_log": "d. McDonald 6-2 6-3 +0; d. De Minaur 6-4 6-4 +70; d. Hijikata 6-4 6-2 +8; l. Alcaraz 3-6 4-6 +0"
+        },
+        "brandon nakashima": {
+          "player": "Brandon Nakashima",
+          "round": "R32",
+          "sets_won": 3,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 11,
+          "performance_points": 0,
+          "upset_points": 2,
+          "total": 58,
+          "match_log": "d. Ugo Carabelli 6-3 6-4 +0; l. Zverev 6-7 7-5 4-6 +2"
+        },
+        "arthur fils": {
+          "player": "Arthur Fils",
+          "round": "Quarter-Final",
+          "sets_won": 5,
+          "sets_lost": 2,
+          "tournament_points": 180,
+          "set_points": 21,
+          "performance_points": 40,
+          "upset_points": 50,
+          "total": 291,
+          "match_log": "d. Prizmic ret; d. Fucsovics 6-3 7-5 +40; d. Auger-Aliassime 6-3 7-6 +50; l. Zverev 2-6 3-6 +0"
+        },
+        "rinky hijikata": {
+          "player": "Rinky Hijikata",
+          "round": "R16",
+          "sets_won": 6,
+          "sets_lost": 3,
+          "tournament_points": 90,
+          "set_points": 24,
+          "performance_points": 0,
+          "upset_points": 578,
+          "total": 692,
+          "match_log": "d. Maestrelli 7-6 6-4 +0; d. Bublik 6-7 7-6 6-3 +514; d. Norrie 6-4 6-2 +64; l. Alcaraz 3-6 4-6 +0"
+        },
+        "alexsandar kovacevic": {
+          "player": "Alexsandar Kovacevic",
+          "round": "R32",
+          "sets_won": 3,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 11,
+          "performance_points": 0,
+          "upset_points": 7,
+          "total": 63,
+          "match_log": "d. Moutet 6-1 6-4 +0; l. Djokovic 4-6 6-1 4-6 +7"
+        },
+        "sebastian baez": {
+          "player": "Sebastian Baez",
+          "round": "R32",
+          "sets_won": 2,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 6,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 51,
+          "match_log": "d. Lehecka 6-4 6-1 +0; l. Medvedev 4-6 0-6 +0"
+        },
+        "alex michelsen": {
+          "player": "Alex Michelsen",
+          "round": "R16",
+          "sets_won": 6,
+          "sets_lost": 3,
+          "tournament_points": 90,
+          "set_points": 24,
+          "performance_points": 0,
+          "upset_points": 85,
+          "total": 199,
+          "match_log": "d. Merida Aguilar 6-3 6-4 +0; d. Humbert 7-5 6-7 7-6 +0; d. Fritz 6-4 7-6 +85; l. Medvedev 2-6 4-6 +0"
+        },
+        "marton fuscovics": {
+          "player": "Marton Fuscovics",
+          "round": "R32",
+          "sets_won": 4,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 16,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 61,
+          "match_log": "d. O'Connell 7-5 6-3 +0; d. Musetti 7-5 6-1 +0; l. Fils 3-6 5-7 +0"
+        },
+        "gabriel diallo": {
+          "player": "Gabriel Diallo",
+          "round": "R32",
+          "sets_won": 5,
+          "sets_lost": 2,
+          "tournament_points": 45,
+          "set_points": 21,
+          "performance_points": 0,
+          "upset_points": 1,
+          "total": 67,
+          "match_log": "d. Bellucci 7-6 6-4 +0; d. Rublev 6-7 7-6 6-3 +0; l. Auger-Aliassime 7-6 3-6 3-6 +1"
+        },
+        "joao fonseca": {
+          "player": "Joao Fonseca",
+          "round": "R16",
+          "sets_won": 6,
+          "sets_lost": 2,
+          "tournament_points": 90,
+          "set_points": 26,
+          "performance_points": 0,
+          "upset_points": 25,
+          "total": 141,
+          "match_log": "d. Collignon 7-6 6-4 +0; d. Khachanov 4-6 7-6 6-4 +0; d. Paul 6-2 6-3 +25; l. Sinner 6-7 6-7 +0"
+        },
+        "denis shapovalov": {
+          "player": "Denis Shapovalov",
+          "round": "R32",
+          "sets_won": 4,
+          "sets_lost": 3,
+          "tournament_points": 45,
+          "set_points": 14,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 59,
+          "match_log": "d. Tsitsipas 6-2 3-6 6-4 +0; d. Etcheverry 6-3 2-6 7-6 +0; l. Sinner 3-6 2-6 +0"
+        },
+        "-": {
+          "player": "-",
+          "round": "R128",
+          "sets_won": 0,
+          "sets_lost": 0,
+          "tournament_points": 10,
+          "set_points": 0,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 10,
+          "match_log": ""
+        },
+        "--": {
+          "player": "--",
+          "round": "R128",
+          "sets_won": 0,
+          "sets_lost": 0,
+          "tournament_points": 10,
+          "set_points": 0,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 10,
+          "match_log": ""
+        },
+        "---": {
+          "player": "---",
+          "round": "R128",
+          "sets_won": 0,
+          "sets_lost": 0,
+          "tournament_points": 10,
+          "set_points": 0,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 10,
+          "match_log": ""
+        },
+        "----": {
+          "player": "----",
+          "round": "R128",
+          "sets_won": 0,
+          "sets_lost": 0,
+          "tournament_points": 10,
+          "set_points": 0,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 10,
+          "match_log": ""
+        },
+        "-----": {
+          "player": "-----",
+          "round": "R128",
+          "sets_won": 0,
+          "sets_lost": 0,
+          "tournament_points": 10,
+          "set_points": 0,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 10,
+          "match_log": ""
+        },
+        "------": {
+          "player": "------",
+          "round": "R128",
+          "sets_won": 0,
+          "sets_lost": 0,
+          "tournament_points": 10,
+          "set_points": 0,
+          "performance_points": 0,
+          "upset_points": 0,
+          "total": 10,
+          "match_log": ""
+        }
+      },
+      "display": {
+        "primary": null,
+        "secondary": null,
+        "tertiary": null,
+        "logo_url": null,
+        "background_url": null
+      }
+    },
+    {
+      "id": "fantasy-dffb6b75",
+      "guild_id": 1333962919536492607,
+      "name": "Miami 2026",
+      "category_id": "fantasy-categ-29c2d9cc",
+      "category_title": "ATP Masters 1000",
+      "created": true,
+      "picks_open": true,
+      "results_entered": false,
+      "opened_at": 1773705324,
+      "closed_at": null,
+      "completed_at": null,
+      "players": [
+        {
+          "name": "Carlos Alcaraz",
+          "seed": 1
+        },
+        {
+          "name": "Jannik Sinner",
+          "seed": 2
+        },
+        {
+          "name": "Alexander Zverev",
+          "seed": 3
+        },
+        {
+          "name": "Lorenzo Musetti",
+          "seed": 4
+        },
+        {
+          "name": "Alex De Minaur",
+          "seed": 5
+        },
+        {
+          "name": "Taylor Fritz",
+          "seed": 6
+        },
+        {
+          "name": "Felix Auger-Aliassime",
+          "seed": 7
+        },
+        {
+          "name": "Ben Shelton",
+          "seed": 8
+        },
+        {
+          "name": "Daniil Medvedev",
+          "seed": 9
+        },
+        {
+          "name": "Alexander Bublik",
+          "seed": 10
+        },
+        {
+          "name": "Casper Ruud",
+          "seed": 11
+        },
+        {
+          "name": "Jakub Mensik",
+          "seed": 12
+        },
+        {
+          "name": "Flavio Cobolli",
+          "seed": 13
+        },
+        {
+          "name": "Karen Khachanov",
+          "seed": 14
+        },
+        {
+          "name": "Andrey Rublev",
+          "seed": 15
+        },
+        {
+          "name": "Alejandro Davidovich Fokina",
+          "seed": 16
+        },
+        {
+          "name": "Luciano Darderi",
+          "seed": 17
+        },
+        {
+          "name": "Francisco Cerundolo",
+          "seed": 18
+        },
+        {
+          "name": "Frances Tiafoe",
+          "seed": 19
+        },
+        {
+          "name": "Learner Tien",
+          "seed": 20
+        },
+        {
+          "name": "Jiri Lehecka",
+          "seed": 21
+        },
+        {
+          "name": "Tommy Paul",
+          "seed": 22
+        },
+        {
+          "name": "Cameron Norrie",
+          "seed": 23
+        },
+        {
+          "name": "Valentin Vacherot",
+          "seed": 24
+        },
+        {
+          "name": "Jack Draper",
+          "seed": 25
+        },
+        {
+          "name": "Arthur Rinderknech",
+          "seed": 26
+        },
+        {
+          "name": "Brandon Nakashima",
+          "seed": 27
+        },
+        {
+          "name": "Arthur Fils",
+          "seed": 28
+        },
+        {
+          "name": "Tomas Martin Etcheverry",
+          "seed": 29
+        },
+        {
+          "name": "Corentin Moutet",
+          "seed": 30
+        },
+        {
+          "name": "Ugo Humbert",
+          "seed": 31
+        },
+        {
+          "name": "Sebastian Korda",
+          "seed": 32
+        },
+        {
+          "name": "Fabian Marozsan",
+          "seed": null
+        },
+        {
+          "name": "Joao Fonseca",
+          "seed": null
+        },
+        {
+          "name": "Giovanni Mpetshi Perricard",
+          "seed": null
+        },
+        {
+          "name": "Camilo Ugo Carabelli",
+          "seed": null
+        },
+        {
+          "name": "Marcos Giron",
+          "seed": null
+        },
+        {
+          "name": "James Duckworth",
+          "seed": null
+        },
+        {
+          "name": "Roberto Bautista Agut",
+          "seed": null
+        },
+        {
+          "name": "Ethan Quinn",
+          "seed": null
+        },
+        {
+          "name": "Hubert Hurkacz",
+          "seed": null
+        },
+        {
+          "name": "Reilly Opelka",
+          "seed": null
+        },
+        {
+          "name": "Nuno Borges",
+          "seed": null
+        },
+        {
+          "name": "Denis Shapovalov",
+          "seed": null
+        },
+        {
+          "name": "Botic Van De Zandschulp",
+          "seed": null
+        },
+        {
+          "name": "Zizou Bergs",
+          "seed": null
+        },
+        {
+          "name": "Jenson Brooksby",
+          "seed": null
+        },
+        {
+          "name": "Z. Zhang",
+          "seed": null
+        },
+        {
+          "name": "Adrian Mannarino",
+          "seed": null
+        },
+        {
+          "name": "Raphael Collignon",
+          "seed": null
+        },
+        {
+          "name": "Grigor Dimitrov",
+          "seed": null
+        },
+        {
+          "name": "Alexandre Muller",
+          "seed": null
+        },
+        {
+          "name": "Matteo Berrettini",
+          "seed": null
+        },
+        {
+          "name": "Mariano Navone",
+          "seed": null
+        },
+        {
+          "name": "Darwin Blanch",
+          "seed": null
+        },
+        {
+          "name": "Jan Lennard Struff",
+          "seed": null
+        },
+        {
+          "name": "Stefanos Tsitsipas",
+          "seed": null
+        },
+        {
+          "name": "Matteo Arnaldi",
+          "seed": null
+        },
+        {
+          "name": "Alexander Shevchenko",
+          "seed": null
+        },
+        {
+          "name": "Gabriel Diallo",
+          "seed": null
+        },
+        {
+          "name": "Yibing Wu",
+          "seed": null
+        },
+        {
+          "name": "Valentin Royer",
+          "seed": null
+        },
+        {
+          "name": "Aleksandar Kovacevic",
+          "seed": null
+        },
+        {
+          "name": "Rei Sakamoto",
+          "seed": null
+        },
+        {
+          "name": "Quentin Halys",
+          "seed": null
+        },
+        {
+          "name": "Kamil Majchrzak",
+          "seed": null
+        },
+        {
+          "name": "Miomir Kecmanovic",
+          "seed": null
+        },
+        {
+          "name": "Marin Cilic",
+          "seed": null
+        },
+        {
+          "name": "Alexei Popyrin",
+          "seed": null
+        },
+        {
+          "name": "Martin Damm",
+          "seed": null
+        },
+        {
+          "name": "Jacob Fearnley",
+          "seed": null
+        },
+        {
+          "name": "Marton Fucsovics",
+          "seed": null
+        },
+        {
+          "name": "Terence Atmane",
+          "seed": null
+        },
+        {
+          "name": "Daniel Altmaier",
+          "seed": null
+        },
+        {
+          "name": "Arthur Cazaux",
+          "seed": null
+        },
+        {
+          "name": "Sebastian Baez",
+          "seed": null
+        },
+        {
+          "name": "Alejandro Tabilo",
+          "seed": null
+        },
+        {
+          "name": "Francisco Comesana",
+          "seed": null
+        },
+        {
+          "name": "Alex Michelsen",
+          "seed": null
+        },
+        {
+          "name": "Emilio Nava",
+          "seed": null
+        },
+        {
+          "name": "Tomas Machac",
+          "seed": null
+        },
+        {
+          "name": "Damir Dzumhur",
+          "seed": null
+        }
+      ],
+      "rosters": {
+        "344537057152204820": [
+          "Carlos Alcaraz",
+          "Ben Shelton",
+          "Daniil Medvedev",
+          "Jiri Lehecka",
+          "Tommy Paul"
+        ],
+        "1304836516857512080": [
+          "Jannik Sinner",
+          "Taylor Fritz",
+          "Daniil Medvedev",
+          "Arthur Rinderknech",
+          "Arthur Fils"
+        ]
+      },
       "results": {},
       "display": {
         "primary": null,
@@ -248,5 +1078,6 @@
       }
     }
   ],
-  "ldb_blacklist": []
+  "ldb_blacklist": [],
+  "ldb_reset_at": 1773191411
 }
