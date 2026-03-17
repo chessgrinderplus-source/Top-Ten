@@ -766,6 +766,111 @@ class RosterPickMenuView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ============================================================
+# Match Leaderboard & Perfect Picks helpers
+# ============================================================
+
+# ============================================================
+# Match Leaderboard & Perfect Picks helpers
+# ============================================================
+
+def _parse_match_log_entries(player_name: str, match_log: str) -> List[dict]:
+    """
+    Parse a player's semicolon-separated match log into individual match entries.
+    Each entry looks like: "d. Djokovic 6-3 7-5 +120"  or  "l. Murray 3-6 -15"
+    Returns list of dicts: {player, description, points}
+    """
+    entries = []
+    for raw in match_log.split(";"):
+        m = raw.strip()
+        if not m:
+            continue
+        parts = m.rsplit(" ", 1)
+        if len(parts) == 2:
+            pts_str = parts[1].lstrip("+")
+            try:
+                pts = int(pts_str)
+                entries.append({"player": player_name, "description": parts[0].strip(), "points": pts})
+                continue
+            except ValueError:
+                pass
+        entries.append({"player": player_name, "description": m, "points": 0})
+    return entries
+
+
+def _compute_match_leaderboard(t: dict) -> Tuple[List[dict], List[dict], List[dict]]:
+    """
+    Returns:
+      top_matches     — all individual match entries sorted by points desc (points > 0)
+      upset_player_lb — players ranked by total upset_points
+      perf_player_lb  — players ranked by total performance_points
+    """
+    results = list((t.get("results", {}) or {}).values())
+
+    # Per-match: parse every player's match log and collect all entries with pts > 0
+    all_matches: List[dict] = []
+    for r in results:
+        log = r.get("match_log", "")
+        if not log:
+            continue
+        entries = _parse_match_log_entries(r.get("player", ""), log)
+        all_matches.extend(e for e in entries if e["points"] > 0)
+    all_matches.sort(key=lambda e: e["points"], reverse=True)
+
+    # Per-player aggregates
+    upset_player_lb = sorted(
+        [r for r in results if int(r.get("upset_points", 0)) > 0],
+        key=lambda r: int(r.get("upset_points", 0)), reverse=True,
+    )
+    perf_player_lb = sorted(
+        [r for r in results if int(r.get("performance_points", 0)) > 0],
+        key=lambda r: int(r.get("performance_points", 0)), reverse=True,
+    )
+
+    return all_matches, upset_player_lb, perf_player_lb
+
+
+def _compute_perfect_picks(t: dict, seed_map: Dict[str, Optional[int]]) -> Tuple[List[dict], int]:
+    """
+    Find the highest-scoring 5-player roster that satisfies the draft rules:
+      • max 1 player from seeds 1–5
+      • max 3 players from seeds 1–20
+    Returns (roster_entries, total_points).
+    Uses a greedy approach: sort all players by total points desc, then pick
+    greedily while respecting constraints.
+    """
+    results = list((t.get("results", {}) or {}).values())
+    results_sorted = sorted(results, key=lambda r: int(r.get("total", 0)), reverse=True)
+
+    chosen: List[dict] = []
+    top5_used = 0
+    top20_used = 0
+
+    for r in results_sorted:
+        if len(chosen) == 5:
+            break
+        name = r.get("player", "")
+        seed = seed_map.get(_player_key(name))
+        bucket = _seed_bucket(seed)
+
+        if bucket == "top5":
+            if top5_used >= 1:
+                continue
+            if top20_used >= 3:
+                continue
+            top5_used += 1
+            top20_used += 1
+        elif bucket == "top20":
+            if top20_used >= 3:
+                continue
+            top20_used += 1
+
+        chosen.append(r)
+
+    total = sum(int(r.get("total", 0)) for r in chosen)
+    return chosen, total
+
+
+# ============================================================
 # Results multi-tab view (for /fantasy results)
 # ============================================================
 
@@ -818,9 +923,68 @@ class ResultsMainView(discord.ui.View):
             f"**User Leaderboard — {t.get('name')}**\n\nℹ️ No user rosters found."
         ]
 
+        # ── Tab 3: Match Leaderboard (top matches + per-player upset/perf + Perfect Picks) ──
+        top_matches, upset_player_lb, perf_player_lb = _compute_match_leaderboard(t)
+        perfect_roster, perfect_total = _compute_perfect_picks(t, seed_map)
+
+        ml_lines: List[str] = [
+            f"**Match Leaderboard — {t.get('name')}**", "",
+        ]
+
+        # Perfect Picks section
+        ml_lines += ["**🏅 Perfect Picks** *(best possible roster)*", ""]
+        if perfect_roster:
+            for i, r in enumerate(perfect_roster, 1):
+                name = r.get("player", "")
+                seed = seed_map.get(_player_key(name))
+                ml_lines.append(f"{i}. {_fmt_player(seed, name)} — **{r.get('total', 0)}**")
+            ml_lines.append(f"\n**Perfect Total: {perfect_total}**")
+        else:
+            ml_lines.append("*(no results)*")
+
+        ml_lines += ["", "─────────────────────────────────", ""]
+
+        # Top matches (unified, parsed from match log)
+        ml_lines += ["**🔥 Top Matches** *(highest points in a single match)*", ""]
+        if top_matches:
+            for i, e in enumerate(top_matches[:10], 1):
+                ml_lines.append(f"{i}. **{e['player']}** — {e['description']} | **+{e['points']}**")
+        else:
+            ml_lines.append("*(no match log data)*")
+
+        ml_lines += ["", "─────────────────────────────────", ""]
+
+        # Per-player upset totals
+        ml_lines += ["**⚡ Upset Kings** *(total upset pts across tournament)*", ""]
+        if upset_player_lb:
+            for i, r in enumerate(upset_player_lb[:8], 1):
+                name = r.get("player", "")
+                seed = seed_map.get(_player_key(name))
+                ml_lines.append(
+                    f"{i}. {_fmt_player(seed, name)} — **{r.get('upset_points', 0)} upset pts** — *{r.get('round', '')}*"
+                )
+        else:
+            ml_lines.append("*(no upset points recorded)*")
+
+        ml_lines += ["", "─────────────────────────────────", ""]
+
+        # Per-player performance totals
+        ml_lines += ["**🎯 Performance Kings** *(total performance pts across tournament)*", ""]
+        if perf_player_lb:
+            for i, r in enumerate(perf_player_lb[:8], 1):
+                name = r.get("player", "")
+                seed = seed_map.get(_player_key(name))
+                ml_lines.append(
+                    f"{i}. {_fmt_player(seed, name)} — **{r.get('performance_points', 0)} perf pts** — *{r.get('round', '')}*"
+                )
+        else:
+            ml_lines.append("*(no performance points recorded)*")
+
+        self.match_lb_pages = _chunk_pages(ml_lines)
+
         # State
-        self.tab = 0            # 0 = player results, 1 = user leaderboard, 2 = breakdown
-        self.page = 0           # current page for tabs 0 and 1
+        self.tab = 0            # 0 = player results, 1 = user leaderboard, 2 = breakdown, 3 = match leaderboard
+        self.page = 0           # current page for tabs 0, 1, 3
         self.breakdown_page = 0 # which page of the player select we're on (25 per page)
 
         self._rebuild()
@@ -828,7 +992,10 @@ class ResultsMainView(discord.ui.View):
     # ── Internal helpers ────────────────────────────────────────────
 
     def _cur_pages(self) -> List[str]:
-        return self.player_pages if self.tab == 0 else self.user_pages
+        if self.tab == 0: return self.player_pages
+        if self.tab == 1: return self.user_pages
+        if self.tab == 3: return self.match_lb_pages
+        return self.player_pages
 
     def _embed(self) -> discord.Embed:
         if self.tab == 2:
@@ -845,7 +1012,8 @@ class ResultsMainView(discord.ui.View):
             e.set_footer(text=foot)
             return e
         pages = self._cur_pages()
-        tab_name = "📊 Player Results" if self.tab == 0 else "🏆 User Leaderboard"
+        tab_names = {0: "📊 Player Results", 1: "🏆 User Leaderboard", 3: "🎯 Match Leaderboard"}
+        tab_name = tab_names.get(self.tab, "📊 Player Results")
         e = discord.Embed(title="Fantasy Results", description=pages[self.page])
         e.set_footer(text=f"Tab: {tab_name} • Page {self.page + 1}/{len(pages)}")
         return e
@@ -854,7 +1022,7 @@ class ResultsMainView(discord.ui.View):
         self.clear_items()
 
         # ── Row 0: tab buttons ──────────────────────────────────────
-        tab_defs = [("📊 Player Results", 0), ("🏆 User Leaderboard", 1), ("🔍 Player Breakdown", 2)]
+        tab_defs = [("📊 Player Results", 0), ("🏆 User Leaderboard", 1), ("🔍 Player Breakdown", 2), ("🎯 Match Leaderboard", 3)]
         for label, idx in tab_defs:
             btn = discord.ui.Button(
                 label=label,
@@ -869,8 +1037,8 @@ class ResultsMainView(discord.ui.View):
             btn.callback = _tab_cb
             self.add_item(btn)
 
-        # ── Tabs 0 & 1: page navigation ────────────────────────────
-        if self.tab in (0, 1):
+        # ── Tabs 0, 1 & 3: page navigation ────────────────────────────
+        if self.tab in (0, 1, 3):
             pages = self._cur_pages()
             total = len(pages)
             if total > 1:
