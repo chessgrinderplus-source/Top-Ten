@@ -46,29 +46,50 @@ TOURN_SIM_SPEED_MULT: float = 1.0
 
 OWNER_ID = 1279106601931899015  # Only this user may run /history-wipe
 
-def _cats_db():      return _load_json(CATS_PATH,     {"categories": {}})
-def _cats_save(db):  _save_json(CATS_PATH, db)
-_comp_db_cache: Optional[dict] = None
+# ── In-memory DB caches — populated on first access, updated on every save ──
+# This prevents synchronous disk reads from blocking the asyncio event loop
+# during autocomplete handlers (which must respond within 3 seconds).
+_cats_db_cache:    Optional[dict] = None
+_comp_db_cache:    Optional[dict] = None
+_rank_db_cache:    Optional[dict] = None
+_h2h_db_cache:     Optional[dict] = None
+_archive_db_cache: Optional[dict] = None
+_stats_db_cache:   Optional[dict] = None  # populated in _stats_db below
+
+def _cats_db() -> dict:
+    global _cats_db_cache
+    if _cats_db_cache is None: _cats_db_cache = _load_json(CATS_PATH, {"categories": {}})
+    return _cats_db_cache
+def _cats_save(db: dict) -> None:
+    global _cats_db_cache; _cats_db_cache = db; _save_json(CATS_PATH, db)
 
 def _comp_db() -> dict:
-    """Return in-memory cache of comp_tournaments.json.
-    Cache is populated at first call and updated on every _comp_save.
-    Never reads from disk during autocomplete — no event-loop blocking."""
     global _comp_db_cache
-    if _comp_db_cache is None:
-        _comp_db_cache = _load_json(COMP_PATH, {"tournaments": {}})
+    if _comp_db_cache is None: _comp_db_cache = _load_json(COMP_PATH, {"tournaments": {}})
     return _comp_db_cache
-
 def _comp_save(db: dict) -> None:
-    global _comp_db_cache
-    _comp_db_cache = db          # update cache immediately before disk write
-    _save_json(COMP_PATH, db)
-def _rank_db():      return _load_json(RANKINGS_PATH, {"guilds": {}})
-def _rank_save(db):  _save_json(RANKINGS_PATH, db)
-def _h2h_db():       return _load_json(H2H_PATH,      {"h2h": {}})
-def _h2h_save(db):   _save_json(H2H_PATH, db)
-def _archive_db():   return _load_json(ARCHIVE_PATH,  {"archives": {}})
-def _archive_save(db): _save_json(ARCHIVE_PATH, db)
+    global _comp_db_cache; _comp_db_cache = db; _save_json(COMP_PATH, db)
+
+def _rank_db() -> dict:
+    global _rank_db_cache
+    if _rank_db_cache is None: _rank_db_cache = _load_json(RANKINGS_PATH, {"guilds": {}})
+    return _rank_db_cache
+def _rank_save(db: dict) -> None:
+    global _rank_db_cache; _rank_db_cache = db; _save_json(RANKINGS_PATH, db)
+
+def _h2h_db() -> dict:
+    global _h2h_db_cache
+    if _h2h_db_cache is None: _h2h_db_cache = _load_json(H2H_PATH, {"h2h": {}})
+    return _h2h_db_cache
+def _h2h_save(db: dict) -> None:
+    global _h2h_db_cache; _h2h_db_cache = db; _save_json(H2H_PATH, db)
+
+def _archive_db() -> dict:
+    global _archive_db_cache
+    if _archive_db_cache is None: _archive_db_cache = _load_json(ARCHIVE_PATH, {"archives": {}})
+    return _archive_db_cache
+def _archive_save(db: dict) -> None:
+    global _archive_db_cache; _archive_db_cache = db; _save_json(ARCHIVE_PATH, db)
 
 def get_yearly_archive_url(year: int, guild_id: int) -> Optional[str]:
     db = _archive_db()
@@ -441,8 +462,12 @@ def record_h2h(guild_id: int, winner_id: int, loser_id: int, score: str,
 # ─────────────────────────────────────────────────────────────────────────────
 # Stats storage helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _stats_db():      return _load_json(STATS_PATH, {"guilds": {}})
-def _stats_save(db):  _save_json(STATS_PATH, db)
+def _stats_db() -> dict:
+    global _stats_db_cache
+    if _stats_db_cache is None: _stats_db_cache = _load_json(STATS_PATH, {"guilds": {}})
+    return _stats_db_cache
+def _stats_save(db: dict) -> None:
+    global _stats_db_cache; _stats_db_cache = db; _save_json(STATS_PATH, db)
 
 def _stats_guild(db, guild_id: int) -> dict:
     return db.setdefault("guilds", {}).setdefault(str(guild_id), {})
