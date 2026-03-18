@@ -923,68 +923,64 @@ class ResultsMainView(discord.ui.View):
             f"**User Leaderboard — {t.get('name')}**\n\nℹ️ No user rosters found."
         ]
 
-        # ── Tab 3: Match Leaderboard (top matches + per-player upset/perf + Perfect Picks) ──
+        # ── Tabs 3, 4, 5: Perfect Picks / Top Matches / Upset Kings / Performance Kings ──
         top_matches, upset_player_lb, perf_player_lb = _compute_match_leaderboard(t)
         perfect_roster, perfect_total = _compute_perfect_picks(t, seed_map)
 
-        ml_lines: List[str] = [
-            f"**Match Leaderboard — {t.get('name')}**", "",
-        ]
-
-        # Perfect Picks section
-        ml_lines += ["**🏅 Perfect Picks** *(best possible roster)*", ""]
+        # Tab 3: Perfect Picks
+        pp_lines: List[str] = [f"**🏅 Perfect Picks — {t.get('name')}**", "",
+                                "The best possible roster someone could have drafted.", ""]
         if perfect_roster:
             for i, r in enumerate(perfect_roster, 1):
                 name = r.get("player", "")
                 seed = seed_map.get(_player_key(name))
-                ml_lines.append(f"{i}. {_fmt_player(seed, name)} — **{r.get('total', 0)}**")
-            ml_lines.append(f"\n**Perfect Total: {perfect_total}**")
+                pp_lines.append(f"{i}. {_fmt_player(seed, name)} — **{r.get('total', 0)}**")
+            pp_lines += ["", f"**Perfect Total: {perfect_total}**"]
         else:
-            ml_lines.append("*(no results)*")
+            pp_lines.append("*(no results)*")
+        self.perfect_pages = _chunk_pages(pp_lines)
 
-        ml_lines += ["", "─────────────────────────────────", ""]
-
-        # Top matches (unified, parsed from match log)
-        ml_lines += ["**🔥 Top Matches** *(highest points in a single match)*", ""]
+        # Tab 4: Top Matches
+        tm_lines: List[str] = [f"**🔥 Top Matches — {t.get('name')}**", "",
+                                "Highest points earned in a single match.", ""]
         if top_matches:
-            for i, e in enumerate(top_matches[:10], 1):
-                ml_lines.append(f"{i}. **{e['player']}** — {e['description']} | **+{e['points']}**")
+            for i, e in enumerate(top_matches[:25], 1):
+                tm_lines.append(f"{i}. **{e['player']}** — {e['description']} | **+{e['points']}**")
         else:
-            ml_lines.append("*(no match log data)*")
+            tm_lines.append("*(no match log data)*")
+        self.top_match_pages = _chunk_pages(tm_lines)
 
-        ml_lines += ["", "─────────────────────────────────", ""]
-
-        # Per-player upset totals
-        ml_lines += ["**⚡ Upset Kings** *(total upset pts across tournament)*", ""]
+        # Tab 5: Upset Kings
+        uk_lines: List[str] = [f"**⚡ Upset Kings — {t.get('name')}**", "",
+                                "Players ranked by total upset points earned.", ""]
         if upset_player_lb:
-            for i, r in enumerate(upset_player_lb[:8], 1):
+            for i, r in enumerate(upset_player_lb, 1):
                 name = r.get("player", "")
                 seed = seed_map.get(_player_key(name))
-                ml_lines.append(
+                uk_lines.append(
                     f"{i}. {_fmt_player(seed, name)} — **{r.get('upset_points', 0)} upset pts** — *{r.get('round', '')}*"
                 )
         else:
-            ml_lines.append("*(no upset points recorded)*")
+            uk_lines.append("*(no upset points recorded)*")
+        self.upset_pages = _chunk_pages(uk_lines)
 
-        ml_lines += ["", "─────────────────────────────────", ""]
-
-        # Per-player performance totals
-        ml_lines += ["**🎯 Performance Kings** *(total performance pts across tournament)*", ""]
+        # Tab 6: Performance Kings
+        pk_lines: List[str] = [f"**🎯 Performance Kings — {t.get('name')}**", "",
+                                "Players ranked by total performance points earned.", ""]
         if perf_player_lb:
-            for i, r in enumerate(perf_player_lb[:8], 1):
+            for i, r in enumerate(perf_player_lb, 1):
                 name = r.get("player", "")
                 seed = seed_map.get(_player_key(name))
-                ml_lines.append(
+                pk_lines.append(
                     f"{i}. {_fmt_player(seed, name)} — **{r.get('performance_points', 0)} perf pts** — *{r.get('round', '')}*"
                 )
         else:
-            ml_lines.append("*(no performance points recorded)*")
-
-        self.match_lb_pages = _chunk_pages(ml_lines)
+            pk_lines.append("*(no performance points recorded)*")
+        self.perf_pages = _chunk_pages(pk_lines)
 
         # State
-        self.tab = 0            # 0 = player results, 1 = user leaderboard, 2 = breakdown, 3 = match leaderboard
-        self.page = 0           # current page for tabs 0, 1, 3
+        self.tab = 0            # 0-6: player results, user lb, breakdown, perfect picks, top matches, upset kings, perf kings
+        self.page = 0           # current page for paged tabs
         self.breakdown_page = 0 # which page of the player select we're on (25 per page)
 
         self._rebuild()
@@ -994,7 +990,10 @@ class ResultsMainView(discord.ui.View):
     def _cur_pages(self) -> List[str]:
         if self.tab == 0: return self.player_pages
         if self.tab == 1: return self.user_pages
-        if self.tab == 3: return self.match_lb_pages
+        if self.tab == 3: return self.perfect_pages
+        if self.tab == 4: return self.top_match_pages
+        if self.tab == 5: return self.upset_pages
+        if self.tab == 6: return self.perf_pages
         return self.player_pages
 
     def _embed(self) -> discord.Embed:
@@ -1012,7 +1011,11 @@ class ResultsMainView(discord.ui.View):
             e.set_footer(text=foot)
             return e
         pages = self._cur_pages()
-        tab_names = {0: "📊 Player Results", 1: "🏆 User Leaderboard", 3: "🎯 Match Leaderboard"}
+        tab_names = {
+            0: "📊 Player Results", 1: "🏆 User Leaderboard",
+            3: "🏅 Perfect Picks",  4: "🔥 Top Matches",
+            5: "⚡ Upset Kings",    6: "🎯 Performance Kings",
+        }
         tab_name = tab_names.get(self.tab, "📊 Player Results")
         e = discord.Embed(title="Fantasy Results", description=pages[self.page])
         e.set_footer(text=f"Tab: {tab_name} • Page {self.page + 1}/{len(pages)}")
@@ -1021,13 +1024,17 @@ class ResultsMainView(discord.ui.View):
     def _rebuild(self):
         self.clear_items()
 
-        # ── Row 0: tab buttons ──────────────────────────────────────
-        tab_defs = [("📊 Player Results", 0), ("🏆 User Leaderboard", 1), ("🔍 Player Breakdown", 2), ("🎯 Match Leaderboard", 3)]
-        for label, idx in tab_defs:
+        # ── Rows 0 & 1: tab buttons (4 on row 0, 3 on row 1) ──────────
+        tab_defs = [
+            ("📊 Player Results", 0, 0), ("🏆 User Leaderboard", 1, 0),
+            ("🔍 Player Breakdown", 2, 0), ("🏅 Perfect Picks", 3, 0),
+            ("🔥 Top Matches", 4, 1), ("⚡ Upset Kings", 5, 1), ("🎯 Performance Kings", 6, 1),
+        ]
+        for label, idx, row in tab_defs:
             btn = discord.ui.Button(
                 label=label,
                 style=discord.ButtonStyle.primary if self.tab == idx else discord.ButtonStyle.secondary,
-                row=0,
+                row=row,
             )
             async def _tab_cb(inter: discord.Interaction, v=self, t=idx):
                 if inter.user.id != v.user_id:
@@ -1037,18 +1044,18 @@ class ResultsMainView(discord.ui.View):
             btn.callback = _tab_cb
             self.add_item(btn)
 
-        # ── Tabs 0, 1 & 3: page navigation ────────────────────────────
-        if self.tab in (0, 1, 3):
+        # ── Tabs 0, 1, 3-6: page navigation ───────────────────────────
+        if self.tab in (0, 1, 3, 4, 5, 6):
             pages = self._cur_pages()
             total = len(pages)
             if total > 1:
                 prev = discord.ui.Button(
                     label="◀ Prev", style=discord.ButtonStyle.secondary,
-                    disabled=(self.page == 0), row=1,
+                    disabled=(self.page == 0), row=2,
                 )
                 nxt = discord.ui.Button(
                     label=f"Next ▶ ({self.page + 1}/{total})", style=discord.ButtonStyle.secondary,
-                    disabled=(self.page >= total - 1), row=1,
+                    disabled=(self.page >= total - 1), row=2,
                 )
                 async def _prev_cb(inter: discord.Interaction, v=self):
                     if inter.user.id != v.user_id:
@@ -1088,7 +1095,7 @@ class ResultsMainView(discord.ui.View):
                     placeholder="Pick a player for their breakdown…",
                     min_values=1, max_values=1,
                     options=opts,
-                    row=1,
+                    row=2,
                 )
                 async def _sel_cb(inter: discord.Interaction, v=self):
                     if inter.user.id != v.user_id:
@@ -1134,11 +1141,11 @@ class ResultsMainView(discord.ui.View):
             if bp_total > 1:
                 bp_prev = discord.ui.Button(
                     label="◀ Prev Players", style=discord.ButtonStyle.secondary,
-                    disabled=(bp == 0), row=2,
+                    disabled=(bp == 0), row=3,
                 )
                 bp_next = discord.ui.Button(
                     label=f"Next Players ▶ ({bp + 1}/{bp_total})", style=discord.ButtonStyle.secondary,
-                    disabled=(bp >= bp_total - 1), row=2,
+                    disabled=(bp >= bp_total - 1), row=3,
                 )
                 async def _bp_prev(inter: discord.Interaction, v=self):
                     if inter.user.id != v.user_id:
