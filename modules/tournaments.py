@@ -3272,7 +3272,13 @@ class TournamentsCog(commands.Cog):
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         t = _get_comp(tournament_id)
-        if not t: return await _reply(i, "❌ Not found.", ephemeral=True)
+        if not t:
+            all_ids = list(_comp_db().get("tournaments", {}).keys())
+            print(f"[draw-gen] NOT FOUND tid={tournament_id!r} guild={getattr(i.guild,'id','?')} known={all_ids[:8]}")
+            ids_str = ", ".join(f"`{x}`" for x in all_ids[:6]) or "none"
+            return await _reply(i,
+                f"❌ `{tournament_id}` not found. Known: {ids_str}",
+                ephemeral=True)
         if t.get("status") == STATUS_COMPLETED:
             return await _reply(i, "❌ Already completed.", ephemeral=True)
         if t.get("draw"):
