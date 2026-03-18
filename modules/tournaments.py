@@ -1126,13 +1126,26 @@ def _gs_client():
         return client, creds
 
     # ── Fallback: service account ──
-    sa = getattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", None)
-    print(f"[sheets] _gs_client: GOOGLE_SERVICE_ACCOUNT_JSON = {sa!r}")
-    if not sa: raise RuntimeError("No Google credentials found. Set GOOGLE_TOKEN_CONTENT or GOOGLE_SERVICE_ACCOUNT_JSON.")
-    if not os.path.exists(sa): raise FileNotFoundError(f"Service account JSON not found: {sa!r}")
+    # Supports both a file path AND raw JSON content in the env var
+    sa_env = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "") or getattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", None) or ""
+    sa_content = os.getenv("GOOGLE_SERVICE_ACCOUNT_CONTENT", "")  # raw JSON content alternative
+    print(f"[sheets] _gs_client: sa_env={sa_env!r:.60} sa_content={bool(sa_content)}")
+    if not sa_env and not sa_content:
+        raise RuntimeError("No Google credentials found. Set GOOGLE_TOKEN_CONTENT or GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_CONTENT.")
     from google.oauth2.service_account import Credentials
-    creds = Credentials.from_service_account_file(sa, scopes=scopes)
-    print("[sheets] _gs_client: credentials loaded, authorizing…")
+    if sa_content:
+        # Raw JSON content in env var — write to temp file
+        info = json.loads(sa_content)
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+    elif sa_env.strip().startswith("{"):
+        # Env var contains raw JSON (not a file path)
+        info = json.loads(sa_env)
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+    else:
+        if not os.path.exists(sa_env):
+            raise FileNotFoundError(f"Service account JSON not found: {sa_env!r}")
+        creds = Credentials.from_service_account_file(sa_env, scopes=scopes)
+    print("[sheets] _gs_client: service account credentials loaded, authorizing…")
     client = gspread.authorize(creds)
     print("[sheets] _gs_client: authorized via service account OK")
     return client, creds
