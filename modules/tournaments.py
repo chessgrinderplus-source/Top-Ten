@@ -49,29 +49,20 @@ OWNER_ID = 1279106601931899015  # Only this user may run /history-wipe
 def _cats_db():      return _load_json(CATS_PATH,     {"categories": {}})
 def _cats_save(db):  _save_json(CATS_PATH, db)
 _comp_db_cache: Optional[dict] = None
-_comp_db_cache_mtime: float = 0.0
 
 def _comp_db() -> dict:
-    """Load comp_tournaments.json with a 2-second mtime cache to avoid hammering disk on autocomplete."""
-    global _comp_db_cache, _comp_db_cache_mtime
-    try:
-        mtime = os.path.getmtime(COMP_PATH)
-    except OSError:
-        mtime = 0.0
-    if _comp_db_cache is not None and mtime <= _comp_db_cache_mtime:
-        return _comp_db_cache
-    _comp_db_cache = _load_json(COMP_PATH, {"tournaments": {}})
-    _comp_db_cache_mtime = mtime
+    """Return in-memory cache of comp_tournaments.json.
+    Cache is populated at first call and updated on every _comp_save.
+    Never reads from disk during autocomplete — no event-loop blocking."""
+    global _comp_db_cache
+    if _comp_db_cache is None:
+        _comp_db_cache = _load_json(COMP_PATH, {"tournaments": {}})
     return _comp_db_cache
 
 def _comp_save(db: dict) -> None:
-    global _comp_db_cache, _comp_db_cache_mtime
+    global _comp_db_cache
+    _comp_db_cache = db          # update cache immediately before disk write
     _save_json(COMP_PATH, db)
-    _comp_db_cache = db
-    try:
-        _comp_db_cache_mtime = os.path.getmtime(COMP_PATH)
-    except OSError:
-        _comp_db_cache_mtime = 0.0
 def _rank_db():      return _load_json(RANKINGS_PATH, {"guilds": {}})
 def _rank_save(db):  _save_json(RANKINGS_PATH, db)
 def _h2h_db():       return _load_json(H2H_PATH,      {"h2h": {}})
