@@ -3265,10 +3265,13 @@ class TournamentsCog(commands.Cog):
         try:
             if not i.response.is_done():
                 await i.response.defer()
-        except (discord.errors.NotFound, discord.errors.HTTPException):
-            # Interaction expired before we could defer (Replit idle / slow cold start)
-            # Nothing we can do — silently drop it. User just needs to run the command again.
+        except discord.errors.NotFound:
+            # Interaction truly expired — nothing we can do
+            print(f"[draw-gen] defer NotFound — interaction expired for uid={i.user.id}")
             return
+        except discord.errors.HTTPException as _he:
+            # Already acknowledged (e.g. from autocomplete) — fine, just proceed
+            print(f"[draw-gen] defer HTTPException {_he.status} {_he.code} — continuing anyway")
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         t = _get_comp(tournament_id)
