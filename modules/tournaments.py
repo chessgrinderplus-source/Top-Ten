@@ -1671,20 +1671,27 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
         # Create spreadsheet directly in the target folder via Drive API
         # This avoids consuming the service account's own Drive storage quota
         import googleapiclient.discovery as _gd
-        drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
-        print(f"[sheets] calling drive.files().create…")
-        file_body = {
-            "name": f"[LIVE] {tourn.get('name','Tournament')}",
-            "mimeType": "application/vnd.google-apps.spreadsheet",
-        }
-        if folder_id:
-            file_body["parents"] = [folder_id]
-        created = drive.files().create(body=file_body, fields="id").execute()
-        ss_id = created["id"]
-        print(f"[sheets] spreadsheet created in folder: {ss_id}")
+        # Use Sheets API to create — avoids Drive storage quota issues
+        sheets_svc = _gd.build("sheets", "v4", credentials=creds, cache_discovery=False)
+        print(f"[sheets] calling sheets.spreadsheets().create…")
+        title = f"[LIVE] {tourn.get('name','Tournament')}"
+        resp = sheets_svc.spreadsheets().create(
+            body={"properties": {"title": title}}, fields="spreadsheetId"
+        ).execute()
+        ss_id = resp["spreadsheetId"]
+        print(f"[sheets] spreadsheet created via Sheets API: {ss_id}")
         ss = gc.open_by_key(ss_id)
+        # Move to folder if configured
         if folder_id:
-            print(f"[sheets] created directly in folder {folder_id}")
+            try:
+                drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
+                meta = drive.files().get(fileId=ss_id, fields="parents").execute()
+                prev = ",".join(meta.get("parents", []))
+                drive.files().update(fileId=ss_id, addParents=folder_id,
+                                     removeParents=prev, fields="id").execute()
+                print(f"[sheets] moved to folder {folder_id}")
+            except Exception as _mv:
+                print(f"[sheets] folder move failed (non-fatal): {_mv}")
 
         ws  = ss.get_worksheet(0); ws.update_title("Bracket")
         # Resize to fit the bracket + padding (columns must exist before formatting)
