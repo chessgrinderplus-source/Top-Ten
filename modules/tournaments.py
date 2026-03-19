@@ -1668,20 +1668,23 @@ def create_sheet(tourn: dict, guild=None) -> Optional[str]:
         folder_id = getattr(config, "GOOGLE_DRIVE_FOLDER_ID", None)
         print(f"[sheets] GOOGLE_DRIVE_FOLDER_ID = {folder_id!r}")
 
-        # Create spreadsheet via gspread, then move to user's folder
-        print(f"[sheets] calling gc.create…")
-        ss = gc.create(f"[LIVE] {tourn.get('name','Tournament')}")
-        print(f"[sheets] spreadsheet created: {ss.id}")
-
+        # Create spreadsheet directly in the target folder via Drive API
+        # This avoids consuming the service account's own Drive storage quota
+        import googleapiclient.discovery as _gd
+        drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
+        print(f"[sheets] calling drive.files().create…")
+        file_body = {
+            "name": f"[LIVE] {tourn.get('name','Tournament')}",
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+        }
         if folder_id:
-            import googleapiclient.discovery as _gd
-            drive = _gd.build("drive", "v3",
-                               credentials=creds, cache_discovery=False)
-            file_meta = drive.files().get(fileId=ss.id, fields="parents").execute()
-            prev = ",".join(file_meta.get("parents", []))
-            drive.files().update(fileId=ss.id, addParents=folder_id,
-                                 removeParents=prev, fields="id").execute()
-            print(f"[sheets] moved to folder {folder_id}")
+            file_body["parents"] = [folder_id]
+        created = drive.files().create(body=file_body, fields="id").execute()
+        ss_id = created["id"]
+        print(f"[sheets] spreadsheet created in folder: {ss_id}")
+        ss = gc.open_by_key(ss_id)
+        if folder_id:
+            print(f"[sheets] created directly in folder {folder_id}")
 
         ws  = ss.get_worksheet(0); ws.update_title("Bracket")
         # Resize to fit the bracket + padding (columns must exist before formatting)
@@ -1954,7 +1957,13 @@ def _create_yearly_archive(year: int, guild_id: int) -> Optional[str]:
         gc, creds = _gs_client()
         title = f"Master Archive {year}"
         folder_id = getattr(config, "GOOGLE_DRIVE_FOLDER_ID", None)
-        ss = gc.create(title)
+        _gd2 = __import__("googleapiclient.discovery", fromlist=["discovery"])
+        drive2 = _gd2.build("drive", "v3", credentials=creds, cache_discovery=False)
+        file_body2 = {"name": title, "mimeType": "application/vnd.google-apps.spreadsheet"}
+        if folder_id:
+            file_body2["parents"] = [folder_id]
+        created2 = drive2.files().create(body=file_body2, fields="id").execute()
+        ss = gc.open_by_key(created2["id"])
         if folder_id:
             import googleapiclient.discovery as _gd
             drive = _gd.build("drive", "v3", credentials=creds, cache_discovery=False)
@@ -3277,17 +3286,6 @@ class TournamentsCog(commands.Cog):
     @app_commands.guild_only()
     @app_commands.autocomplete(tournament_id=_ac_comp_all)
     async def tourn_draw_gen(self, i: discord.Interaction, tournament_id: str):
-        # Defer FIRST — before any I/O — to claim the 3-second window immediately
-        try:
-            if not i.response.is_done():
-                await i.response.defer()
-        except discord.errors.NotFound:
-            # Interaction truly expired — nothing we can do
-            print(f"[draw-gen] defer NotFound — interaction expired for uid={i.user.id}")
-            return
-        except discord.errors.HTTPException as _he:
-            # Already acknowledged (e.g. from autocomplete) — fine, just proceed
-            print(f"[draw-gen] defer HTTPException {_he.status} {_he.code} — continuing anyway")
         if not isinstance(i.user, discord.Member) or not _is_admin(i.user):
             return await _reply(i, "❌ Admin only.", ephemeral=True)
         t = _get_comp(tournament_id)
@@ -3317,12 +3315,19 @@ class TournamentsCog(commands.Cog):
         t["matches"] = matches; t["status"] = STATUS_ACTIVE
         _save_comp(tournament_id, t)
 
-        # Send the draw first so Discord doesn't time out while sheets is working
+        # Respond immediately — all computation is done, this is the first network call
         lines = [f"🎾 **Draw Generated — {t.get('name')}**\n"]
         lines += draw_text(draw, bracket, seeded, i.guild, tourn=t)
         lines.append(f"\n📅 {len(matches)} total match slots across {len(_rounds(bracket))} rounds.")
         pv = PageView(lines, per=25)
-        await _reply(i, content=pv.content(), view=pv)
+        try:
+            if i.response.is_done():
+                await i.followup.send(content=pv.content(), view=pv)
+            else:
+                await i.response.send_message(content=pv.content(), view=pv)
+        except Exception as _e:
+            print(f"[draw-gen] send failed: {_e}")
+            return
 
         # Now do the slow Google Sheets work — followup webhooks stay valid for 15 min
         if not _sheets_ok():
