@@ -1,21 +1,6 @@
 # modules/pfc.py
 # ─────────────────────────────────────────────────────────────────────────────
 # Perfect Fit Challenge — Full Discord Module
-#
-# ADMIN COMMANDS  (requires administrator permission)
-#   /pfc-create          Load generated challenge JSON, name it, activate it
-#   /pfc-edit            Rename the active challenge
-#   /pfc-end             End the active challenge and freeze the leaderboard
-#   /pfc-reload          Reload challenge JSON from disk
-#   /pfc-best-lineup     Show the theoretically perfect lineup + score (ephemeral)
-#   /pfc-blacklist       Add or remove a user from the leaderboard blacklist
-#   /pfc-blacklist-view  View the current blacklist
-#
-# USER COMMANDS
-#   /pfc-play            Play the current challenge
-#   /pfc-info            Show the current challenge (categories + player list)
-#   /pfc-leaderboard     Show the current leaderboard
-#   /pfc-commands        Show all available PFC commands
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -41,8 +26,30 @@ from utils import ensure_dir, load_json, save_json, now_ts
 def _data_path() -> str:
     return getattr(config, "PFC_FILE", os.path.join(config.DATA_DIR, "pfc_data.json"))
 
+
 def _challenge_json_path() -> str:
-    return getattr(config, "PFC_CHALLENGE_FILE", os.path.join(config.DATA_DIR, "pfc_challenge.json"))
+    """
+    Resolve the challenge JSON path.
+    Priority:
+      1. PFC_CHALLENGE_FILE env var / config attribute
+      2. data/pfc_challenge.json relative to THIS file's project root
+      3. data/pfc_challenge.json relative to cwd
+    """
+    # Config override
+    if hasattr(config, "PFC_CHALLENGE_FILE") and config.PFC_CHALLENGE_FILE:
+        return config.PFC_CHALLENGE_FILE
+
+    # Absolute path from this file's location
+    # modules/pfc.py  →  project_root/modules/  →  project_root/
+    module_dir   = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(module_dir)
+    abs_path     = os.path.join(project_root, "data", "pfc_challenge.json")
+    if os.path.exists(abs_path):
+        return abs_path
+
+    # Fallback: config.DATA_DIR (relative to cwd)
+    return os.path.join(config.DATA_DIR, "pfc_challenge.json")
+
 
 def _load() -> dict:
     ensure_dir(config.DATA_DIR)
@@ -52,6 +59,7 @@ def _load() -> dict:
     data.setdefault("blacklist", [])
     data.setdefault("sessions",  {})
     return data
+
 
 def _save(data: dict) -> None:
     save_json(_data_path(), data)
@@ -65,14 +73,18 @@ def _is_admin(member: discord.Member) -> bool:
     return member.guild_permissions.administrator
 
 
-def _load_challenge_json() -> dict | None:
+def _load_challenge_json() -> tuple[dict | None, str]:
+    """
+    Load and validate the generator output file.
+    Returns (data_or_None, path_that_was_tried).
+    """
     path = _challenge_json_path()
     if not os.path.exists(path):
-        return None
+        return None, path
     raw = load_json(path, None)
     if not raw or not raw.get("categories") or not raw.get("players"):
-        return None
-    return raw
+        return None, path
+    return raw, path
 
 
 def _score_submission(submission: dict, challenge: dict) -> float:
@@ -90,22 +102,13 @@ def _score_submission(submission: dict, challenge: dict) -> float:
 
 
 def _compute_best_lineup(challenge: dict) -> tuple[list[dict], float]:
-    """
-    Find the theoretically optimal player → category assignment.
-    Uses brute-force permutation search when pool size ≤ 10 (8! = 40320, fast).
-    Falls back to greedy for larger pools.
-    """
     categories = challenge["categories"]
     players    = challenge["players"]
     cat_ids    = [c["id"] for c in categories]
     n_cats     = len(cat_ids)
-
-    values = [
-        [float(p.get("stats", {}).get(cid) or 0) for cid in cat_ids]
-        for p in players
-    ]
-    n_players   = len(players)
-    best_score  = -1.0
+    values     = [[float(p.get("stats", {}).get(cid) or 0) for cid in cat_ids] for p in players]
+    n_players  = len(players)
+    best_score = -1.0
     best_assign = list(range(n_cats))
 
     if n_players <= 10:
@@ -151,7 +154,6 @@ def _leaderboard_embed(challenge: dict, blacklist: list, guild: discord.Guild) -
         description=f"Status: {status}",
         colour=discord.Colour.gold(),
     )
-
     if not scored:
         embed.add_field(name="No entries yet", value="Be the first to play!", inline=False)
         return embed
@@ -165,7 +167,7 @@ def _leaderboard_embed(challenge: dict, blacklist: list, guild: discord.Guild) -
         lines.append(f"{badge} {name_str} — **{score:,.1f}**")
 
     embed.add_field(name="Rankings", value="\n".join(lines), inline=False)
-    embed.set_footer(text=f"Week: {challenge.get('week', '—')}  •  {len(scored)} entries")
+    embed.set_footer(text=f"Week: {challenge.get('week','—')}  •  {len(scored)} entries")
     return embed
 
 
@@ -203,11 +205,7 @@ def _get_session(data: dict, user_id: str, challenge_id: str) -> dict | None:
 # EMBED BUILDERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _game_embed(
-    session: dict,
-    challenge: dict,
-    just_placed: str | None = None,
-) -> discord.Embed:
+def _game_embed(session: dict, challenge: dict, just_placed: str | None = None) -> discord.Embed:
     cats    = challenge["categories"]
     players = {p["name"]: p for p in challenge["players"]}
     n_cats  = len(cats)
@@ -215,13 +213,13 @@ def _game_embed(
     idx     = session["current_idx"]
     queue   = session["queue"]
 
-    placed_count     = len(slots)
-    current_name     = queue[idx] if idx < len(queue) else None
-    player_data      = players.get(current_name, {}) if current_name else {}
-    tour_tag         = f" [{player_data.get('tour', '')}]" if player_data.get("tour") else ""
+    placed_count = len(slots)
+    current_name = queue[idx] if idx < len(queue) else None
+    player_data  = players.get(current_name, {}) if current_name else {}
+    tour_tag     = f" [{player_data.get('tour','')}]" if player_data.get("tour") else ""
 
     embed = discord.Embed(
-        title=f"🎾 {challenge.get('name', 'Perfect Fit Challenge')}",
+        title=f"🎾 {challenge.get('name','Perfect Fit Challenge')}",
         colour=discord.Colour.blue(),
     )
 
@@ -235,7 +233,6 @@ def _game_embed(
     if just_placed:
         embed.add_field(name="✅ Just Placed", value=just_placed, inline=False)
 
-    # Slot summary
     slot_lines = []
     for cat in cats:
         cid   = cat["id"]
@@ -266,11 +263,11 @@ def _result_embed(session: dict, challenge: dict, user: discord.Member) -> disco
     lines   = []
 
     for cat in cats:
-        cid    = cat["id"]
-        dname  = cat["display_name"]
-        pname  = slots.get(cid, "—")
-        pdata  = players.get(pname, {})
-        val    = pdata.get("stats", {}).get(cid)
+        cid   = cat["id"]
+        dname = cat["display_name"]
+        pname = slots.get(cid, "—")
+        pdata = players.get(pname, {})
+        val   = pdata.get("stats", {}).get(cid)
         if val is not None:
             total += float(val)
             lines.append(f"**{dname}**\n└ {pname}  •  `{val:,.1f}`")
@@ -278,7 +275,7 @@ def _result_embed(session: dict, challenge: dict, user: discord.Member) -> disco
             lines.append(f"**{dname}**\n└ {pname}  •  `N/A`")
 
     embed = discord.Embed(
-        title=f"🏁 {challenge.get('name', 'PFC')} — Your Results",
+        title=f"🏁 {challenge.get('name','PFC')} — Your Results",
         description=f"**{user.display_name}** finished with a score of **{total:,.1f}**!",
         colour=discord.Colour.green(),
     )
@@ -294,19 +291,15 @@ def _result_embed(session: dict, challenge: dict, user: discord.Member) -> disco
 
 class SlotSelect(discord.ui.Select):
     def __init__(self, parent: "SlotPickerView"):
-        slots = parent.session["slots"]
+        slots   = parent.session["slots"]
         options = [
-            discord.SelectOption(
-                label=cat["display_name"][:100],
-                value=cat["id"],
-            )
+            discord.SelectOption(label=cat["display_name"][:100], value=cat["id"])
             for cat in parent.challenge["categories"]
             if cat["id"] not in slots
         ]
         super().__init__(
             placeholder="Choose a slot for this player…",
-            min_values=1,
-            max_values=1,
+            min_values=1, max_values=1,
             options=options[:25],
         )
         self.parent_view = parent
@@ -331,9 +324,7 @@ class SlotPickerView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "❌ This game isn't yours.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ This game isn't yours.", ephemeral=True)
             return False
         return True
 
@@ -355,7 +346,6 @@ class SlotPickerView(discord.ui.View):
             self._locked = False
 
     async def _process(self, interaction: discord.Interaction, cat_id: str):
-        # Re-load fresh data every time to avoid race conditions
         data      = _load()
         uid_str   = str(self.user_id)
         challenge = data.get("active")
@@ -380,43 +370,28 @@ class SlotPickerView(discord.ui.View):
             )
             return
 
-        # Place the player
         idx          = session["current_idx"]
         queue        = session["queue"]
         n_cats       = len(challenge["categories"])
         current_name = queue[idx]
-        cat_display  = next(
-            c["display_name"] for c in challenge["categories"] if c["id"] == cat_id
-        )
+        cat_display  = next(c["display_name"] for c in challenge["categories"] if c["id"] == cat_id)
 
-        session["slots"][cat_id]   = current_name
-        session["current_idx"]     = idx + 1
-        placed_msg                 = f"{current_name} → **{cat_display}**"
-
-        remaining = n_cats - len(session["slots"])
+        session["slots"][cat_id] = current_name
+        session["current_idx"]   = idx + 1
+        placed_msg               = f"{current_name} → **{cat_display}**"
+        remaining                = n_cats - len(session["slots"])
 
         # ── Last player — auto-assign ──────────────────────────────────────
         if remaining == 1:
             next_name    = queue[session["current_idx"]]
-            last_cat_id  = next(
-                c["id"] for c in challenge["categories"]
-                if c["id"] not in session["slots"]
-            )
-            last_display = next(
-                c["display_name"] for c in challenge["categories"]
-                if c["id"] == last_cat_id
-            )
+            last_cat_id  = next(c["id"] for c in challenge["categories"] if c["id"] not in session["slots"])
+            last_display = next(c["display_name"] for c in challenge["categories"] if c["id"] == last_cat_id)
             session["slots"][last_cat_id] = next_name
             session["current_idx"]        += 1
             session["completed"]           = True
-
-            challenge["submissions"][uid_str] = {
-                "lineup":       session["slots"],
-                "submitted_at": now_ts(),
-            }
+            challenge["submissions"][uid_str] = {"lineup": session["slots"], "submitted_at": now_ts()}
             data["sessions"][uid_str] = session
             _save(data)
-
             self.challenge = challenge
             self.session   = session
             auto_note      = f"*{next_name} was auto-assigned to **{last_display}***"
@@ -425,16 +400,12 @@ class SlotPickerView(discord.ui.View):
             await interaction.response.edit_message(embed=res_embed, view=None)
             return
 
-        # ── Done (all slots manually filled) ──────────────────────────────
+        # ── All done ───────────────────────────────────────────────────────
         if remaining == 0:
             session["completed"] = True
-            challenge["submissions"][uid_str] = {
-                "lineup":       session["slots"],
-                "submitted_at": now_ts(),
-            }
+            challenge["submissions"][uid_str] = {"lineup": session["slots"], "submitted_at": now_ts()}
             data["sessions"][uid_str] = session
             _save(data)
-
             self.challenge = challenge
             self.session   = session
             await interaction.response.edit_message(
@@ -442,14 +413,12 @@ class SlotPickerView(discord.ui.View):
             )
             return
 
-        # ── Continue — show next player ────────────────────────────────────
+        # ── Continue ───────────────────────────────────────────────────────
         data["sessions"][uid_str] = session
         _save(data)
-
         self.challenge = challenge
         self.session   = session
         self._rebuild()
-
         await interaction.response.edit_message(
             embed=_game_embed(session, challenge, just_placed=placed_msg),
             view=self,
@@ -464,8 +433,6 @@ class PFCCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # ── Guards ────────────────────────────────────────────────────────────────
-
     async def _require_admin(self, interaction: discord.Interaction) -> bool:
         if not _is_admin(interaction.user):
             await interaction.response.send_message(
@@ -478,15 +445,12 @@ class PFCCog(commands.Cog):
         data = _load()
         if not data["active"]:
             await interaction.response.send_message(
-                "❌ No active challenge. Use `/pfc-create` to start one.",
-                ephemeral=True,
+                "❌ No active challenge. Use `/pfc-create` to start one.", ephemeral=True
             )
             return None
         return data
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # USER — PLAY
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── PLAY ─────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-play", description="Play the current Perfect Fit Challenge.")
     async def pfc_play(self, interaction: discord.Interaction):
@@ -501,7 +465,6 @@ class PFCCog(commands.Cog):
 
         uid_str = str(interaction.user.id)
 
-        # Already submitted
         if uid_str in challenge.get("submissions", {}):
             score = _score_submission(challenge["submissions"][uid_str], challenge)
             await interaction.response.send_message(
@@ -512,7 +475,6 @@ class PFCCog(commands.Cog):
             )
             return
 
-        # Resume or create session
         session = _get_session(data, uid_str, challenge["id"])
         if not session:
             session = _start_session(data, uid_str, challenge)
@@ -522,32 +484,24 @@ class PFCCog(commands.Cog):
         view  = SlotPickerView(self, interaction.user.id, challenge, session)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ADMIN — CREATE
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── CREATE ────────────────────────────────────────────────────────────────
 
-    @app_commands.command(
-        name="pfc-create",
-        description="[Admin] Load the generated challenge and activate it.",
-    )
+    @app_commands.command(name="pfc-create", description="[Admin] Load the generated challenge and activate it.")
     @app_commands.describe(
         name="Display name for this week's challenge (e.g. 'Big 3 Showdown')",
         num_categories="How many category slots to use (default: all from the JSON)",
     )
-    async def pfc_create(
-        self,
-        interaction: discord.Interaction,
-        name: str,
-        num_categories: Optional[int] = None,
-    ):
+    async def pfc_create(self, interaction: discord.Interaction, name: str, num_categories: Optional[int] = None):
         if not await self._require_admin(interaction):
             return
 
-        raw = _load_challenge_json()
+        raw, path = _load_challenge_json()
         if not raw:
             await interaction.response.send_message(
-                "❌ Could not load `pfc_challenge.json`.\n"
-                "Run `python tools/pfc_generate.py` first.",
+                f"❌ Could not load challenge data.\n"
+                f"**Looked for:** `{path}`\n\n"
+                f"Make sure you've run `python tools/pfc_generate.py` from your **project root**, "
+                f"and that the `data/` folder exists.",
                 ephemeral=True,
             )
             return
@@ -558,15 +512,12 @@ class PFCCog(commands.Cog):
         if num_categories is not None:
             if not (1 <= num_categories <= len(cats)):
                 await interaction.response.send_message(
-                    f"❌ `num_categories` must be between 1 and {len(cats)}.",
-                    ephemeral=True,
+                    f"❌ `num_categories` must be between 1 and {len(cats)}.", ephemeral=True
                 )
                 return
             cats = cats[:num_categories]
 
         data = _load()
-
-        # Archive existing active challenge
         if data["active"]:
             data["active"]["ended"]    = True
             data["active"]["ended_at"] = now_ts()
@@ -589,7 +540,7 @@ class PFCCog(commands.Cog):
 
         embed = discord.Embed(title="✅ Perfect Fit Challenge Created!", colour=discord.Colour.green())
         embed.add_field(name="Name",        value=name,                  inline=True)
-        embed.add_field(name="Week",        value=raw.get("week", "—"),  inline=True)
+        embed.add_field(name="Week",        value=raw.get("week","—"),   inline=True)
         embed.add_field(name="Slots",       value=str(len(cats)),        inline=True)
         embed.add_field(name="Player Pool", value=str(len(players)),     inline=True)
         embed.add_field(name="ID",          value=cid,                   inline=True)
@@ -600,118 +551,89 @@ class PFCCog(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ADMIN — EDIT
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── EDIT ──────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-edit", description="[Admin] Rename the active challenge.")
     @app_commands.describe(name="New display name")
     async def pfc_edit(self, interaction: discord.Interaction, name: str):
-        if not await self._require_admin(interaction):
-            return
+        if not await self._require_admin(interaction): return
         data = await self._require_active(interaction)
-        if not data:
-            return
+        if not data: return
         old = data["active"]["name"]
         data["active"]["name"] = name.strip()
         _save(data)
         await interaction.response.send_message(f"✅ Renamed: **{old}** → **{name.strip()}**")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ADMIN — END
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── END ───────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-end", description="[Admin] End the challenge and freeze the leaderboard.")
     async def pfc_end(self, interaction: discord.Interaction):
-        if not await self._require_admin(interaction):
-            return
+        if not await self._require_admin(interaction): return
         data = await self._require_active(interaction)
-        if not data:
-            return
-
-        c              = data["active"]
-        c["ended"]     = True
-        c["ended_at"]  = now_ts()
+        if not data: return
+        c = data["active"]
+        c["ended"] = True; c["ended_at"] = now_ts()
         data["past"].append(c)
         data["active"]   = None
         data["sessions"] = {}
         _save(data)
-
         embed = discord.Embed(
             title="🔴 Challenge Ended",
             description=f"**{c['name']}** is now closed. Leaderboard is final.",
             colour=discord.Colour.red(),
         )
-        embed.add_field(name="Entries", value=str(len(c.get("submissions", {}))), inline=True)
+        embed.add_field(name="Entries", value=str(len(c.get("submissions",{}))), inline=True)
         await interaction.response.send_message(embed=embed)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ADMIN — RELOAD
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── RELOAD ────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-reload", description="[Admin] Reload challenge data from disk without wiping submissions.")
     async def pfc_reload(self, interaction: discord.Interaction):
-        if not await self._require_admin(interaction):
-            return
+        if not await self._require_admin(interaction): return
         data = await self._require_active(interaction)
-        if not data:
-            return
-
-        raw = _load_challenge_json()
+        if not data: return
+        raw, path = _load_challenge_json()
         if not raw:
             await interaction.response.send_message(
-                "❌ Could not load `pfc_challenge.json`.", ephemeral=True
+                f"❌ Could not load `pfc_challenge.json`.\nLooked at: `{path}`", ephemeral=True
             )
             return
-
-        n_cats                       = len(data["active"]["categories"])
+        n_cats = len(data["active"]["categories"])
         data["active"]["categories"] = raw["categories"][:n_cats]
         data["active"]["players"]    = raw["players"]
         data["active"]["week"]       = raw.get("week", data["active"]["week"])
         _save(data)
-
         await interaction.response.send_message(
             f"✅ Reloaded — {len(raw['players'])} players, {n_cats} categories. Submissions preserved.",
             ephemeral=True,
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ADMIN — BEST LINEUP
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── BEST LINEUP ───────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-best-lineup", description="[Admin] Calculate the theoretically perfect lineup and max score.")
     async def pfc_best_lineup(self, interaction: discord.Interaction):
-        if not await self._require_admin(interaction):
-            return
+        if not await self._require_admin(interaction): return
         data = await self._require_active(interaction)
-        if not data:
-            return
-
+        if not data: return
         await interaction.response.defer(ephemeral=True, thinking=True)
         challenge     = data["active"]
         lineup, total = _compute_best_lineup(challenge)
-
         embed = discord.Embed(
             title=f"🧠 Perfect Lineup — {challenge['name']}",
             description="Theoretically optimal assignment.\n*Admin only.*",
             colour=discord.Colour.purple(),
         )
-        lines = [
-            f"**{e['category']}**\n└ {e['player']}  •  `{e['stat_value']:,.1f}`"
-            for e in lineup
-        ]
+        lines = [f"**{e['category']}**\n└ {e['player']}  •  `{e['stat_value']:,.1f}`" for e in lineup]
         for i in range(0, len(lines), 4):
             embed.add_field(
-                name=f"Slots {i+1}–{min(i+4, len(lines))}",
+                name=f"Slots {i+1}–{min(i+4,len(lines))}",
                 value="\n".join(lines[i:i+4]),
                 inline=False,
             )
         embed.add_field(name="Max Possible Score", value=f"**{total:,.1f}**", inline=False)
         await interaction.edit_original_response(embed=embed)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ADMIN — BLACKLIST
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── BLACKLIST ─────────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-blacklist", description="[Admin] Add or remove a user from the leaderboard blacklist.")
     @app_commands.describe(action="add or remove", user="The user")
@@ -720,31 +642,21 @@ class PFCCog(commands.Cog):
         app_commands.Choice(name="remove", value="remove"),
     ])
     async def pfc_blacklist(self, interaction: discord.Interaction, action: str, user: discord.Member):
-        if not await self._require_admin(interaction):
-            return
-        data = _load()
-        uid  = str(user.id)
+        if not await self._require_admin(interaction): return
+        data = _load(); uid = str(user.id)
         if action == "add":
-            if uid not in data["blacklist"]:
-                data["blacklist"].append(uid)
+            if uid not in data["blacklist"]: data["blacklist"].append(uid)
             _save(data)
-            await interaction.response.send_message(
-                f"✅ **{user.display_name}** added to the PFC blacklist.", ephemeral=True
-            )
+            await interaction.response.send_message(f"✅ **{user.display_name}** added to blacklist.", ephemeral=True)
         else:
-            if uid in data["blacklist"]:
-                data["blacklist"].remove(uid)
+            if uid in data["blacklist"]: data["blacklist"].remove(uid)
             _save(data)
-            await interaction.response.send_message(
-                f"✅ **{user.display_name}** removed from the PFC blacklist.", ephemeral=True
-            )
+            await interaction.response.send_message(f"✅ **{user.display_name}** removed from blacklist.", ephemeral=True)
 
     @app_commands.command(name="pfc-blacklist-view", description="[Admin] View the current leaderboard blacklist.")
     async def pfc_blacklist_view(self, interaction: discord.Interaction):
-        if not await self._require_admin(interaction):
-            return
-        data = _load()
-        bl   = data.get("blacklist", [])
+        if not await self._require_admin(interaction): return
+        data = _load(); bl = data.get("blacklist", [])
         if not bl:
             await interaction.response.send_message("The blacklist is empty.", ephemeral=True)
             return
@@ -752,78 +664,54 @@ class PFCCog(commands.Cog):
         for uid in bl:
             member = interaction.guild.get_member(int(uid))
             lines.append(f"• {member.display_name if member else f'User {uid}'}")
-        embed = discord.Embed(
-            title="🚫 PFC Leaderboard Blacklist",
-            description="\n".join(lines),
-            colour=discord.Colour.dark_grey(),
-        )
+        embed = discord.Embed(title="🚫 PFC Leaderboard Blacklist",
+                              description="\n".join(lines), colour=discord.Colour.dark_grey())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # USER — INFO
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── INFO ──────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-info", description="Show the current Perfect Fit Challenge details.")
     async def pfc_info(self, interaction: discord.Interaction):
         data      = _load()
         challenge = data.get("active")
-
         if not challenge:
-            await interaction.response.send_message(
-                "No active challenge right now. Check back soon!", ephemeral=True
-            )
+            await interaction.response.send_message("No active challenge right now. Check back soon!", ephemeral=True)
             return
-
         embed = discord.Embed(title=f"🎾 {challenge['name']}", colour=discord.Colour.blue())
-        embed.add_field(name="Week",        value=challenge.get("week", "—"),          inline=True)
-        embed.add_field(name="Slots",       value=str(len(challenge["categories"])),   inline=True)
-        embed.add_field(name="Player Pool", value=str(len(challenge["players"])),      inline=True)
-
-        cat_lines = "\n".join(
-            f"`{i+1}.` {c['display_name']}"
-            for i, c in enumerate(challenge["categories"])
-        )
+        embed.add_field(name="Week",        value=challenge.get("week","—"),        inline=True)
+        embed.add_field(name="Slots",       value=str(len(challenge["categories"])), inline=True)
+        embed.add_field(name="Player Pool", value=str(len(challenge["players"])),   inline=True)
+        cat_lines = "\n".join(f"`{i+1}.` {c['display_name']}" for i, c in enumerate(challenge["categories"]))
         embed.add_field(name="🗂️ Stat Slots", value=cat_lines or "—", inline=False)
-
         atp   = [p["name"] for p in challenge["players"] if p.get("tour","").upper() == "ATP"]
         wta   = [p["name"] for p in challenge["players"] if p.get("tour","").upper() == "WTA"]
         other = [p["name"] for p in challenge["players"] if p.get("tour","").upper() not in ("ATP","WTA")]
-        if atp:
-            embed.add_field(name=f"👨 ATP ({len(atp)})", value=", ".join(atp), inline=False)
-        if wta:
-            embed.add_field(name=f"👩 WTA ({len(wta)})", value=", ".join(wta), inline=False)
-        if other:
-            embed.add_field(name=f"Players ({len(other)})", value=", ".join(other), inline=False)
-
+        if atp:   embed.add_field(name=f"👨 ATP ({len(atp)})",      value=", ".join(atp),   inline=False)
+        if wta:   embed.add_field(name=f"👩 WTA ({len(wta)})",      value=", ".join(wta),   inline=False)
+        if other: embed.add_field(name=f"Players ({len(other)})", value=", ".join(other), inline=False)
         uid_str = str(interaction.user.id)
         if uid_str in challenge.get("submissions", {}):
             score = _score_submission(challenge["submissions"][uid_str], challenge)
             embed.add_field(name="✅ Your Score", value=f"**{score:,.1f}** — already submitted", inline=False)
         else:
             embed.add_field(name="▶️ Play", value="Use `/pfc-play` to take part!", inline=False)
-
         embed.set_footer(text="Use /pfc-commands to see all commands.")
         await interaction.response.send_message(embed=embed)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # USER — LEADERBOARD
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── LEADERBOARD ───────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-leaderboard", description="Show the Perfect Fit Challenge leaderboard.")
     @app_commands.describe(historical="Show a past challenge by ID or name")
     async def pfc_leaderboard(self, interaction: discord.Interaction, historical: Optional[str] = None):
         data = _load()
-
         if historical:
             challenge = next(
-                (c for c in data.get("past", [])
-                 if c.get("id") == historical or c.get("name", "").lower() == historical.lower()),
+                (c for c in data.get("past",[])
+                 if c.get("id") == historical or c.get("name","").lower() == historical.lower()),
                 None,
             )
             if not challenge:
-                await interaction.response.send_message(
-                    f"❌ No past challenge found: `{historical}`.", ephemeral=True
-                )
+                await interaction.response.send_message(f"❌ No past challenge: `{historical}`.", ephemeral=True)
                 return
         else:
             challenge = data.get("active")
@@ -833,21 +721,15 @@ class PFCCog(commands.Cog):
             if not challenge:
                 await interaction.response.send_message("No challenge data yet.", ephemeral=True)
                 return
-
-        embed = _leaderboard_embed(challenge, data.get("blacklist", []), interaction.guild)
+        embed = _leaderboard_embed(challenge, data.get("blacklist",[]), interaction.guild)
         await interaction.response.send_message(embed=embed)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # USER — COMMANDS
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── COMMANDS ──────────────────────────────────────────────────────────────
 
     @app_commands.command(name="pfc-commands", description="Show all Perfect Fit Challenge commands.")
     async def pfc_commands(self, interaction: discord.Interaction):
         is_admin = _is_admin(interaction.user)
-        embed    = discord.Embed(
-            title="🎾 Perfect Fit Challenge — Commands",
-            colour=discord.Colour.blurple(),
-        )
+        embed    = discord.Embed(title="🎾 Perfect Fit Challenge — Commands", colour=discord.Colour.blurple())
         embed.add_field(
             name="🎮 Playing",
             value=(
@@ -872,10 +754,7 @@ class PFCCog(commands.Cog):
                 ),
                 inline=False,
             )
-        embed.set_footer(
-            text="Each week: assign 8 random players to stat slots. "
-                 "Better stats in the right slots = higher score!"
-        )
+        embed.set_footer(text="Each week: assign random players to stat slots. Better stats in the right slots = higher score!")
         await interaction.response.send_message(embed=embed)
 
 

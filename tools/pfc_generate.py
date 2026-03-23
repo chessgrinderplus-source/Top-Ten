@@ -3,7 +3,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Perfect Fit Challenge — Weekly Challenge Generator
 #
-# Usage:
+# Usage (run from your project root):
 #   python tools/pfc_generate.py
 #
 # Output:
@@ -18,15 +18,19 @@ import sys
 from collections import defaultdict
 from datetime import date
 
-sys.path.insert(0, os.path.dirname(__file__))
-from pfc_categories import CATEGORIES, build_h2h_categories, build_season_categories
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# ── Path resolution ───────────────────────────────────────────────────────────
+# Works correctly regardless of which directory you run the script from.
+# SCRIPT_DIR = the tools/ folder
+# ROOT_DIR   = the project root (where bot.py and the data/ folder live)
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR    = os.path.dirname(SCRIPT_DIR)
 POOL_FILE   = os.path.join(SCRIPT_DIR, "pfc_players.json")
 OUTPUT_FILE = os.path.join(ROOT_DIR, "data", "pfc_challenge.json")
+
+# Make sure tools/ is importable
+sys.path.insert(0, SCRIPT_DIR)
+from pfc_categories import CATEGORIES, build_h2h_categories, build_season_categories
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -56,8 +60,8 @@ def _group_categories(cats: list[dict]) -> dict[str, list[dict]]:
 
 
 def pick_categories(all_cats: list[dict]) -> list[dict]:
-    chosen: list[dict]  = []
-    chosen_ids: set[str] = set()
+    chosen:     list[dict]   = []
+    chosen_ids: set[str]     = set()
 
     while len(chosen) < 8:
         clear()
@@ -71,8 +75,8 @@ def pick_categories(all_cats: list[dict]) -> list[dict]:
                 print(f"     {i}. {c['display_name']}")
             print()
 
-        remaining  = [c for c in all_cats if c["id"] not in chosen_ids]
-        groups     = _group_categories(remaining)
+        remaining   = [c for c in all_cats if c["id"] not in chosen_ids]
+        groups      = _group_categories(remaining)
         group_names = sorted(groups.keys())
 
         print("  GROUPS\n")
@@ -94,7 +98,7 @@ def pick_categories(all_cats: list[dict]) -> list[dict]:
 
         if cmd == "r":
             if not chosen:
-                input("  Nothing chosen yet. Press Enter...")
+                input("  Nothing chosen. Press Enter...")
                 continue
             raw = input(f"  Remove which? (1–{len(chosen)}): ").strip()
             try:
@@ -113,7 +117,7 @@ def pick_categories(all_cats: list[dict]) -> list[dict]:
             existing = {x["id"] for x in all_cats}
             added    = [c for c in new_cats if c["id"] not in existing]
             all_cats.extend(added)
-            print(f"  ✅ Added {len(added)} H2H categories for {ref_name}.")
+            print(f"  ✅ Added {len(added)} H2H categories for {ref_name}. Browse 'Head to Head' group.")
             input("  Press Enter...")
             continue
 
@@ -180,6 +184,9 @@ def pick_categories(all_cats: list[dict]) -> list[dict]:
 # ── Player picker ─────────────────────────────────────────────────────────────
 
 def load_players() -> list[dict]:
+    if not os.path.exists(POOL_FILE):
+        print(f"  ❌ Player pool not found at: {POOL_FILE}")
+        sys.exit(1)
     with open(POOL_FILE, "r", encoding="utf-8") as f:
         return json.load(f)["players"]
 
@@ -224,22 +231,23 @@ def fetch_all_stats(players: list[dict], categories: list[dict]) -> list[dict]:
     hr()
     print("  FETCHING STATS")
     hr()
-    print(f"  {len(players)} players × {len(categories)} categories = {total} values\n")
+    print(f"  {len(players)} players × {len(categories)} categories = {total} values")
+    print(f"  Output file: {OUTPUT_FILE}\n")
 
     for player in players:
         player_stats: dict = {}
-        print(f"\n  ── {player['name']} {'─' * (40 - len(player['name']))}")
+        bar = "─" * max(0, 40 - len(player["name"]))
+        print(f"\n  ── {player['name']} {bar}")
 
         for cat in categories:
             done += 1
-            prefix = f"  [{done}/{total}]"
+            prefix = f"  [{done:>{len(str(total))}}/{total}]"
 
-            # Try auto-fetch
             val = None
             if cat.get("source") != "manual":
                 try:
                     val = cat["fetch_fn"](player)
-                except Exception:
+                except Exception as e:
                     val = None
 
                 if val is not None:
@@ -247,7 +255,7 @@ def fetch_all_stats(players: list[dict], categories: list[dict]) -> list[dict]:
                     player_stats[cat["id"]] = val
                     continue
                 else:
-                    print(f"{prefix} ❌  {cat['display_name']} — not found, entering manually")
+                    print(f"{prefix} ❌  {cat['display_name']} — auto-fetch failed, enter manually:")
 
             val = prompt_number(f"{prefix} ✏️   {cat['display_name']}: ")
             player_stats[cat["id"]] = val
@@ -272,19 +280,23 @@ def save_challenge(categories: list[dict], players: list[dict]):
     }
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(challenge, f, indent=2, ensure_ascii=False)
-    print(f"\n  ✅ Saved to: {OUTPUT_FILE}")
+
+    size = os.path.getsize(OUTPUT_FILE)
+    print(f"\n  ✅ Saved to: {OUTPUT_FILE}  ({size:,} bytes)")
+    print(f"     {len(players)} players, {len(categories)} categories")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    print(f"\n  Project root:  {ROOT_DIR}")
+    print(f"  Output file:   {OUTPUT_FILE}\n")
+
     all_players = load_players()
     all_cats    = list(CATEGORIES)
 
-    # Step 1: Pick categories
-    chosen_cats = pick_categories(all_cats)
+    chosen_cats    = pick_categories(all_cats)
 
-    # Confirm
     clear()
     hr()
     print("  CONFIRMED — 8 CATEGORIES FOR THIS WEEK")
@@ -292,17 +304,15 @@ def main():
     for i, c in enumerate(chosen_cats, 1):
         print(f"  {i}. {c['display_name']}")
 
-    # Step 2: Pick players
     chosen_players = pick_players(all_players)
     print(f"\n  {len(chosen_players)} players selected.")
     input("  Press Enter to start fetching stats...")
 
-    # Step 3: Fetch / enter stats
     player_results = fetch_all_stats(chosen_players, chosen_cats)
-
-    # Step 4: Save
     save_challenge(chosen_cats, player_results)
-    print("  Done! Run /pfc-create in Discord to activate it.\n")
+
+    print(f"\n  Done! In Discord, run: /pfc-create name:Your Challenge Name")
+    print(f"  (The bot will load the file from: {OUTPUT_FILE})\n")
 
 
 if __name__ == "__main__":
