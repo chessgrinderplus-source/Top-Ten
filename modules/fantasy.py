@@ -769,10 +769,6 @@ class RosterPickMenuView(discord.ui.View):
 # Match Leaderboard & Perfect Picks helpers
 # ============================================================
 
-# ============================================================
-# Match Leaderboard & Perfect Picks helpers
-# ============================================================
-
 def _parse_match_log_entries(player_name: str, match_log: str) -> List[dict]:
     """
     Parse a player's semicolon-separated match log into individual match entries.
@@ -1918,10 +1914,23 @@ class FantasyCog(commands.Cog):
             embed=None, view=None)
 
     async def _fantasy_end_submit(self, interaction: discord.Interaction, tournament_id: str, results_text: str):
+        # ── Helper: reply whether or not the interaction was already responded to ──
+        async def _reply(content=None, **kwargs):
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(content, **kwargs)
+                else:
+                    # Strip ephemeral from kwargs — edit_original_response doesn't accept it
+                    kwargs.pop("ephemeral", None)
+                    await interaction.edit_original_response(content=content, **kwargs)
+            except Exception as reply_err:
+                print(f"[fantasy] _reply failed: {reply_err}")
+
         try:
             data = _load()
             t = _find_tournament(data, tournament_id)
-            if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
+            if not t:
+                return await _reply("❌ Not found.", ephemeral=True)
 
             category_id = t.get("category_id")
             cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
@@ -1930,8 +1939,8 @@ class FantasyCog(commands.Cog):
             rows, parse_errors = _parse_results_lines(results_text)
             if parse_errors:
                 view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
-                return await interaction.response.send_message("❌ Errors:\n" + "\n".join(parse_errors[:30]),
-                                                                view=view, ephemeral=True)
+                return await _reply("❌ Errors:\n" + "\n".join(parse_errors[:30]),
+                                    view=view, ephemeral=True)
 
             tp_keys = {_player_key(p["name"]) for p in t.get("players", [])}
             unknown = [r["player"] for r in rows if _player_key(r["player"]) not in tp_keys]
@@ -1942,9 +1951,9 @@ class FantasyCog(commands.Cog):
                 if unknown: msg.append("\n**Unknown:**"); msg.extend([f"- {n}" for n in unknown[:50]])
                 if missing: msg.append("\n**Missing:**");  msg.extend([f"- {n}" for n in missing[:50]])
                 view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
-                return await interaction.response.send_message("\n".join(msg), view=view, ephemeral=True)
+                return await _reply("\n".join(msg), view=view, ephemeral=True)
 
-            # Build final rows — uses set/upset pts + match log if provided (full format from Claude chat)
+            # Build final rows
             final_rows = []
             for r in rows:
                 canonical = _normalize_round(r["round"]) or r["round"]
@@ -1956,16 +1965,16 @@ class FantasyCog(commands.Cog):
                 set_pts   = sw * 5 - sl * 2
                 total     = tourn_pts + set_pts + perf + upset
                 final_rows.append({
-                    "player":            r["player"],
-                    "round":             canonical,
-                    "sets_won":          sw,
-                    "sets_lost":         sl,
-                    "tournament_points": tourn_pts,
-                    "set_points":        set_pts,
+                    "player":             r["player"],
+                    "round":              canonical,
+                    "sets_won":           sw,
+                    "sets_lost":          sl,
+                    "tournament_points":  tourn_pts,
+                    "set_points":         set_pts,
                     "performance_points": perf,
-                    "upset_points":      upset,
-                    "total":             total,
-                    "match_log":         r.get("match_log", ""),
+                    "upset_points":       upset,
+                    "total":              total,
+                    "match_log":          r.get("match_log", ""),
                 })
 
             has_full = any(r.get("sets_won") or r.get("upset_pts") or r.get("performance_pts") for r in rows)
@@ -1974,8 +1983,7 @@ class FantasyCog(commands.Cog):
                                             title="Results Saved", note=note)
         except Exception as e:
             view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
-            await interaction.response.send_message(f"❌ Error: `{type(e).__name__}: {e}`",
-                                                     view=view, ephemeral=True)
+            await _reply(f"❌ Error: `{type(e).__name__}: {e}`", view=view, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_ready(self):
