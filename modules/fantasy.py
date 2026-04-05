@@ -238,6 +238,265 @@ def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Opti
 
 
 # ============================================================
+
+    _CALC_ROUND_W: Dict[str, str] = {
+        "F":    "Champion",       # winner of the final
+        "SF":   "Semi-Final",
+        "QF":   "Quarter-Final",
+        "R16":  "R16",
+        "R32":  "R32",
+        "R64":  "R64",
+        "R128": "R128",
+    }
+
+    _CALC_ROUND_L: Dict[str, str] = {
+        "F":    "Finalist",       # loser of the final
+        "SF":   "Semi-Final",
+        "QF":   "Quarter-Final",
+        "R16":  "R16",
+        "R32":  "R32",
+        "R64":  "R64",
+        "R128": "R128",
+    }
+
+    _ROUND_ORDER_CALC: List[str] = [
+        "Champion", "Finalist", "Semi-Final", "Quarter-Final",
+        "R16", "R32", "R64", "R128",
+    ]
+
+    # ============================================================
+    # Name helpers
+    # ============================================================
+
+    def _clean_player_name(raw: str) -> str:
+        """
+        Strip [country], [yr|ev] tags and leading seed/qualifier bracket.
+        "(2)Jannik Sinner [ITA] [yr | ev]"  →  "Jannik Sinner"
+        "(Q)Martin Landaluce [ESP]"          →  "Martin Landaluce"
+        """
+        s = re.sub(r"\[.*?\]", "", raw)
+        s = re.sub(r"^\(\d+\)\s*", "", s)
+        s = re.sub(r"^\((Q|WC|LL|PR)\)\s*", "", s, flags=re.IGNORECASE)
+        return s.strip()
+
+
+    def _name_match_calc(a: str, b: str) -> bool:
+        """
+        Fuzzy match tolerant of partial names.
+        "Sinner" matches "Jannik Sinner", etc.
+        """
+        norm = lambda s: re.sub(r"[^a-z]", "", s.lower())
+        na, nb = norm(a), norm(b)
+        if na in nb or nb in na:
+            return True
+        pa = a.lower().split()
+        pb = b.lower().split()
+        shared = [x for x in pa if any(x in y or y in x for y in pb)]
+        return len(shared) >= min(len(pa), len(pb))
+
+
+    # ============================================================
+    # Draw parser
+    # ============================================================
+
+    def _extract_rank(col: str) -> Optional[int]:
+        """Extract rank from a rank column (bare integer like '2' or '22')."""
+        col = col.strip()
+        try:
+            n = int(col)
+            return n if n > 0 else None
+        except ValueError:
+            return None
+
+
+    def _extract_dr(col: str) -> Optional[float]:
+        """Extract dominance ratio from cols[8], e.g. '1.65'."""
+        try:
+            return float(col.strip())
+        except (ValueError, AttributeError):
+            return None
+
+
+    def _parse_set_score_calc(score_raw: str) -> Tuple[int, int]:
+        """
+        Return (sets_won_by_winner, sets_lost_by_winner) from a score string.
+        Handles tiebreak suffixes like 7-6(4).
+        Ignores non-score tokens (RET, w/o, etc.).
+        """
+        sw = sl = 0
+        for chunk in score_raw.strip().split():
+            m = re.match(r"^(\d+)-(\d+)(?:\(\d+\))?$", chunk)
+            if not m:
+                continue
+            a, b = int(m.group(1)), int(m.group(2))
+            if a > b:
+                sw += 1
+            else:
+                sl += 1
+        return sw, sl
+
+
+    def _parse_raw_draw(text: str) -> List[dict]:
+        """
+        Parse a tab-separated draw block into match dicts.
+
+        Each dict:
+          round_w   — canonical round for the winner
+          round_l   — canonical round for the loser
+          w_name    — cleaned winner name
+          l_name    — cleaned loser name
+          w_rank    — int or None
+          l_rank    — int or None
+          w_sets    — sets won by winner
+          l_sets    — sets won by loser  (= sets lost by winner)
+          dr        — dominance ratio (winner's perspective, float or None)
+          score_raw — raw score string
+          is_wo     — True if walkover or retirement
+        """
+        matches = []
+        for raw_line in text.strip().splitlines():
+            cols = raw_line.strip().split("\t")
+            if len(cols) < 6:
+                continue
+
+            round_code = cols[0].strip()
+            if round_code not in _CALC_ROUND_W:
+                continue
+
+            score_raw = cols[6].strip() if len(cols) > 6 else ""
+            dr_raw    = cols[8].strip() if len(cols) > 8 else ""
+
+            is_wo = bool(re.search(r"\bRET\b|w/o|walkover", score_raw, re.IGNORECASE))
+
+            w_sets, l_sets = _parse_set_score_calc(score_raw)
+
+            matches.append({
+                "round_w":   _CALC_ROUND_W[round_code],
+                "round_l":   _CALC_ROUND_L[round_code],
+                "w_name":    _clean_player_name(cols[2]),
+                "l_name":    _clean_player_name(cols[5]),
+                "w_rank":    _extract_rank(cols[1]),
+                "l_rank":    _extract_rank(cols[4]),
+                "w_sets":    w_sets,
+                "l_sets":    l_sets,
+                "dr":        _extract_dr(dr_raw),
+                "score_raw": score_raw,
+                "is_wo":     is_wo,
+            })
+
+        return matches
+
+
+    # ============================================================
+    # Point calculator
+    # ============================================================
+
+    def _calc_player_fantasy(player_name: str, all_matches: List[dict]) -> Optional[dict]:
+        """
+        Compute full fantasy stats for one rostered player.
+        Returns None if the player doesn't appear in the draw at all.
+        """
+        # Find every match this player was in
+        played: List[dict] = []
+        for m in all_matches:
+            if _name_match_calc(player_name, m["w_name"]):
+                played.append({"match": m, "won": True})
+            elif _name_match_calc(player_name, m["l_name"]):
+                played.append({"match": m, "won": False})
+
+        if not played:
+            return None
+
+        # Best round reached (lowest index in _ROUND_ORDER_CALC)
+        def _player_round(entry: dict) -> str:
+            m = entry["match"]
+            return m["round_w"] if entry["won"] else m["round_l"]
+
+        furthest_round = min(
+            (_player_round(e) for e in played),
+            key=lambda r: _ROUND_ORDER_CALC.index(r) if r in _ROUND_ORDER_CALC else 99,
+        )
+
+        # Sort chronologically: R128 first → Final last
+        played_sorted = sorted(
+            played,
+            key=lambda e: _ROUND_ORDER_CALC.index(_player_round(e))
+                          if _player_round(e) in _ROUND_ORDER_CALC else 99,
+            reverse=True,
+        )
+
+        total_sw = total_sl = 0
+        perf_pts = upset_pts = 0
+        log_parts: List[str] = []
+
+        for entry in played_sorted:
+            m   = entry["match"]
+            won = entry["won"]
+            opp = m["l_name"] if won else m["w_name"]
+
+            if m["is_wo"]:
+                log_parts.append(f"d. {opp} w/o +0" if won else f"l. {opp} ret +0")
+                continue
+
+            if won:
+                p_sets = m["w_sets"]
+                o_sets = m["l_sets"]
+                dr     = m["dr"]          # DR is from winner's POV, already >1 for dominant win
+            else:
+                p_sets = m["l_sets"]
+                o_sets = m["w_sets"]
+                dr     = (1.0 / m["dr"]) if m["dr"] else None  # flip for loser
+
+            total_sw += p_sets
+            total_sl += o_sets
+
+            p_rank = m["w_rank"] if won else m["l_rank"]
+            o_rank = m["l_rank"] if won else m["w_rank"]
+
+            if p_rank is None or o_rank is None or p_rank == o_rank or dr is None:
+                verb = "d." if won else "l."
+                log_parts.append(f"{verb} {opp} {m['score_raw']} +0")
+                continue
+
+            if p_rank < o_rank:
+                # Favourite win
+                pts = round((p_sets ** 3) * ((p_rank / o_rank) ** 2) * dr * 25)
+                perf_pts += pts
+                log_parts.append(f"d. {opp} {m['score_raw']} +{pts}perf")
+            else:
+                # Underdog
+                if won:
+                    pts = round((p_sets ** 3) * (p_rank / o_rank) * dr * 3)
+                    upset_pts += pts
+                    log_parts.append(f"d. {opp} {m['score_raw']} +{pts}upset")
+                else:
+                    pts = round(p_sets * (p_rank / o_rank) * dr * 0.6)
+                    upset_pts += pts
+                    log_parts.append(f"l. {opp} {m['score_raw']} +{pts}upset")
+
+        return {
+            "player":          player_name,
+            "round":           furthest_round,
+            "sets_won":        total_sw,
+            "sets_lost":       total_sl,
+            "performance_pts": perf_pts,
+            "upset_pts":       upset_pts,
+            "match_log":       "; ".join(log_parts),
+        }
+
+
+    def _format_bot_paste_line(r: dict) -> str:
+        """Format one player result as a pipe-delimited line for _fantasy_end_submit."""
+        return (
+            f"{r['player']} | {r['round']} | "
+            f"{r['sets_won']} | {r['sets_lost']} | "
+            f"{r['performance_pts']} | {r['upset_pts']} | "
+            f"{r['match_log']}"
+        )
+
+
+    # ============================================================
+    
 # Results parsing
 # ============================================================
 
@@ -296,7 +555,163 @@ def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
                      "performance_pts": performance_pts,
                      "upset_pts": upset_pts, "match_log": match_log})
     return rows, errors
+# Modal + views
+# ============================================================
 
+class RawDrawModal(discord.ui.Modal):
+    draw_text = discord.ui.TextInput(
+        label="Tab-separated result block",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder="Paste the tab-separated draw rows here...",
+    )
+
+    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int = 1):
+        super().__init__(title=f"Draw Data — Part {chunk_num} of {MAX_CHUNKS}")
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.chunk_num = chunk_num
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+        raw = str(self.draw_text).strip()
+        key = (self.user_id, self.tournament_id, "draw")
+        existing = _staged_results.get(key, [])
+        new_lines = [l for l in raw.splitlines() if l.strip()]
+        _staged_results[key] = existing + new_lines
+        total = len(_staged_results[key])
+        next_chunk = self.chunk_num + 1
+
+        if next_chunk > MAX_CHUNKS:
+            await interaction.response.edit_message(
+                content=f"✅ Part {self.chunk_num} saved ({total} rows). Calculating…", view=None)
+            await self.cog._run_calculate(interaction, self.tournament_id)
+        else:
+            view = DrawChunkView(self.cog, self.user_id, self.tournament_id,
+                                 chunk_num=next_chunk, rows_so_far=total)
+            await interaction.response.edit_message(
+                content=(f"✅ Part {self.chunk_num} saved — **{total}** rows staged.\n"
+                         f"Click **Part {next_chunk}** to add more, or **Done** if finished."),
+                view=view)
+
+
+class DrawChunkView(discord.ui.View):
+    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int, rows_so_far: int):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.chunk_num = chunk_num
+        self.rows_so_far = rows_so_far
+
+        next_btn = discord.ui.Button(label=f"Part {chunk_num} →", style=discord.ButtonStyle.primary)
+        next_btn.callback = self._next
+        self.add_item(next_btn)
+
+        done_btn = discord.ui.Button(label="✅ Done — Calculate", style=discord.ButtonStyle.success)
+        done_btn.callback = self._done
+        self.add_item(done_btn)
+
+        cancel_btn = discord.ui.Button(label="✗ Cancel", style=discord.ButtonStyle.danger)
+        cancel_btn.callback = self._cancel
+        self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+            return False
+        return True
+
+    async def _next(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(
+            RawDrawModal(self.cog, self.user_id, self.tournament_id, self.chunk_num))
+
+    async def _done(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            content=f"✅ Calculating from {self.rows_so_far} rows…", view=None)
+        await self.cog._run_calculate(interaction, self.tournament_id)
+
+    async def _cancel(self, interaction: discord.Interaction):
+        _staged_results.pop((self.user_id, self.tournament_id, "draw"), None)
+        await interaction.response.edit_message(content="❌ Cancelled.", view=None)
+
+
+class CalculateConfirmView(discord.ui.View):
+    def __init__(self, cog, user_id: int, tournament_id: str,
+                 rows: List[dict], pages: List[str]):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.rows = rows
+        self.pages = pages
+        self.page = 0
+        self._rebuild()
+
+    def _rebuild(self):
+        self.clear_items()
+        if len(self.pages) > 1:
+            prev = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary,
+                                     disabled=(self.page == 0))
+            nxt  = discord.ui.Button(
+                label=f"Next ▶ ({self.page + 1}/{len(self.pages)})",
+                style=discord.ButtonStyle.secondary,
+                disabled=(self.page >= len(self.pages) - 1))
+
+            async def _prev(inter: discord.Interaction, v=self):
+                if inter.user.id != v.user_id:
+                    return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                v.page -= 1; v._rebuild()
+                await inter.response.edit_message(embed=v._embed(), view=v)
+
+            async def _nxt(inter: discord.Interaction, v=self):
+                if inter.user.id != v.user_id:
+                    return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                v.page += 1; v._rebuild()
+                await inter.response.edit_message(embed=v._embed(), view=v)
+
+            prev.callback = _prev
+            nxt.callback  = _nxt
+            self.add_item(prev)
+            self.add_item(nxt)
+
+        confirm = discord.ui.Button(label="✅ Confirm & Save", style=discord.ButtonStyle.success)
+        repaste = discord.ui.Button(label="Re-paste draw",     style=discord.ButtonStyle.secondary)
+        cancel  = discord.ui.Button(label="✗ Cancel",          style=discord.ButtonStyle.danger)
+
+        async def _confirm(inter: discord.Interaction, v=self):
+            if inter.user.id != v.user_id:
+                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+            lines = [_format_bot_paste_line(r) for r in v.rows]
+            await v.cog._fantasy_end_submit(inter, v.tournament_id, "\n".join(lines))
+
+        async def _repaste(inter: discord.Interaction, v=self):
+            if inter.user.id != v.user_id:
+                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+            _staged_results.pop((v.user_id, v.tournament_id, "draw"), None)
+            await inter.response.send_modal(
+                RawDrawModal(v.cog, v.user_id, v.tournament_id, chunk_num=1))
+
+        async def _cancel(inter: discord.Interaction, v=self):
+            if inter.user.id != v.user_id:
+                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+            await inter.response.edit_message(content="❌ Cancelled.", embed=None, view=None)
+
+        confirm.callback = _confirm
+        repaste.callback = _repaste
+        cancel.callback  = _cancel
+        self.add_item(confirm)
+        self.add_item(repaste)
+        self.add_item(cancel)
+
+    def _embed(self) -> discord.Embed:
+        e = discord.Embed(title="Calculate Preview", description=self.pages[self.page])
+        e.set_footer(text=f"Page {self.page + 1}/{len(self.pages)}")
+        return e
 # ============================================================
 # UI: paginator
 # ============================================================
@@ -1933,6 +2348,73 @@ class FantasyCog(commands.Cog):
             return out
         except Exception:
             return []
+    async def _run_calculate(self, interaction: discord.Interaction, tournament_id: str):
+        """
+        Called after all draw chunks staged. Parses, computes, previews.
+        """
+        key = (interaction.user.id, tournament_id, "draw")
+        raw_lines = _staged_results.pop(key, [])
+
+        if not raw_lines:
+            return await interaction.edit_original_response(
+                content="❌ No draw data staged. Try again.", view=None)
+
+        all_matches = _parse_raw_draw("\n".join(raw_lines))
+        if not all_matches:
+            return await interaction.edit_original_response(
+                content=(
+                    "❌ Could not parse any matches.\n"
+                    "Make sure you paste the raw tab-separated rows exactly as copied from the source."
+                ),
+                view=None,
+            )
+
+        data = _load()
+        t = _find_tournament(data, tournament_id)
+        if not t:
+            return await interaction.edit_original_response(content="❌ Tournament not found.", view=None)
+
+        category_id      = t.get("category_id")
+        cat              = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
+        round_points_map = (cat or {}).get("round_points", {})
+
+        rows: List[dict]       = []
+        not_found: List[str]   = []
+
+        for p in t.get("players", []):
+            result = _calc_player_fantasy(p["name"], all_matches)
+            if result:
+                rows.append(result)
+            else:
+                not_found.append(p["name"])
+
+        # Build preview
+        preview: List[str] = [
+            f"**Preview — {t.get('name')}**",
+            f"Parsed **{len(all_matches)}** match rows · **{len(rows)}/{len(t.get('players', []))}** players found",
+            "",
+            "Player | Round | SW/SL | Perf | Upset | ~Total",
+            "",
+        ]
+        for r in sorted(rows, key=lambda x: _ROUND_ORDER_CALC.index(x["round"])
+                        if x["round"] in _ROUND_ORDER_CALC else 99):
+            tourn_pts = round_points_map.get(r["round"], 0)
+            set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
+            est_total = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
+            preview.append(
+                f"**{r['player']}** | {r['round']} | "
+                f"{r['sets_won']}W {r['sets_lost']}L | "
+                f"perf {r['performance_pts']} | upset {r['upset_pts']} | ~**{est_total}**"
+            )
+
+        if not_found:
+            preview += ["", "⚠️ **Not found in draw (will block save):**"]
+            preview += [f"- {n}" for n in not_found]
+
+        pages = _chunk_pages(preview)
+        view  = CalculateConfirmView(self, interaction.user.id, tournament_id, rows, pages)
+        await interaction.edit_original_response(content=None, embed=view._embed(), view=view)
+
 
     # ── Categories ────────────────────────────────────────────────────────────
 
@@ -2118,7 +2600,7 @@ class FantasyCog(commands.Cog):
 
     @f_admin.command(
         name="tournament-calculate",
-        description="Admin: paste raw draw data and auto-calculate all fantasy points.",
+        description="Admin: paste raw draw data to auto-calculate all fantasy points.",
     )
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     async def fantasy_calculate(self, interaction: discord.Interaction, tournament_id: str):
@@ -2128,8 +2610,14 @@ class FantasyCog(commands.Cog):
         t = _find_tournament(data, tournament_id)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
-        await interaction.response.send_modal(
-            RawDrawModal(self, interaction.user.id, tournament_id)
+        _staged_results.pop((interaction.user.id, tournament_id, "draw"), None)
+        # First response must be send_message or send_modal — use send_message so
+        # subsequent edits from _run_calculate work via edit_original_response.
+        await interaction.response.send_message(
+            "📋 Paste your draw data in up to 6 parts. Click **Part 1** to begin.",
+            view=DrawChunkView(self, interaction.user.id, tournament_id,
+                               chunk_num=1, rows_so_far=0),
+            ephemeral=True,
         )
     async def fantasy_end(self, interaction: discord.Interaction):
         if not _is_admin(interaction.user):
@@ -2145,7 +2633,7 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_message(
             "Select the tournament to enter results for:", view=view, ephemeral=True)
 
-
+    
     async def _fantasy_create_set_unseeded(self, interaction: discord.Interaction, tournament_id: str, unseeded_text: str):
         data = _load()
         t = _find_tournament(data, tournament_id)
