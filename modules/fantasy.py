@@ -558,7 +558,8 @@ def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
 # Modal + views
 # ============================================================
 
-class RawDrawModal(discord.ui.Modal):
+class RawDrawModal(discord.ui.Modal):  # no title= here
+
     draw_text = discord.ui.TextInput(
         label="Tab-separated result block",
         style=discord.TextStyle.paragraph,
@@ -568,7 +569,7 @@ class RawDrawModal(discord.ui.Modal):
     )
 
     def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int = 1):
-        super().__init__(title=f"Draw Data — Part {chunk_num} of {MAX_CHUNKS}")
+        super().__init__(title=f"Draw Data — Part {chunk_num} of {MAX_CHUNKS}")  # title goes here
         self.cog = cog
         self.user_id = user_id
         self.tournament_id = tournament_id
