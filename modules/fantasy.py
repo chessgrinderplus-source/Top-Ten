@@ -302,17 +302,14 @@ def _clean_player_name(raw: str) -> str:
 
 
 def _name_match_calc(a: str, b: str) -> bool:
-    """
-    Fuzzy match tolerant of partial names.
-    "Sinner" matches "Jannik Sinner", etc.
-    """
     norm = lambda s: re.sub(r"[^a-z]", "", s.lower())
     na, nb = norm(a), norm(b)
     if na in nb or nb in na:
         return True
-    pa = a.lower().split()
-    pb = b.lower().split()
-    shared = [x for x in pa if any(x in y or y in x for y in pb)]
+    # Exact word intersection only — prevents "Alex" matching "Alexander"
+    pa = set(a.lower().split())
+    pb = set(b.lower().split())
+    shared = pa & pb
     return len(shared) >= min(len(pa), len(pb))
 
 
