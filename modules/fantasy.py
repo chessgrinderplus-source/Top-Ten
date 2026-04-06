@@ -2300,23 +2300,24 @@ class FantasyCog(commands.Cog):
         return out
 
     async def _ac_tournament(self, interaction: discord.Interaction, cur: str):
-        """All confirmed tournaments (open, closed, completed) — for roster-view, results, user-results."""
-        data = _load()
-        gid = interaction.guild.id if interaction.guild else 0
-        c = cur.lower(); out = []
-        # Sort: completed last so open ones appear first
-        tours = sorted(data.get("tournaments", []),
-                       key=lambda t: (1 if t.get("results_entered") else 0, t.get("name","")))
-        for t in tours:
-            if t.get("guild_id") not in (0, gid): continue
-            if not _is_created(t): continue
-            tid = t.get("id",""); name = t.get("name",""); s = _status_key(t)
-            prefix = "✅ " if s == "Completed" else ("🔒 " if s == "Closed & Results Pending" else "")
-            label  = f"{prefix}{name} [{s}]"
-            if c in tid.lower() or c in name.lower() or not c:
-                out.append(app_commands.Choice(name=label[:100], value=tid))
-            if len(out) >= 25: break
-        return out
+        try:
+            data = _load()
+            gid = interaction.guild.id if interaction.guild else 0
+            c = cur.lower(); out = []
+            tours = sorted(data.get("tournaments", []),
+                           key=lambda t: (1 if t.get("results_entered") else 0, t.get("name","")))
+            for t in tours:
+                if t.get("guild_id") not in (0, gid): continue
+                if not _is_created(t): continue
+                tid = t.get("id",""); name = t.get("name",""); s = _status_key(t)
+                prefix = "✅ " if s == "Completed" else ("🔒 " if s == "Closed & Results Pending" else "")
+                label  = f"{prefix}{name} [{s}]"
+                if c in tid.lower() or c in name.lower() or not c:
+                    out.append(app_commands.Choice(name=label[:100], value=tid))
+                if len(out) >= 25: break
+            return out
+        except Exception:
+            return []
 
     async def _ac_open_tournament(self, interaction: discord.Interaction, cur: str):
         """Only tournaments open for picks."""
