@@ -385,7 +385,7 @@ def _parse_raw_draw(text: str) -> List[dict]:
             continue
 
         score_raw = cols[6].strip() if len(cols) > 6 else ""
-        dr_raw    = cols[8].strip() if len(cols) > 8 else ""
+        dr_raw    = cols[7].strip() if len(cols) > 7 else ""
 
         is_wo = bool(re.search(r"\bRET\b|w/o|walkover", score_raw, re.IGNORECASE))
 
@@ -2168,8 +2168,6 @@ class FantasyCog(commands.Cog):
             f"**Preview — {t.get('name')}**",
             f"Parsed **{len(all_matches)}** match rows · **{len(rows)}/{len(t.get('players', []))}** players found",
             "",
-            "Player | Round | SW/SL | Perf | Upset | ~Total",
-            "",
         ]
         for r in sorted(rows, key=lambda x: _ROUND_ORDER_CALC.index(x["round"])
                         if x["round"] in _ROUND_ORDER_CALC else 99):
@@ -2177,13 +2175,19 @@ class FantasyCog(commands.Cog):
             set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
             est_total = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
             preview.append(
-                f"**{r['player']}** | {r['round']} | "
-                f"{r['sets_won']}W {r['sets_lost']}L | "
-                f"perf {r['performance_pts']} | upset {r['upset_pts']} | ~**{est_total}**"
+                f"**{r['player']}** — {r['round']} — "
+                f"{r['sets_won']}W/{r['sets_lost']}L — "
+                f"perf {r['performance_pts']} upset {r['upset_pts']} ~**{est_total}**"
             )
+            if r.get("match_log"):
+                for entry in r["match_log"].split(";"):
+                    entry = entry.strip()
+                    if entry:
+                        preview.append(f"  ↳ {entry}")
+            preview.append("")
 
         if not_found:
-            preview += ["", "⚠️ **Not found in draw (will block save):**"]
+            preview += ["⚠️ **Not found in draw (will block save):**"]
             preview += [f"- {n}" for n in not_found]
 
         pages = _chunk_pages(preview)
