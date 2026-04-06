@@ -2600,10 +2600,10 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @f_admin.command(
-        name="tournament-calculate",
-        description="Admin: paste raw draw data to auto-calculate all fantasy points.",
-    )
-    @app_commands.autocomplete(tournament_id=_ac_any_tournament)
+         name="tournament-calculate",
+         description="Admin: paste raw draw data to auto-calculate all fantasy points.",
+     )
+    @app_commands.autocomplete(tournament_id=_ac_tournament)  # was _ac_any_tournament
     async def fantasy_calculate(self, interaction: discord.Interaction, tournament_id: str):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
