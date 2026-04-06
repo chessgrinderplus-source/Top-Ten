@@ -32,7 +32,28 @@ def _load() -> dict:
     data.setdefault("ldb_blacklist", [])
     return data
 
+# ── In-memory cache for autocomplete (avoids slow filesystem reads on Railway) ──
+_data_cache = None
+_data_cache_ts: float = 0.0
+_CACHE_TTL: float = 5.0
+
+def _load_cached() -> dict:
+    global _data_cache, _data_cache_ts
+    now = __import__('time').time()
+    if _data_cache is not None and (now - _data_cache_ts) < _CACHE_TTL:
+        return _data_cache
+    _data_cache = _load()
+    _data_cache_ts = now
+    return _data_cache
+
+def _invalidate_cache() -> None:
+    global _data_cache, _data_cache_ts
+    _data_cache = None
+    _data_cache_ts = 0.0
+
+
 def _save(data: dict) -> None:
+    _invalidate_cache()
     p = _path()
     print(f"[fantasy] _save path={p!r} tournaments={[t.get('id') for t in data.get('tournaments',[])]}")
     save_json(p, data)
@@ -239,264 +260,264 @@ def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Opti
 
 # ============================================================
 
-    _CALC_ROUND_W: Dict[str, str] = {
-        "F":    "Champion",       # winner of the final
-        "SF":   "Semi-Final",
-        "QF":   "Quarter-Final",
-        "R16":  "R16",
-        "R32":  "R32",
-        "R64":  "R64",
-        "R128": "R128",
-    }
+_CALC_ROUND_W: Dict[str, str] = {
+    "F":    "Champion",       # winner of the final
+    "SF":   "Semi-Final",
+    "QF":   "Quarter-Final",
+    "R16":  "R16",
+    "R32":  "R32",
+    "R64":  "R64",
+    "R128": "R128",
+}
 
-    _CALC_ROUND_L: Dict[str, str] = {
-        "F":    "Finalist",       # loser of the final
-        "SF":   "Semi-Final",
-        "QF":   "Quarter-Final",
-        "R16":  "R16",
-        "R32":  "R32",
-        "R64":  "R64",
-        "R128": "R128",
-    }
+_CALC_ROUND_L: Dict[str, str] = {
+    "F":    "Finalist",       # loser of the final
+    "SF":   "Semi-Final",
+    "QF":   "Quarter-Final",
+    "R16":  "R16",
+    "R32":  "R32",
+    "R64":  "R64",
+    "R128": "R128",
+}
 
-    _ROUND_ORDER_CALC: List[str] = [
-        "Champion", "Finalist", "Semi-Final", "Quarter-Final",
-        "R16", "R32", "R64", "R128",
-    ]
+_ROUND_ORDER_CALC: List[str] = [
+    "Champion", "Finalist", "Semi-Final", "Quarter-Final",
+    "R16", "R32", "R64", "R128",
+]
 
-    # ============================================================
-    # Name helpers
-    # ============================================================
+# ============================================================
+# Name helpers
+# ============================================================
 
-    def _clean_player_name(raw: str) -> str:
-        """
-        Strip [country], [yr|ev] tags and leading seed/qualifier bracket.
-        "(2)Jannik Sinner [ITA] [yr | ev]"  →  "Jannik Sinner"
-        "(Q)Martin Landaluce [ESP]"          →  "Martin Landaluce"
-        """
-        s = re.sub(r"\[.*?\]", "", raw)
-        s = re.sub(r"^\(\d+\)\s*", "", s)
-        s = re.sub(r"^\((Q|WC|LL|PR)\)\s*", "", s, flags=re.IGNORECASE)
-        return s.strip()
-
-
-    def _name_match_calc(a: str, b: str) -> bool:
-        """
-        Fuzzy match tolerant of partial names.
-        "Sinner" matches "Jannik Sinner", etc.
-        """
-        norm = lambda s: re.sub(r"[^a-z]", "", s.lower())
-        na, nb = norm(a), norm(b)
-        if na in nb or nb in na:
-            return True
-        pa = a.lower().split()
-        pb = b.lower().split()
-        shared = [x for x in pa if any(x in y or y in x for y in pb)]
-        return len(shared) >= min(len(pa), len(pb))
+def _clean_player_name(raw: str) -> str:
+    """
+    Strip [country], [yr|ev] tags and leading seed/qualifier bracket.
+    "(2)Jannik Sinner [ITA] [yr | ev]"  →  "Jannik Sinner"
+    "(Q)Martin Landaluce [ESP]"          →  "Martin Landaluce"
+    """
+    s = re.sub(r"\[.*?\]", "", raw)
+    s = re.sub(r"^\(\d+\)\s*", "", s)
+    s = re.sub(r"^\((Q|WC|LL|PR)\)\s*", "", s, flags=re.IGNORECASE)
+    return s.strip()
 
 
-    # ============================================================
-    # Draw parser
-    # ============================================================
-
-    def _extract_rank(col: str) -> Optional[int]:
-        """Extract rank from a rank column (bare integer like '2' or '22')."""
-        col = col.strip()
-        try:
-            n = int(col)
-            return n if n > 0 else None
-        except ValueError:
-            return None
-
-
-    def _extract_dr(col: str) -> Optional[float]:
-        """Extract dominance ratio from cols[8], e.g. '1.65'."""
-        try:
-            return float(col.strip())
-        except (ValueError, AttributeError):
-            return None
+def _name_match_calc(a: str, b: str) -> bool:
+    """
+    Fuzzy match tolerant of partial names.
+    "Sinner" matches "Jannik Sinner", etc.
+    """
+    norm = lambda s: re.sub(r"[^a-z]", "", s.lower())
+    na, nb = norm(a), norm(b)
+    if na in nb or nb in na:
+        return True
+    pa = a.lower().split()
+    pb = b.lower().split()
+    shared = [x for x in pa if any(x in y or y in x for y in pb)]
+    return len(shared) >= min(len(pa), len(pb))
 
 
-    def _parse_set_score_calc(score_raw: str) -> Tuple[int, int]:
-        """
-        Return (sets_won_by_winner, sets_lost_by_winner) from a score string.
-        Handles tiebreak suffixes like 7-6(4).
-        Ignores non-score tokens (RET, w/o, etc.).
-        """
-        sw = sl = 0
-        for chunk in score_raw.strip().split():
-            m = re.match(r"^(\d+)-(\d+)(?:\(\d+\))?$", chunk)
-            if not m:
-                continue
-            a, b = int(m.group(1)), int(m.group(2))
-            if a > b:
-                sw += 1
-            else:
-                sl += 1
-        return sw, sl
+# ============================================================
+# Draw parser
+# ============================================================
+
+def _extract_rank(col: str) -> Optional[int]:
+    """Extract rank from a rank column (bare integer like '2' or '22')."""
+    col = col.strip()
+    try:
+        n = int(col)
+        return n if n > 0 else None
+    except ValueError:
+        return None
 
 
-    def _parse_raw_draw(text: str) -> List[dict]:
-        """
-        Parse a tab-separated draw block into match dicts.
-
-        Each dict:
-          round_w   — canonical round for the winner
-          round_l   — canonical round for the loser
-          w_name    — cleaned winner name
-          l_name    — cleaned loser name
-          w_rank    — int or None
-          l_rank    — int or None
-          w_sets    — sets won by winner
-          l_sets    — sets won by loser  (= sets lost by winner)
-          dr        — dominance ratio (winner's perspective, float or None)
-          score_raw — raw score string
-          is_wo     — True if walkover or retirement
-        """
-        matches = []
-        for raw_line in text.strip().splitlines():
-            cols = raw_line.strip().split("\t")
-            if len(cols) < 6:
-                continue
-
-            round_code = cols[0].strip()
-            if round_code not in _CALC_ROUND_W:
-                continue
-
-            score_raw = cols[6].strip() if len(cols) > 6 else ""
-            dr_raw    = cols[8].strip() if len(cols) > 8 else ""
-
-            is_wo = bool(re.search(r"\bRET\b|w/o|walkover", score_raw, re.IGNORECASE))
-
-            w_sets, l_sets = _parse_set_score_calc(score_raw)
-
-            matches.append({
-                "round_w":   _CALC_ROUND_W[round_code],
-                "round_l":   _CALC_ROUND_L[round_code],
-                "w_name":    _clean_player_name(cols[2]),
-                "l_name":    _clean_player_name(cols[5]),
-                "w_rank":    _extract_rank(cols[1]),
-                "l_rank":    _extract_rank(cols[4]),
-                "w_sets":    w_sets,
-                "l_sets":    l_sets,
-                "dr":        _extract_dr(dr_raw),
-                "score_raw": score_raw,
-                "is_wo":     is_wo,
-            })
-
-        return matches
+def _extract_dr(col: str) -> Optional[float]:
+    """Extract dominance ratio from cols[8], e.g. '1.65'."""
+    try:
+        return float(col.strip())
+    except (ValueError, AttributeError):
+        return None
 
 
-    # ============================================================
-    # Point calculator
-    # ============================================================
+def _parse_set_score_calc(score_raw: str) -> Tuple[int, int]:
+    """
+    Return (sets_won_by_winner, sets_lost_by_winner) from a score string.
+    Handles tiebreak suffixes like 7-6(4).
+    Ignores non-score tokens (RET, w/o, etc.).
+    """
+    sw = sl = 0
+    for chunk in score_raw.strip().split():
+        m = re.match(r"^(\d+)-(\d+)(?:\(\d+\))?$", chunk)
+        if not m:
+            continue
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > b:
+            sw += 1
+        else:
+            sl += 1
+    return sw, sl
 
-    def _calc_player_fantasy(player_name: str, all_matches: List[dict]) -> Optional[dict]:
-        """
-        Compute full fantasy stats for one rostered player.
-        Returns None if the player doesn't appear in the draw at all.
-        """
-        # Find every match this player was in
-        played: List[dict] = []
-        for m in all_matches:
-            if _name_match_calc(player_name, m["w_name"]):
-                played.append({"match": m, "won": True})
-            elif _name_match_calc(player_name, m["l_name"]):
-                played.append({"match": m, "won": False})
 
-        if not played:
-            return None
+def _parse_raw_draw(text: str) -> List[dict]:
+    """
+    Parse a tab-separated draw block into match dicts.
 
-        # Best round reached (lowest index in _ROUND_ORDER_CALC)
-        def _player_round(entry: dict) -> str:
-            m = entry["match"]
-            return m["round_w"] if entry["won"] else m["round_l"]
+    Each dict:
+      round_w   — canonical round for the winner
+      round_l   — canonical round for the loser
+      w_name    — cleaned winner name
+      l_name    — cleaned loser name
+      w_rank    — int or None
+      l_rank    — int or None
+      w_sets    — sets won by winner
+      l_sets    — sets won by loser  (= sets lost by winner)
+      dr        — dominance ratio (winner's perspective, float or None)
+      score_raw — raw score string
+      is_wo     — True if walkover or retirement
+    """
+    matches = []
+    for raw_line in text.strip().splitlines():
+        cols = raw_line.strip().split("\t")
+        if len(cols) < 6:
+            continue
 
-        furthest_round = min(
-            (_player_round(e) for e in played),
-            key=lambda r: _ROUND_ORDER_CALC.index(r) if r in _ROUND_ORDER_CALC else 99,
-        )
+        round_code = cols[0].strip()
+        if round_code not in _CALC_ROUND_W:
+            continue
 
-        # Sort chronologically: R128 first → Final last
-        played_sorted = sorted(
-            played,
-            key=lambda e: _ROUND_ORDER_CALC.index(_player_round(e))
-                          if _player_round(e) in _ROUND_ORDER_CALC else 99,
-            reverse=True,
-        )
+        score_raw = cols[6].strip() if len(cols) > 6 else ""
+        dr_raw    = cols[8].strip() if len(cols) > 8 else ""
 
-        total_sw = total_sl = 0
-        perf_pts = upset_pts = 0
-        log_parts: List[str] = []
+        is_wo = bool(re.search(r"\bRET\b|w/o|walkover", score_raw, re.IGNORECASE))
 
-        for entry in played_sorted:
-            m   = entry["match"]
-            won = entry["won"]
-            opp = m["l_name"] if won else m["w_name"]
+        w_sets, l_sets = _parse_set_score_calc(score_raw)
 
-            if m["is_wo"]:
-                log_parts.append(f"d. {opp} w/o +0" if won else f"l. {opp} ret +0")
-                continue
+        matches.append({
+            "round_w":   _CALC_ROUND_W[round_code],
+            "round_l":   _CALC_ROUND_L[round_code],
+            "w_name":    _clean_player_name(cols[2]),
+            "l_name":    _clean_player_name(cols[5]),
+            "w_rank":    _extract_rank(cols[1]),
+            "l_rank":    _extract_rank(cols[4]),
+            "w_sets":    w_sets,
+            "l_sets":    l_sets,
+            "dr":        _extract_dr(dr_raw),
+            "score_raw": score_raw,
+            "is_wo":     is_wo,
+        })
 
+    return matches
+
+
+# ============================================================
+# Point calculator
+# ============================================================
+
+def _calc_player_fantasy(player_name: str, all_matches: List[dict]) -> Optional[dict]:
+    """
+    Compute full fantasy stats for one rostered player.
+    Returns None if the player doesn't appear in the draw at all.
+    """
+    # Find every match this player was in
+    played: List[dict] = []
+    for m in all_matches:
+        if _name_match_calc(player_name, m["w_name"]):
+            played.append({"match": m, "won": True})
+        elif _name_match_calc(player_name, m["l_name"]):
+            played.append({"match": m, "won": False})
+
+    if not played:
+        return None
+
+    # Best round reached (lowest index in _ROUND_ORDER_CALC)
+    def _player_round(entry: dict) -> str:
+        m = entry["match"]
+        return m["round_w"] if entry["won"] else m["round_l"]
+
+    furthest_round = min(
+        (_player_round(e) for e in played),
+        key=lambda r: _ROUND_ORDER_CALC.index(r) if r in _ROUND_ORDER_CALC else 99,
+    )
+
+    # Sort chronologically: R128 first → Final last
+    played_sorted = sorted(
+        played,
+        key=lambda e: _ROUND_ORDER_CALC.index(_player_round(e))
+                      if _player_round(e) in _ROUND_ORDER_CALC else 99,
+        reverse=True,
+    )
+
+    total_sw = total_sl = 0
+    perf_pts = upset_pts = 0
+    log_parts: List[str] = []
+
+    for entry in played_sorted:
+        m   = entry["match"]
+        won = entry["won"]
+        opp = m["l_name"] if won else m["w_name"]
+
+        if m["is_wo"]:
+            log_parts.append(f"d. {opp} w/o +0" if won else f"l. {opp} ret +0")
+            continue
+
+        if won:
+            p_sets = m["w_sets"]
+            o_sets = m["l_sets"]
+            dr     = m["dr"]          # DR is from winner's POV, already >1 for dominant win
+        else:
+            p_sets = m["l_sets"]
+            o_sets = m["w_sets"]
+            dr     = (1.0 / m["dr"]) if m["dr"] else None  # flip for loser
+
+        total_sw += p_sets
+        total_sl += o_sets
+
+        p_rank = m["w_rank"] if won else m["l_rank"]
+        o_rank = m["l_rank"] if won else m["w_rank"]
+
+        if p_rank is None or o_rank is None or p_rank == o_rank or dr is None:
+            verb = "d." if won else "l."
+            log_parts.append(f"{verb} {opp} {m['score_raw']} +0")
+            continue
+
+        if p_rank < o_rank:
+            # Favourite win
+            pts = round((p_sets ** 3) * ((p_rank / o_rank) ** 2) * dr * 25)
+            perf_pts += pts
+            log_parts.append(f"d. {opp} {m['score_raw']} +{pts}perf")
+        else:
+            # Underdog
             if won:
-                p_sets = m["w_sets"]
-                o_sets = m["l_sets"]
-                dr     = m["dr"]          # DR is from winner's POV, already >1 for dominant win
+                pts = round((p_sets ** 3) * (p_rank / o_rank) * dr * 3)
+                upset_pts += pts
+                log_parts.append(f"d. {opp} {m['score_raw']} +{pts}upset")
             else:
-                p_sets = m["l_sets"]
-                o_sets = m["w_sets"]
-                dr     = (1.0 / m["dr"]) if m["dr"] else None  # flip for loser
+                pts = round(p_sets * (p_rank / o_rank) * dr * 0.6)
+                upset_pts += pts
+                log_parts.append(f"l. {opp} {m['score_raw']} +{pts}upset")
 
-            total_sw += p_sets
-            total_sl += o_sets
-
-            p_rank = m["w_rank"] if won else m["l_rank"]
-            o_rank = m["l_rank"] if won else m["w_rank"]
-
-            if p_rank is None or o_rank is None or p_rank == o_rank or dr is None:
-                verb = "d." if won else "l."
-                log_parts.append(f"{verb} {opp} {m['score_raw']} +0")
-                continue
-
-            if p_rank < o_rank:
-                # Favourite win
-                pts = round((p_sets ** 3) * ((p_rank / o_rank) ** 2) * dr * 25)
-                perf_pts += pts
-                log_parts.append(f"d. {opp} {m['score_raw']} +{pts}perf")
-            else:
-                # Underdog
-                if won:
-                    pts = round((p_sets ** 3) * (p_rank / o_rank) * dr * 3)
-                    upset_pts += pts
-                    log_parts.append(f"d. {opp} {m['score_raw']} +{pts}upset")
-                else:
-                    pts = round(p_sets * (p_rank / o_rank) * dr * 0.6)
-                    upset_pts += pts
-                    log_parts.append(f"l. {opp} {m['score_raw']} +{pts}upset")
-
-        return {
-            "player":          player_name,
-            "round":           furthest_round,
-            "sets_won":        total_sw,
-            "sets_lost":       total_sl,
-            "performance_pts": perf_pts,
-            "upset_pts":       upset_pts,
-            "match_log":       "; ".join(log_parts),
-        }
+    return {
+        "player":          player_name,
+        "round":           furthest_round,
+        "sets_won":        total_sw,
+        "sets_lost":       total_sl,
+        "performance_pts": perf_pts,
+        "upset_pts":       upset_pts,
+        "match_log":       "; ".join(log_parts),
+    }
 
 
-    def _format_bot_paste_line(r: dict) -> str:
-        """Format one player result as a pipe-delimited line for _fantasy_end_submit."""
-        return (
-            f"{r['player']} | {r['round']} | "
-            f"{r['sets_won']} | {r['sets_lost']} | "
-            f"{r['performance_pts']} | {r['upset_pts']} | "
-            f"{r['match_log']}"
-        )
+def _format_bot_paste_line(r: dict) -> str:
+    """Format one player result as a pipe-delimited line for _fantasy_end_submit."""
+    return (
+        f"{r['player']} | {r['round']} | "
+        f"{r['sets_won']} | {r['sets_lost']} | "
+        f"{r['performance_pts']} | {r['upset_pts']} | "
+        f"{r['match_log']}"
+    )
 
 
-    # ============================================================
-    
+# ============================================================
+
 # Results parsing
 # ============================================================
 
@@ -717,26 +738,6 @@ class CalculateConfirmView(discord.ui.View):
 # UI: paginator
 # ============================================================
 
-class RawDrawModal(discord.ui.Modal, title="Fantasy — Paste Raw Draw Data"):
-    draw_text = discord.ui.TextInput(
-        label="Raw tab-separated result block",
-        style=discord.TextStyle.paragraph,
-        required=True,
-        max_length=4000,
-        placeholder="Paste the tab-separated draw data from the tennis results page...",
-    )
-
-    def __init__(self, cog, user_id: int, tournament_id: str):
-        super().__init__()
-        self.cog = cog
-        self.user_id = user_id
-        self.tournament_id = tournament_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-        await self.cog._calculate_from_raw_draw(interaction, self.tournament_id, str(self.draw_text))
-        
 class PagerView(discord.ui.View):
     def __init__(self, pages: List[str], user_id: int, title: str):
         super().__init__(timeout=180)
@@ -1801,42 +1802,6 @@ class FetchConfirmView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="❌ Fetch cancelled.", embed=None, view=None)
 
-class CalculateConfirmView(discord.ui.View):
-    """Shown after /fantasy-admin tournament-calculate preview — lets admin confirm or re-paste."""
-
-    def __init__(self, cog, user_id: int, tournament_id: str, rows: List[dict]):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.user_id = user_id
-        self.tournament_id = tournament_id
-        self.rows = rows
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="✅ Confirm & Save Results", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Build the pipe-delimited text and hand off to the existing submit path
-        lines = [_format_bot_paste_line(r) for r in self.rows]
-        combined = "\n".join(lines)
-        await self.cog._fantasy_end_submit(interaction, self.tournament_id, combined)
-
-    @discord.ui.button(label="Re-paste draw", style=discord.ButtonStyle.secondary)
-    async def repaste(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(
-            RawDrawModal(self.cog, self.user_id, self.tournament_id)
-        )
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="❌ Cancelled.", embed=None, view=None)
-# ============================================================
-# Cog
-# ============================================================
-
 
 # ============================================================
 # Chunked results entry (up to 6 parts + Done early)
@@ -2078,206 +2043,8 @@ class CloseScheduleEditView(discord.ui.View):
 # Raw draw parsing + fantasy point calculation
 # ============================================================
 
-_RAW_ROUND_MAP: Dict[str, str] = {
-    "F": "Champion", "SF": "Semi-Final", "QF": "Quarter-Final",
-    "R16": "R16", "R32": "R32", "R64": "R64", "R128": "R128",
-}
-
-def _parse_raw_draw(text: str) -> List[dict]:
-    """
-    Parse a tab-separated draw block into match dicts.
-    Columns: Round  wRk  wName [yr|ev]  d.  lRk  lName [yr|ev]  Score  ...
-    """
-    matches = []
-    for line in text.strip().splitlines():
-        cols = line.split("\t")
-        if len(cols) < 7:
-            continue
-        round_code = cols[0].strip()
-        round_name = _RAW_ROUND_MAP.get(round_code)
-        if not round_name:
-            continue
-
-        w_rk_raw  = cols[1].strip()
-        w_name    = re.sub(r"\[.*?\]", "", cols[2]).strip()
-        l_rk_raw  = cols[4].strip()
-        l_name    = re.sub(r"\[.*?\]", "", cols[5]).strip()
-        score_raw = cols[6].strip() if len(cols) > 6 else ""
-
-        def _extract_rank(rk_str: str, name_str: str) -> Optional[int]:
-            m = re.search(r"\((\d+)\)", rk_str)
-            if m:
-                return int(m.group(1))
-            m = re.search(r"\((\d+)\)", name_str)
-            if m:
-                return int(m.group(1))
-            try:
-                n = int(rk_str)
-                return n if n > 0 else None
-            except ValueError:
-                return None
-
-        w_rank = _extract_rank(w_rk_raw, w_name)
-        l_rank = _extract_rank(l_rk_raw, l_name)
-
-        # Strip seeding/brackets from names
-        w_clean = re.sub(r"^\(\d+\)\s*", "", w_name).strip()
-        l_clean = re.sub(r"^\(\d+\)\s*", "", l_name).strip()
-
-        is_wo = bool(re.search(r"w/o|walkover|ret\s*$", score_raw, re.IGNORECASE))
-
-        matches.append({
-            "round": round_name,
-            "w_name": w_clean, "w_rank": w_rank,
-            "l_name": l_clean, "l_rank": l_rank,
-            "score_raw": score_raw,
-            "is_wo": is_wo,
-        })
-    return matches
 
 
-def _parse_set_score(score_raw: str) -> dict:
-    """
-    Parse '6-4 7-6(3) 3-6' into sets_won, sets_lost, winner_games, loser_games, total_games.
-    Tiebreaks count as 1 game each (7-6 = 13 total games that set).
-    """
-    sets_won = sets_lost = wg = lg = 0
-    for chunk in score_raw.strip().split():
-        m = re.match(r"^(\d+)-(\d+)(?:\(\d+\))?$", chunk)
-        if not m:
-            continue
-        a, b = int(m.group(1)), int(m.group(2))
-        # Tiebreak adds 1 game to each side (plays as 7-6 → 8 and 7 games)
-        # Actually tiebreak: count as 1 game each → total = a + b (already includes 7 and 6)
-        # But the score IS already 7-6, so just add them directly; tiebreak doesn't add extra.
-        wg += a
-        lg += b
-        if a > b:
-            sets_won += 1
-        else:
-            sets_lost += 1
-    return {"sets_won": sets_won, "sets_lost": sets_lost,
-            "winner_games": wg, "loser_games": lg,
-            "total_games": wg + lg}
-
-
-def _dominance(player_games: int, total_games: int) -> float:
-    return player_games / total_games if total_games > 0 else 0.5
-
-
-def _calc_player_fantasy(player_name: str, all_matches: List[dict]) -> dict:
-    """
-    Given a player name and the full list of parsed draw matches, compute:
-      - final round reached
-      - sets_won, sets_lost totals
-      - performance_pts (favourite wins: player_rank < opp_rank)
-      - upset_pts (underdog wins or losses: player_rank > opp_rank)
-      - match_log string (semicolon-separated, bot-paste format)
-    """
-    ROUND_ORDER_LOCAL = [
-        "Champion", "Finalist", "Semi-Final", "Quarter-Final",
-        "R16", "R32", "R64", "R128",
-    ]
-
-    def _name_match(a: str, b: str) -> bool:
-        norm = lambda s: re.sub(r"[^a-z]", "", s.lower())
-        na, nb = norm(a), norm(b)
-        if na in nb or nb in na:
-            return True
-        pa = a.lower().split()
-        pb = b.lower().split()
-        shared = [x for x in pa if any(x in y or y in x for y in pb)]
-        return len(shared) >= min(len(pa), len(pb))
-
-    won_matches  = [m for m in all_matches if _name_match(player_name, m["w_name"])]
-    lost_matches = [m for m in all_matches if _name_match(player_name, m["l_name"])]
-    all_player_matches = won_matches + lost_matches
-
-    if not all_player_matches:
-        return {}
-
-    # Determine furthest round (Champion > Finalist > ... > R128)
-    furthest_round = "R128"
-    for r in ROUND_ORDER_LOCAL:
-        if any(m["round"] == r for m in all_player_matches):
-            furthest_round = r
-            break
-
-    total_sw = total_sl = 0
-    perf_pts = upset_pts = 0
-    log_parts = []
-
-    # Process in chronological order (R128 first → Champion last)
-    sorted_matches = sorted(
-        [{"match": m, "won": True}  for m in won_matches] +
-        [{"match": m, "won": False} for m in lost_matches],
-        key=lambda x: ROUND_ORDER_LOCAL.index(x["match"]["round"]),
-        reverse=True,  # R128 has highest index → sort descending to get R128 first
-    )
-
-    for entry in sorted_matches:
-        m   = entry["match"]
-        won = entry["won"]
-        opp_name = m["l_name"] if won else m["w_name"]
-
-        if m["is_wo"]:
-            log_parts.append(f"d. {opp_name} w/o +0" if won else f"l. {opp_name} ret +0")
-            continue
-
-        sc = _parse_set_score(m["score_raw"])
-        p_sets  = sc["sets_won"]   if won else sc["sets_lost"]
-        o_sets  = sc["sets_lost"]  if won else sc["sets_won"]
-        p_games = sc["winner_games"] if won else sc["loser_games"]
-        dom     = _dominance(p_games, sc["total_games"])
-
-        total_sw += p_sets
-        total_sl += o_sets
-
-        p_rank = m["w_rank"] if won else m["l_rank"]
-        o_rank = m["l_rank"] if won else m["w_rank"]
-
-        if p_rank is not None and o_rank is not None and p_rank != o_rank:
-            if p_rank < o_rank:
-                # Favourite
-                pts = round((p_sets ** 3) * ((p_rank / o_rank) ** 2) * dom * 25)
-                perf_pts += pts
-                log_parts.append(f"d. {opp_name} {m['score_raw']} +{pts}perf")
-            else:
-                # Underdog
-                if won:
-                    pts = round((p_sets ** 3) * (p_rank / o_rank) * dom * 3)
-                    upset_pts += pts
-                    log_parts.append(f"d. {opp_name} {m['score_raw']} +{pts}upset")
-                else:
-                    pts = round(p_sets * (p_rank / o_rank) * dom * 0.6)
-                    upset_pts += pts
-                    log_parts.append(f"l. {opp_name} {m['score_raw']} +{pts}upset")
-        else:
-            # No rank info — log without pts
-            if won:
-                log_parts.append(f"d. {opp_name} {m['score_raw']} +0")
-            else:
-                log_parts.append(f"l. {opp_name} {m['score_raw']} +0")
-
-    return {
-        "player":          player_name,
-        "round":           furthest_round,
-        "sets_won":        total_sw,
-        "sets_lost":       total_sl,
-        "performance_pts": perf_pts,
-        "upset_pts":       upset_pts,
-        "match_log":       "; ".join(log_parts),
-    }
-
-
-def _format_bot_paste_line(r: dict) -> str:
-    """Format a single player result as a bot-paste line for /fantasy-admin tournament-end."""
-    return (
-        f"{r['player']} | {r['round']} | "
-        f"{r['sets_won']} | {r['sets_lost']} | "
-        f"{r['performance_pts']} | {r['upset_pts']} | "
-        f"{r['match_log']}"
-    )
 
 class FantasyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -2290,18 +2057,21 @@ class FantasyCog(commands.Cog):
     # ── Autocomplete helpers ──────────────────────────────────────────────────
 
     async def _ac_category(self, interaction: discord.Interaction, cur: str):
-        data = _load(); c = cur.lower(); out = []
-        for cat in data.get("categories", []):
-            if c in cat.get("id","").lower() or c in cat.get("title","").lower() or not c:
-                out.append(app_commands.Choice(
-                    name=f"{cat.get('title','?')} ({cat.get('id','?')})"[:100],
-                    value=cat.get("id","")))
-            if len(out) >= 25: break
-        return out
+        try:
+            data = _load_cached(); c = cur.lower(); out = []
+            for cat in data.get("categories", []):
+                if c in cat.get("id","").lower() or c in cat.get("title","").lower() or not c:
+                    out.append(app_commands.Choice(
+                        name=f"{cat.get('title','?')} ({cat.get('id','?')})"[:100],
+                        value=cat.get("id","")))
+                if len(out) >= 25: break
+            return out
+        except Exception:
+            return []
 
     async def _ac_tournament(self, interaction: discord.Interaction, cur: str):
         try:
-            data = _load()
+            data = _load_cached()
             gid = interaction.guild.id if interaction.guild else 0
             c = cur.lower(); out = []
             tours = sorted(data.get("tournaments", []),
@@ -2321,22 +2091,25 @@ class FantasyCog(commands.Cog):
 
     async def _ac_open_tournament(self, interaction: discord.Interaction, cur: str):
         """Only tournaments open for picks."""
-        data = _load()
-        gid = interaction.guild.id if interaction.guild else 0
-        c = cur.lower(); out = []
-        for t in data.get("tournaments", []):
-            if t.get("guild_id") not in (0, gid): continue
-            if not _is_created(t) or not t.get("picks_open", True): continue
-            tid = t.get("id",""); name = t.get("name","")
-            if c in tid.lower() or c in name.lower() or not c:
-                out.append(app_commands.Choice(name=name[:100], value=tid))
-            if len(out) >= 25: break
-        return out
+        try:
+            data = _load_cached()
+            gid = interaction.guild.id if interaction.guild else 0
+            c = cur.lower(); out = []
+            for t in data.get("tournaments", []):
+                if t.get("guild_id") not in (0, gid): continue
+                if not _is_created(t) or not t.get("picks_open", True): continue
+                tid = t.get("id",""); name = t.get("name","")
+                if c in tid.lower() or c in name.lower() or not c:
+                    out.append(app_commands.Choice(name=name[:100], value=tid))
+                if len(out) >= 25: break
+            return out
+        except Exception:
+            return []
 
     async def _ac_any_tournament(self, interaction: discord.Interaction, cur: str):
         """All tournaments including drafts (for admin commands)."""
         try:
-            data = _load()
+            data = _load_cached()
             gid = interaction.guild.id if interaction.guild else 0
             c = cur.lower(); out = []
             for t in data.get("tournaments", []):
@@ -2635,7 +2408,7 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_message(
             "Select the tournament to enter results for:", view=view, ephemeral=True)
 
-    
+
     async def _fantasy_create_set_unseeded(self, interaction: discord.Interaction, tournament_id: str, unseeded_text: str):
         data = _load()
         t = _find_tournament(data, tournament_id)
@@ -2671,82 +2444,6 @@ class FantasyCog(commands.Cog):
         await interaction.response.edit_message(
             content=f"✅ Fantasy tournament **confirmed**!\n**Name:** {t.get('name')}\n**ID:** `{t.get('id')}`",
             embed=None, view=None)
-
-    async def _calculate_from_raw_draw(
-        self,
-        interaction: discord.Interaction,
-        tournament_id: str,
-        draw_text: str,
-    ) -> None:
-        data = _load()
-        t = _find_tournament(data, tournament_id)
-        if not t:
-            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
-
-        all_matches = _parse_raw_draw(draw_text)
-        if not all_matches:
-            return await interaction.response.send_message(
-                "❌ Could not parse any matches. Make sure the data is tab-separated "
-                "(copy directly from the results table).",
-                ephemeral=True,
-            )
-
-        tournament_players = t.get("players", [])
-        if not tournament_players:
-            return await interaction.response.send_message(
-                "❌ This tournament has no players registered.", ephemeral=True
-            )
-
-        rows: List[dict] = []
-        not_found: List[str] = []
-
-        for p in tournament_players:
-            result = _calc_player_fantasy(p["name"], all_matches)
-            if not result:
-                not_found.append(p["name"])
-            else:
-                rows.append(result)
-
-        # Build preview embed
-        category_id = t.get("category_id")
-        cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
-        round_points_map: Dict[str, int] = (cat or {}).get("round_points", {})
-
-        preview_lines = [
-            f"**Preview — {t.get('name')}**",
-            f"Parsed **{len(all_matches)}** matches · **{len(rows)}** players calculated",
-            "",
-            "Player — Round — Sets W/L — Perf — Upset — Est. Total",
-            "",
-        ]
-        for r in sorted(rows, key=lambda x: ROUND_ORDER.get(x["round"], 0), reverse=False):
-            tourn_pts = round_points_map.get(r["round"], 0)
-            set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
-            total_est = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
-            preview_lines.append(
-                f"**{r['player']}** — {r['round']} — "
-                f"{r['sets_won']}W/{r['sets_lost']}L — "
-                f"perf:{r['performance_pts']} upset:{r['upset_pts']} — "
-                f"~**{total_est}**"
-            )
-
-        if not_found:
-            preview_lines += ["", "⚠️ **Not found in draw:**"]
-            preview_lines += [f"- {n}" for n in not_found]
-
-        pages = _chunk_pages(preview_lines)
-        pager_view = PagerView(pages, interaction.user.id, "Calculate Preview")
-
-        # We need both the pager AND the confirm buttons — send pager first, then confirm separately
-        confirm_view = CalculateConfirmView(self, interaction.user.id, tournament_id, rows)
-
-        embed = discord.Embed(
-            title="Calculate Preview",
-            description=pages[0],
-        )
-        embed.set_footer(text=f"Page 1/{len(pages)} — Review above, then confirm or re-paste.")
-
-        await interaction.response.send_message(embed=embed, view=confirm_view, ephemeral=True)
 
     async def _fantasy_end_submit(self, interaction: discord.Interaction, tournament_id: str, results_text: str):
         # ── Helper: reply whether or not the interaction was already responded to ──
