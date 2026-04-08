@@ -301,6 +301,17 @@ def _clean_player_name(raw: str) -> str:
     return s.strip()
 
 
+
+def _reverse_score(score_raw: str) -> str:
+    parts = []
+    for chunk in score_raw.strip().split():
+        m = re.match(r"^(\d+)-(\d+)(\(\d+\))?$", chunk)
+        if not m:
+            parts.append(chunk)
+            continue
+        parts.append(f"{m.group(2)}-{m.group(1)}{m.group(3) or ''}")
+    return " ".join(parts)
+
 def _name_match_calc(a: str, b: str) -> bool:
     norm = lambda s: re.sub(r"[^a-z]", "", s.lower())
     na, nb = norm(a), norm(b)
@@ -472,15 +483,18 @@ def _calc_player_fantasy(player_name: str, all_matches: List[dict]) -> Optional[
         o_rank = m["l_rank"] if won else m["w_rank"]
 
         if p_rank is None or o_rank is None or p_rank == o_rank or dr is None:
+            score_disp = m["score_raw"] if won else _reverse_score(m["score_raw"])
             verb = "d." if won else "l."
-            log_parts.append(f"{verb} {opp} {m['score_raw']} +0")
+            log_parts.append(f"{verb} {opp} {score_disp} +0")
             continue
 
         if p_rank < o_rank:
-            # Favourite win
-            pts = round((p_sets ** 3) * ((p_rank / o_rank) ** 2) * dr * 25)
+            # Favourite: win earns perf pts, loss earns 0
+            pts = round((p_sets ** 3) * ((p_rank / o_rank) ** 2) * dr * 25) if won else 0
             perf_pts += pts
-            log_parts.append(f"d. {opp} {m['score_raw']} +{pts}perf")
+            score_disp = m["score_raw"] if won else _reverse_score(m["score_raw"])
+            verb = "d." if won else "l."
+            log_parts.append(f"{verb} {opp} {score_disp} +{pts}perf")
         else:
             # Underdog
             if won:
@@ -490,7 +504,7 @@ def _calc_player_fantasy(player_name: str, all_matches: List[dict]) -> Optional[
             else:
                 pts = round(p_sets * (p_rank / o_rank) * dr * 0.6)
                 upset_pts += pts
-                log_parts.append(f"l. {opp} {m['score_raw']} +{pts}upset")
+                log_parts.append(f"l. {opp} {_reverse_score(m['score_raw'])} +{pts}upset")
 
     return {
         "player":          player_name,
@@ -517,6 +531,34 @@ def _format_bot_paste_line(r: dict) -> str:
 
 # Results parsing
 # ============================================================
+
+
+def _build_preview_pages(t: dict, rows: List[dict], round_points_map: Dict[str, int], total_players: int) -> List[str]:
+    preview: List[str] = [
+        f"**Preview \u2014 {t.get('name')}**",
+        f"**{len(rows)}/{total_players}** players calculated",
+        "",
+    ]
+    for r in sorted(rows, key=lambda x: _ROUND_ORDER_CALC.index(x["round"])
+                    if x["round"] in _ROUND_ORDER_CALC else 99):
+        tourn_pts = round_points_map.get(r["round"], 0)
+        set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
+        est_total = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
+        if r.get("match_log") == "withdrew":
+            preview.append(f"**{r['player']}** \u2014 *withdrew* \u2014 ~**{est_total}**")
+        else:
+            preview.append(
+                f"**{r['player']}** \u2014 {r['round']} \u2014 "
+                f"{r['sets_won']}W/{r['sets_lost']}L \u2014 "
+                f"perf {r['performance_pts']} upset {r['upset_pts']} ~**{est_total}**"
+            )
+            if r.get("match_log"):
+                for entry in r["match_log"].split(";"):
+                    entry = entry.strip()
+                    if entry:
+                        preview.append(f"  \u21b3 {entry}")
+        preview.append("")
+    return _chunk_pages(preview)
 
 def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
     """
@@ -659,6 +701,60 @@ class DrawChunkView(discord.ui.View):
         await interaction.response.edit_message(content="❌ Cancelled.", view=None)
 
 
+
+class WithdrewSelectView(discord.ui.View):
+    def __init__(self, cog, user_id: int, tournament_id: str,
+                 rows: List[dict], pages: List[str], not_found: List[str]):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.rows = rows
+        self.pages = pages
+        self.not_found = list(not_found)
+        self._rebuild()
+
+    def _rebuild(self):
+        self.clear_items()
+        if self.not_found:
+            name = self.not_found[0]
+            wd_btn = discord.ui.Button(
+                label=f"Mark \u2018{name[:38]}\u2019 as withdrew",
+                style=discord.ButtonStyle.secondary,
+            )
+            async def _wd(inter: discord.Interaction, v=self, n=name):
+                if inter.user.id != v.user_id:
+                    return await inter.response.send_message("\u274c Not for you.", ephemeral=True)
+                v.not_found.pop(0)
+                v.rows.append({
+                    "player": n, "round": "R128",
+                    "sets_won": 0, "sets_lost": 0,
+                    "performance_pts": 0, "upset_pts": 0,
+                    "match_log": "withdrew",
+                })
+                if v.not_found:
+                    v._rebuild()
+                    await inter.response.edit_message(
+                        content=f"\u2705 Marked **{n}** as withdrew. Next:", embed=None, view=v)
+                else:
+                    data = _load()
+                    t = _find_tournament(data, v.tournament_id)
+                    cat = next((c for c in data.get("categories", []) if c.get("id") == t.get("category_id")), None)
+                    rpm = (cat or {}).get("round_points", {})
+                    v.pages = _build_preview_pages(t, v.rows, rpm, len(v.rows))
+                    confirm = CalculateConfirmView(v.cog, v.user_id, v.tournament_id, v.rows, v.pages)
+                    await inter.response.edit_message(content=None, embed=confirm._embed(), view=confirm)
+            wd_btn.callback = _wd
+            self.add_item(wd_btn)
+
+        cancel_btn = discord.ui.Button(label="\u2717 Cancel", style=discord.ButtonStyle.danger)
+        async def _cancel(inter: discord.Interaction, v=self):
+            if inter.user.id != v.user_id:
+                return await inter.response.send_message("\u274c Not for you.", ephemeral=True)
+            await inter.response.edit_message(content="\u274c Cancelled.", embed=None, view=None)
+        cancel_btn.callback = _cancel
+        self.add_item(cancel_btn)
+
 class CalculateConfirmView(discord.ui.View):
     def __init__(self, cog, user_id: int, tournament_id: str,
                  rows: List[dict], pages: List[str]):
@@ -699,14 +795,49 @@ class CalculateConfirmView(discord.ui.View):
             self.add_item(nxt)
 
         confirm = discord.ui.Button(label="✅ Confirm & Save", style=discord.ButtonStyle.success)
-        repaste = discord.ui.Button(label="Re-paste draw",     style=discord.ButtonStyle.secondary)
-        cancel  = discord.ui.Button(label="✗ Cancel",          style=discord.ButtonStyle.danger)
+        send_dm = discord.ui.Button(label="📋 Send copy-pastable block", style=discord.ButtonStyle.secondary)
+        repaste = discord.ui.Button(label="Re-paste draw",               style=discord.ButtonStyle.secondary)
+        cancel  = discord.ui.Button(label="✗ Cancel",                    style=discord.ButtonStyle.danger)
 
         async def _confirm(inter: discord.Interaction, v=self):
             if inter.user.id != v.user_id:
                 return await inter.response.send_message("❌ Not for you.", ephemeral=True)
             lines = [_format_bot_paste_line(r) for r in v.rows]
             await v.cog._fantasy_end_submit(inter, v.tournament_id, "\n".join(lines))
+
+        async def _send_dm(inter: discord.Interaction, v=self):
+            if inter.user.id != v.user_id:
+                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+            await inter.response.defer(ephemeral=True)
+            lines = [_format_bot_paste_line(r) for r in v.rows]
+            # Split into chunks that fit in a Discord message (< 1900 chars each, inside code block)
+            chunks = []
+            current = []
+            current_len = 0
+            for line in lines:
+                # +1 for newline
+                if current_len + len(line) + 1 > 1800 and current:
+                    chunks.append("\n".join(current))
+                    current = []
+                    current_len = 0
+                current.append(line)
+                current_len += len(line) + 1
+            if current:
+                chunks.append("\n".join(current))
+            try:
+                user = await inter.client.fetch_user(inter.user.id)
+                total = len(chunks)
+                for i, chunk in enumerate(chunks, 1):
+                    header = f"**Copy-pastable results block** ({i}/{total}) — paste into `/fantasy-admin tournament-end`\n" if i == 1 else f"*(part {i}/{total})*\n"
+                    await user.send(header + f"```\n{chunk}\n```")
+                await inter.followup.send(
+                    f"✅ Sent **{total}** message(s) to your DMs. Paste each part into `/fantasy-admin tournament-end`.",
+                    ephemeral=True
+                )
+            except discord.Forbidden:
+                await inter.followup.send("❌ Couldn\'t DM you — please enable DMs from server members.", ephemeral=True)
+            except Exception as e:
+                await inter.followup.send(f"❌ Error sending DM: `{e}`", ephemeral=True)
 
         async def _repaste(inter: discord.Interaction, v=self):
             if inter.user.id != v.user_id:
@@ -721,9 +852,11 @@ class CalculateConfirmView(discord.ui.View):
             await inter.response.edit_message(content="❌ Cancelled.", embed=None, view=None)
 
         confirm.callback = _confirm
+        send_dm.callback = _send_dm
         repaste.callback = _repaste
         cancel.callback  = _cancel
         self.add_item(confirm)
+        self.add_item(send_dm)
         self.add_item(repaste)
         self.add_item(cancel)
 
@@ -2187,9 +2320,21 @@ class FantasyCog(commands.Cog):
             preview += ["⚠️ **Not found in draw (will block save):**"]
             preview += [f"- {n}" for n in not_found]
 
-        pages = _chunk_pages(preview)
-        view  = CalculateConfirmView(self, interaction.user.id, tournament_id, rows, pages)
-        await interaction.edit_original_response(content=None, embed=view._embed(), view=view)
+        total_players = len(t.get("players", []))
+        pages = _build_preview_pages(t, rows, round_points_map, total_players)
+
+        if not_found:
+            missing_text = (
+                "\u26a0\ufe0f **Players not found in draw:**\n"
+                + "\n".join(f"- {n}" for n in not_found)
+                + "\n\nMark each as withdrew, or cancel to re-paste the draw."
+            )
+            view = WithdrewSelectView(self, interaction.user.id, tournament_id,
+                                      rows, pages, not_found)
+            await interaction.edit_original_response(content=missing_text, embed=None, view=view)
+        else:
+            view = CalculateConfirmView(self, interaction.user.id, tournament_id, rows, pages)
+            await interaction.edit_original_response(content=None, embed=view._embed(), view=view)
 
 
     # ── Categories ────────────────────────────────────────────────────────────
