@@ -18,6 +18,40 @@ import config
 from utils import ensure_dir, load_json, save_json
 
 # ============================================================
+# Feature toggles — edit these to configure behaviour
+# ============================================================
+
+BUDGET_MODE               = True   # Enable player budget system
+BUDGET_CAP                = 20000  # Default budget cap (used when not set per-tournament)
+ADMIN_CAN_SET_BUDGET      = True   # Allow admins to override budget cap per tournament
+
+CHIPS_PER_TOURNAMENT      = 1      # Chip credits granted to each user per tournament they join
+ADMIN_CAN_SET_CHIPS       = True   # Allow admins to override chip allowance per tournament
+
+CAPTAIN_MULTIPLIER        = 2.0    # Default captain score multiplier
+VC_MULTIPLIER             = 1.5    # Default vice-captain score multiplier
+ADMIN_CAN_SET_MULTIPLIERS = True   # Allow admins to override multipliers per tournament
+
+# Chip keys
+CHIP_TRIPLE_CAPTAIN = "triple_captain"  # Captain 3× instead of 2×
+CHIP_BENCH_BOOST    = "bench_boost"     # Bench player scores full points
+CHIP_DOUBLE_UPSET   = "double_upset"    # 2× upset points for whole team
+CHIP_ALL_IN         = "all_in"          # Captain 4×, rest 0.5×; VC multi still applies on 0.5× base
+
+CHIP_LABELS = {
+    CHIP_TRIPLE_CAPTAIN: "🔱 Triple Captain",
+    CHIP_BENCH_BOOST:    "🚀 Bench Boost",
+    CHIP_DOUBLE_UPSET:   "⚡ Double Upset",
+    CHIP_ALL_IN:         "💀 All-In",
+}
+CHIP_DESCRIPTIONS = {
+    CHIP_TRIPLE_CAPTAIN: "Your captain scores **3×** instead of 2× this tournament.",
+    CHIP_BENCH_BOOST:    "Your bench player scores **full points** alongside your 5 picks.",
+    CHIP_DOUBLE_UPSET:   "All **upset points** for your whole team are doubled.",
+    CHIP_ALL_IN:         "Your captain scores **4×**, but all other picks score **0.5×**. VC multiplier still stacks on the 0.5× base. Captain must be your All-In pick.",
+}
+
+# ============================================================
 # Storage
 # ============================================================
 
@@ -30,30 +64,10 @@ def _load() -> dict:
     data.setdefault("categories", [])
     data.setdefault("tournaments", [])
     data.setdefault("ldb_blacklist", [])
+    data.setdefault("user_chips", {})  # {uid_str: {tournament_id: chip_key, "__credits__": int}}
     return data
 
-# ── In-memory cache for autocomplete (avoids slow filesystem reads on Railway) ──
-_data_cache = None
-_data_cache_ts: float = 0.0
-_CACHE_TTL: float = 5.0
-
-def _load_cached() -> dict:
-    global _data_cache, _data_cache_ts
-    now = __import__('time').time()
-    if _data_cache is not None and (now - _data_cache_ts) < _CACHE_TTL:
-        return _data_cache
-    _data_cache = _load()
-    _data_cache_ts = now
-    return _data_cache
-
-def _invalidate_cache() -> None:
-    global _data_cache, _data_cache_ts
-    _data_cache = None
-    _data_cache_ts = 0.0
-
-
 def _save(data: dict) -> None:
-    _invalidate_cache()
     p = _path()
     print(f"[fantasy] _save path={p!r} tournaments={[t.get('id') for t in data.get('tournaments',[])]}")
     save_json(p, data)
@@ -101,8 +115,251 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip()).lower()
 
 # ============================================================
-# Helpers
+# Budget & chip helpers
 # ============================================================
+
+def _t_budget(t: dict) -> int:
+    if not BUDGET_MODE: return 999_999_999
+    if ADMIN_CAN_SET_BUDGET and t.get("budget_cap") is not None:
+        return int(t["budget_cap"])
+    return BUDGET_CAP
+
+def _t_chips(t: dict) -> int:
+    if ADMIN_CAN_SET_CHIPS and t.get("chips_per_tournament") is not None:
+        return int(t["chips_per_tournament"])
+    return CHIPS_PER_TOURNAMENT
+
+def _t_cap_multi(t: dict) -> float:
+    if ADMIN_CAN_SET_MULTIPLIERS and t.get("captain_multiplier") is not None:
+        return float(t["captain_multiplier"])
+    return CAPTAIN_MULTIPLIER
+
+def _t_vc_multi(t: dict) -> float:
+    if ADMIN_CAN_SET_MULTIPLIERS and t.get("vc_multiplier") is not None:
+        return float(t["vc_multiplier"])
+    return VC_MULTIPLIER
+
+def _price_map(t: dict) -> Dict[str, int]:
+    return {_player_key(p["name"]): int(p.get("price", 0))
+            for p in t.get("players", []) if p.get("price") is not None}
+
+def _roster_cost(names: List[str], prices: Dict[str, int]) -> int:
+    return sum(prices.get(_player_key(n), 0) for n in names)
+
+def _get_user_chip(data: dict, user_id: int, tournament_id: str) -> Optional[str]:
+    chip = data.get("user_chips", {}).get(str(user_id), {}).get(tournament_id)
+    return chip if chip in CHIP_LABELS else None
+
+def _set_user_chip(data: dict, user_id: int, tournament_id: str, chip: Optional[str]) -> None:
+    data.setdefault("user_chips", {}).setdefault(str(user_id), {})[tournament_id] = chip
+
+def _get_user_credits(data: dict, user_id: int) -> int:
+    return int(data.get("user_chips", {}).get(str(user_id), {}).get("__credits__", 0))
+
+def _set_user_credits(data: dict, user_id: int, credits: int) -> None:
+    data.setdefault("user_chips", {}).setdefault(str(user_id), {})["__credits__"] = max(0, credits)
+
+# ── Roster storage ────────────────────────────────────────────
+# t["rosters"][uid_str] = {
+#   "picks":        [name×5],
+#   "captain":      name,
+#   "vice_captain": name,
+#   "bench":        name,
+# }
+# Backwards-compat: old flat-list rosters are read by _get_roster().
+
+def _get_roster(t: dict, user_id: int) -> Optional[dict]:
+    raw = (t.get("rosters") or {}).get(str(user_id))
+    if raw is None: return None
+    if isinstance(raw, list):
+        return {"picks": raw[:5], "captain": raw[0] if raw else None,
+                "vice_captain": raw[1] if len(raw) > 1 else None, "bench": None}
+    return raw
+
+def _roster_picks(roster: dict) -> List[str]:
+    return (roster or {}).get("picks", [])
+
+def _roster_all_names(roster: dict) -> List[str]:
+    picks = _roster_picks(roster)
+    bench = (roster or {}).get("bench")
+    return picks + ([bench] if bench else [])
+
+def _compute_user_score(t: dict, user_id: int, chip: Optional[str]) -> int:
+    """Score a user's roster applying C/VC multipliers and chip effects."""
+    roster = _get_roster(t, user_id)
+    if not roster or not t.get("results_entered"): return 0
+    results = t.get("results", {}) or {}
+    picks   = _roster_picks(roster)
+    captain = (roster.get("captain") or "").strip()
+    vc      = (roster.get("vice_captain") or "").strip()
+    bench   = (roster.get("bench") or "").strip()
+    cap_m   = _t_cap_multi(t)
+    vc_m    = _t_vc_multi(t)
+    if chip == CHIP_TRIPLE_CAPTAIN: cap_m = 3.0
+
+    active = picks[:]
+    if chip == CHIP_BENCH_BOOST and bench:
+        active.append(bench)
+
+    total = 0
+    for name in active:
+        r = results.get(_player_key(name))
+        if not r: continue
+        base = int(r.get("total", 0))
+        if chip == CHIP_DOUBLE_UPSET:
+            base += int(r.get("upset_points", 0))
+        if chip == CHIP_ALL_IN:
+            base = int(round(base * 4.0)) if _player_key(name) == _player_key(captain) \
+                   else int(round(base * 0.5))
+        if _player_key(name) == _player_key(captain) and chip != CHIP_ALL_IN:
+            base = int(round(base * cap_m))
+        elif _player_key(name) == _player_key(vc):
+            base = int(round(base * vc_m))
+        total += base
+    return total
+
+# ── ATP raw paste parser ──────────────────────────────────────
+
+def _parse_atp_paste(text: str) -> Tuple[Dict[str, int], List[str]]:
+    """
+    Parse raw ATP rankings page text into {player_name: ranking_points}.
+    Handles the multi-line format from the ATP website.
+    """
+    lines = [l.strip() for l in (text or "").splitlines()]
+    result: Dict[str, int] = {}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line or re.match(r'^[\d,]+$', line) or line.startswith("headshot") \
+                or re.match(r'^[+\-]\d+$', line) \
+                or line in ("Rank", "Player", "Age", "Official Points", "+/-",
+                            "Tourn Played", "Dropping", "Next Best"):
+            i += 1; continue
+        if re.match(r'^[A-Za-z][A-Za-z\s\-\'\.\u00C0-\u024F]+$', line) and len(line) > 2:
+            name = line
+            for j in range(i + 1, min(i + 5, len(lines))):
+                nums = re.split(r'[\t\s]+', lines[j].strip())
+                for tok in nums:
+                    clean = tok.replace(",", "")
+                    if re.match(r'^\d{3,}$', clean) and int(clean) >= 100:
+                        if _player_key(name) not in {_player_key(k) for k in result}:
+                            result[name] = int(clean)
+                        i = j + 1
+                        break
+                else:
+                    continue
+                break
+            else:
+                i += 1
+        else:
+            i += 1
+    errors = [] if result else ["Could not parse any players. Check the paste format."]
+    return result, errors
+
+def _parse_prices_text(text: str) -> Tuple[Dict[str, int], List[str]]:
+    """Parse 'Player | Price' lines into {player_key: price}."""
+    price_map: Dict[str, int] = {}; errors = []
+    for idx, raw in enumerate((text or "").splitlines(), 1):
+        line = raw.strip()
+        if not line: continue
+        if "|" not in line:
+            errors.append(f"Line {idx}: expected 'Player | Price', got: {line!r}"); continue
+        name_raw, price_raw = line.split("|", 1)
+        name = name_raw.strip()
+        try: price_map[_player_key(name)] = int(price_raw.strip().replace(",", ""))
+        except ValueError: errors.append(f"Line {idx}: price must be integer, got {price_raw.strip()!r}")
+    return price_map, errors
+
+# ── Perfect picks: knapsack solver ───────────────────────────
+
+def _compute_perfect_picks_budget(t: dict) -> Tuple[List[dict], int, Optional[str], int]:
+    """
+    Find highest-scoring 5-player roster within budget using DP knapsack.
+    Also finds the optimal chip for that roster.
+    Returns (roster_entries, base_total, best_chip, chipped_total).
+    """
+    results = list((t.get("results", {}) or {}).values())
+    if not results: return [], 0, None, 0
+    budget = _t_budget(t)
+    prices = _price_map(t)
+
+    candidates = [(r.get("player", ""), int(r.get("total", 0)),
+                   prices.get(_player_key(r.get("player", "")), 0), r)
+                  for r in results]
+
+    unit = 100
+    B = budget // unit
+    INF = -1
+    dp = [[INF] * (B + 1) for _ in range(6)]
+    parent = [[None] * (B + 1) for _ in range(6)]
+    dp[0][0] = 0
+
+    for c_idx, (name, score, price, r) in enumerate(candidates):
+        p_units = min(price // unit, B)
+        for picks in range(min(4, c_idx), -1, -1):
+            for b in range(B - p_units, -1, -1):
+                if dp[picks][b] == INF: continue
+                new_b = b + p_units
+                new_score = dp[picks][b] + score
+                if new_score > dp[picks + 1][new_b]:
+                    dp[picks + 1][new_b] = new_score
+                    parent[picks + 1][new_b] = (picks, b, c_idx)
+
+    best_score = -1; best_b = -1
+    for b in range(B + 1):
+        if dp[5][b] > best_score:
+            best_score = dp[5][b]; best_b = b
+
+    if best_score == -1 or best_b == -1:
+        return [], 0, None, 0
+
+    chosen_indices = []
+    picks, b = 5, best_b
+    while picks > 0:
+        prev_picks, prev_b, c_idx = parent[picks][b]
+        chosen_indices.append(c_idx); picks, b = prev_picks, prev_b
+    chosen_indices.reverse()
+    chosen = [candidates[i] for i in chosen_indices]
+    chosen_results = [c[3] for c in chosen]
+
+    chosen_sorted = sorted(chosen, key=lambda c: c[1], reverse=True)
+    chosen_keys = {_player_key(c[0]) for c in chosen}
+    remaining_budget = budget - sum(c[2] for c in chosen)
+    bench_candidates = sorted(
+        [c for c in candidates if _player_key(c[0]) not in chosen_keys and c[2] <= remaining_budget],
+        key=lambda c: c[1], reverse=True)
+    bench = bench_candidates[0] if bench_candidates else None
+
+    cap_name = chosen_sorted[0][0]
+    vc_name  = chosen_sorted[1][0] if len(chosen_sorted) > 1 else None
+    cap_m = _t_cap_multi(t); vc_m = _t_vc_multi(t)
+
+    def _score_chip(chip: Optional[str]) -> int:
+        total = 0
+        active = list(chosen_results)
+        if chip == CHIP_BENCH_BOOST and bench: active.append(bench[3])
+        for r in active:
+            name = r.get("player", "")
+            base = int(r.get("total", 0))
+            if chip == CHIP_DOUBLE_UPSET: base += int(r.get("upset_points", 0))
+            if chip == CHIP_ALL_IN:
+                base = int(round(base * 4.0)) if _player_key(name) == _player_key(cap_name) \
+                       else int(round(base * 0.5))
+            if _player_key(name) == _player_key(cap_name):
+                if chip == CHIP_TRIPLE_CAPTAIN: base = int(round(base * 3.0))
+                elif chip != CHIP_ALL_IN: base = int(round(base * cap_m))
+            elif vc_name and _player_key(name) == _player_key(vc_name):
+                base = int(round(base * vc_m))
+            total += base
+        return total
+
+    base_total = _score_chip(None)
+    best_chip = None; best_chipped = base_total
+    for chip in [CHIP_TRIPLE_CAPTAIN, CHIP_BENCH_BOOST, CHIP_DOUBLE_UPSET, CHIP_ALL_IN]:
+        s = _score_chip(chip)
+        if s > best_chipped: best_chipped = s; best_chip = chip
+
+    return chosen_results, base_total, best_chip, best_chipped
 
 def _mk_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
@@ -259,306 +516,8 @@ def _get_tournament_points(data: dict, category_id: str, round_key: str) -> Opti
 
 
 # ============================================================
-
-_CALC_ROUND_W: Dict[str, str] = {
-    "F":    "Champion",       # winner of the final
-    "SF":   "Semi-Final",
-    "QF":   "Quarter-Final",
-    "R16":  "R16",
-    "R32":  "R32",
-    "R64":  "R64",
-    "R128": "R128",
-}
-
-_CALC_ROUND_L: Dict[str, str] = {
-    "F":    "Finalist",       # loser of the final
-    "SF":   "Semi-Final",
-    "QF":   "Quarter-Final",
-    "R16":  "R16",
-    "R32":  "R32",
-    "R64":  "R64",
-    "R128": "R128",
-}
-
-_ROUND_ORDER_CALC: List[str] = [
-    "Champion", "Finalist", "Semi-Final", "Quarter-Final",
-    "R16", "R32", "R64", "R128",
-]
-
-# ============================================================
-# Name helpers
-# ============================================================
-
-def _clean_player_name(raw: str) -> str:
-    """
-    Strip [country], [yr|ev] tags and leading seed/qualifier bracket.
-    "(2)Jannik Sinner [ITA] [yr | ev]"  →  "Jannik Sinner"
-    "(Q)Martin Landaluce [ESP]"          →  "Martin Landaluce"
-    """
-    s = re.sub(r"\[.*?\]", "", raw)
-    s = re.sub(r"^\(\d+\)\s*", "", s)
-    s = re.sub(r"^\((Q|WC|LL|PR)\)\s*", "", s, flags=re.IGNORECASE)
-    return s.strip()
-
-
-
-def _reverse_score(score_raw: str) -> str:
-    parts = []
-    for chunk in score_raw.strip().split():
-        m = re.match(r"^(\d+)-(\d+)(\(\d+\))?$", chunk)
-        if not m:
-            parts.append(chunk)
-            continue
-        parts.append(f"{m.group(2)}-{m.group(1)}{m.group(3) or ''}")
-    return " ".join(parts)
-
-def _name_match_calc(a: str, b: str) -> bool:
-    norm = lambda s: re.sub(r"[^a-z]", "", s.lower())
-    na, nb = norm(a), norm(b)
-    if na in nb or nb in na:
-        return True
-    # Exact word intersection only — prevents "Alex" matching "Alexander"
-    pa = set(a.lower().split())
-    pb = set(b.lower().split())
-    shared = pa & pb
-    return len(shared) >= min(len(pa), len(pb))
-
-
-# ============================================================
-# Draw parser
-# ============================================================
-
-def _extract_rank(col: str) -> Optional[int]:
-    """Extract rank from a rank column (bare integer like '2' or '22')."""
-    col = col.strip()
-    try:
-        n = int(col)
-        return n if n > 0 else None
-    except ValueError:
-        return None
-
-
-def _extract_dr(col: str) -> Optional[float]:
-    """Extract dominance ratio from cols[8], e.g. '1.65'."""
-    try:
-        return float(col.strip())
-    except (ValueError, AttributeError):
-        return None
-
-
-def _parse_set_score_calc(score_raw: str) -> Tuple[int, int]:
-    """
-    Return (sets_won_by_winner, sets_lost_by_winner) from a score string.
-    Handles tiebreak suffixes like 7-6(4).
-    Ignores non-score tokens (RET, w/o, etc.).
-    """
-    sw = sl = 0
-    for chunk in score_raw.strip().split():
-        m = re.match(r"^(\d+)-(\d+)(?:\(\d+\))?$", chunk)
-        if not m:
-            continue
-        a, b = int(m.group(1)), int(m.group(2))
-        if a > b:
-            sw += 1
-        else:
-            sl += 1
-    return sw, sl
-
-
-def _parse_raw_draw(text: str) -> List[dict]:
-    """
-    Parse a tab-separated draw block into match dicts.
-
-    Each dict:
-      round_w   — canonical round for the winner
-      round_l   — canonical round for the loser
-      w_name    — cleaned winner name
-      l_name    — cleaned loser name
-      w_rank    — int or None
-      l_rank    — int or None
-      w_sets    — sets won by winner
-      l_sets    — sets won by loser  (= sets lost by winner)
-      dr        — dominance ratio (winner's perspective, float or None)
-      score_raw — raw score string
-      is_wo     — True if walkover or retirement
-    """
-    matches = []
-    for raw_line in text.strip().splitlines():
-        cols = raw_line.strip().split("\t")
-        if len(cols) < 6:
-            continue
-
-        round_code = cols[0].strip()
-        if round_code not in _CALC_ROUND_W:
-            continue
-
-        score_raw = cols[6].strip() if len(cols) > 6 else ""
-        dr_raw    = cols[7].strip() if len(cols) > 7 else ""
-
-        is_wo = bool(re.search(r"\bRET\b|w/o|walkover", score_raw, re.IGNORECASE))
-
-        w_sets, l_sets = _parse_set_score_calc(score_raw)
-
-        matches.append({
-            "round_w":   _CALC_ROUND_W[round_code],
-            "round_l":   _CALC_ROUND_L[round_code],
-            "w_name":    _clean_player_name(cols[2]),
-            "l_name":    _clean_player_name(cols[5]),
-            "w_rank":    _extract_rank(cols[1]),
-            "l_rank":    _extract_rank(cols[4]),
-            "w_sets":    w_sets,
-            "l_sets":    l_sets,
-            "dr":        _extract_dr(dr_raw),
-            "score_raw": score_raw,
-            "is_wo":     is_wo,
-        })
-
-    return matches
-
-
-# ============================================================
-# Point calculator
-# ============================================================
-
-def _calc_player_fantasy(player_name: str, all_matches: List[dict]) -> Optional[dict]:
-    """
-    Compute full fantasy stats for one rostered player.
-    Returns None if the player doesn't appear in the draw at all.
-    """
-    # Find every match this player was in
-    played: List[dict] = []
-    for m in all_matches:
-        if _name_match_calc(player_name, m["w_name"]):
-            played.append({"match": m, "won": True})
-        elif _name_match_calc(player_name, m["l_name"]):
-            played.append({"match": m, "won": False})
-
-    if not played:
-        return None
-
-    # Best round reached (lowest index in _ROUND_ORDER_CALC)
-    def _player_round(entry: dict) -> str:
-        m = entry["match"]
-        return m["round_w"] if entry["won"] else m["round_l"]
-
-    furthest_round = min(
-        (_player_round(e) for e in played),
-        key=lambda r: _ROUND_ORDER_CALC.index(r) if r in _ROUND_ORDER_CALC else 99,
-    )
-
-    # Sort chronologically: R128 first → Final last
-    played_sorted = sorted(
-        played,
-        key=lambda e: _ROUND_ORDER_CALC.index(_player_round(e))
-                      if _player_round(e) in _ROUND_ORDER_CALC else 99,
-        reverse=True,
-    )
-
-    total_sw = total_sl = 0
-    perf_pts = upset_pts = 0
-    log_parts: List[str] = []
-
-    for entry in played_sorted:
-        m   = entry["match"]
-        won = entry["won"]
-        opp = m["l_name"] if won else m["w_name"]
-
-        if m["is_wo"]:
-            log_parts.append(f"d. {opp} w/o +0" if won else f"l. {opp} ret +0")
-            continue
-
-        if won:
-            p_sets = m["w_sets"]
-            o_sets = m["l_sets"]
-            dr     = m["dr"]          # DR is from winner's POV, already >1 for dominant win
-        else:
-            p_sets = m["l_sets"]
-            o_sets = m["w_sets"]
-            dr     = (1.0 / m["dr"]) if m["dr"] else None  # flip for loser
-
-        total_sw += p_sets
-        total_sl += o_sets
-
-        p_rank = m["w_rank"] if won else m["l_rank"]
-        o_rank = m["l_rank"] if won else m["w_rank"]
-
-        if p_rank is None or o_rank is None or p_rank == o_rank or dr is None:
-            score_disp = m["score_raw"] if won else _reverse_score(m["score_raw"])
-            verb = "d." if won else "l."
-            log_parts.append(f"{verb} {opp} {score_disp} +0")
-            continue
-
-        if p_rank < o_rank:
-            # Favourite: win earns perf pts, loss earns 0
-            pts = round((p_sets ** 3) * ((p_rank / o_rank) ** 2) * dr * 25) if won else 0
-            perf_pts += pts
-            score_disp = m["score_raw"] if won else _reverse_score(m["score_raw"])
-            verb = "d." if won else "l."
-            log_parts.append(f"{verb} {opp} {score_disp} +{pts}perf")
-        else:
-            # Underdog
-            if won:
-                pts = round((p_sets ** 3) * (p_rank / o_rank) * dr * 3)
-                upset_pts += pts
-                log_parts.append(f"d. {opp} {m['score_raw']} +{pts}upset")
-            else:
-                pts = round(p_sets * (p_rank / o_rank) * dr * 0.6)
-                upset_pts += pts
-                log_parts.append(f"l. {opp} {_reverse_score(m['score_raw'])} +{pts}upset")
-
-    return {
-        "player":          player_name,
-        "round":           furthest_round,
-        "sets_won":        total_sw,
-        "sets_lost":       total_sl,
-        "performance_pts": perf_pts,
-        "upset_pts":       upset_pts,
-        "match_log":       "; ".join(log_parts),
-    }
-
-
-def _format_bot_paste_line(r: dict) -> str:
-    """Format one player result as a pipe-delimited line for _fantasy_end_submit."""
-    return (
-        f"{r['player']} | {r['round']} | "
-        f"{r['sets_won']} | {r['sets_lost']} | "
-        f"{r['performance_pts']} | {r['upset_pts']} | "
-        f"{r['match_log']}"
-    )
-
-
-# ============================================================
-
 # Results parsing
 # ============================================================
-
-
-def _build_preview_pages(t: dict, rows: List[dict], round_points_map: Dict[str, int], total_players: int) -> List[str]:
-    preview: List[str] = [
-        f"**Preview \u2014 {t.get('name')}**",
-        f"**{len(rows)}/{total_players}** players calculated",
-        "",
-    ]
-    for r in sorted(rows, key=lambda x: _ROUND_ORDER_CALC.index(x["round"])
-                    if x["round"] in _ROUND_ORDER_CALC else 99):
-        tourn_pts = round_points_map.get(r["round"], 0)
-        set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
-        est_total = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
-        if r.get("match_log") == "withdrew":
-            preview.append(f"**{r['player']}** \u2014 *withdrew* \u2014 ~**{est_total}**")
-        else:
-            preview.append(
-                f"**{r['player']}** \u2014 {r['round']} \u2014 "
-                f"{r['sets_won']}W/{r['sets_lost']}L \u2014 "
-                f"perf {r['performance_pts']} upset {r['upset_pts']} ~**{est_total}**"
-            )
-            if r.get("match_log"):
-                for entry in r["match_log"].split(";"):
-                    entry = entry.strip()
-                    if entry:
-                        preview.append(f"  \u21b3 {entry}")
-        preview.append("")
-    return _chunk_pages(preview)
 
 def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
     """
@@ -615,258 +574,30 @@ def _parse_results_lines(text: str) -> Tuple[List[dict], List[str]]:
                      "performance_pts": performance_pts,
                      "upset_pts": upset_pts, "match_log": match_log})
     return rows, errors
-# Modal + views
+
+# ============================================================
+# UI: paginator
 # ============================================================
 
-class RawDrawModal(discord.ui.Modal):  # no title= here
-
+class RawDrawModal(discord.ui.Modal, title="Fantasy — Paste Raw Draw Data"):
     draw_text = discord.ui.TextInput(
-        label="Tab-separated result block",
+        label="Raw tab-separated result block",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=4000,
-        placeholder="Paste the tab-separated draw rows here...",
+        placeholder="Paste the tab-separated draw data from the tennis results page...",
     )
 
-    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int = 1):
-        super().__init__(title=f"Draw Data — Part {chunk_num} of {MAX_CHUNKS}")  # title goes here
+    def __init__(self, cog, user_id: int, tournament_id: str):
+        super().__init__()
         self.cog = cog
         self.user_id = user_id
         self.tournament_id = tournament_id
-        self.chunk_num = chunk_num
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-
-        raw = str(self.draw_text).strip()
-        key = (self.user_id, self.tournament_id, "draw")
-        existing = _staged_results.get(key, [])
-        new_lines = [l for l in raw.splitlines() if l.strip()]
-        _staged_results[key] = existing + new_lines
-        total = len(_staged_results[key])
-        next_chunk = self.chunk_num + 1
-
-        if next_chunk > MAX_CHUNKS:
-            await interaction.response.edit_message(
-                content=f"✅ Part {self.chunk_num} saved ({total} rows). Calculating…", view=None)
-            await self.cog._run_calculate(interaction, self.tournament_id)
-        else:
-            view = DrawChunkView(self.cog, self.user_id, self.tournament_id,
-                                 chunk_num=next_chunk, rows_so_far=total)
-            await interaction.response.edit_message(
-                content=(f"✅ Part {self.chunk_num} saved — **{total}** rows staged.\n"
-                         f"Click **Part {next_chunk}** to add more, or **Done** if finished."),
-                view=view)
-
-
-class DrawChunkView(discord.ui.View):
-    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int, rows_so_far: int):
-        super().__init__(timeout=600)
-        self.cog = cog
-        self.user_id = user_id
-        self.tournament_id = tournament_id
-        self.chunk_num = chunk_num
-        self.rows_so_far = rows_so_far
-
-        next_btn = discord.ui.Button(label=f"Part {chunk_num} →", style=discord.ButtonStyle.primary)
-        next_btn.callback = self._next
-        self.add_item(next_btn)
-
-        done_btn = discord.ui.Button(label="✅ Done — Calculate", style=discord.ButtonStyle.success)
-        done_btn.callback = self._done
-        self.add_item(done_btn)
-
-        cancel_btn = discord.ui.Button(label="✗ Cancel", style=discord.ButtonStyle.danger)
-        cancel_btn.callback = self._cancel
-        self.add_item(cancel_btn)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-            return False
-        return True
-
-    async def _next(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(
-            RawDrawModal(self.cog, self.user_id, self.tournament_id, self.chunk_num))
-
-    async def _done(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            content=f"✅ Calculating from {self.rows_so_far} rows…", view=None)
-        await self.cog._run_calculate(interaction, self.tournament_id)
-
-    async def _cancel(self, interaction: discord.Interaction):
-        _staged_results.pop((self.user_id, self.tournament_id, "draw"), None)
-        await interaction.response.edit_message(content="❌ Cancelled.", view=None)
-
-
-
-class WithdrewSelectView(discord.ui.View):
-    def __init__(self, cog, user_id: int, tournament_id: str,
-                 rows: List[dict], pages: List[str], not_found: List[str]):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.user_id = user_id
-        self.tournament_id = tournament_id
-        self.rows = rows
-        self.pages = pages
-        self.not_found = list(not_found)
-        self._rebuild()
-
-    def _rebuild(self):
-        self.clear_items()
-        if self.not_found:
-            name = self.not_found[0]
-            wd_btn = discord.ui.Button(
-                label=f"Mark \u2018{name[:38]}\u2019 as withdrew",
-                style=discord.ButtonStyle.secondary,
-            )
-            async def _wd(inter: discord.Interaction, v=self, n=name):
-                if inter.user.id != v.user_id:
-                    return await inter.response.send_message("\u274c Not for you.", ephemeral=True)
-                v.not_found.pop(0)
-                v.rows.append({
-                    "player": n, "round": "R128",
-                    "sets_won": 0, "sets_lost": 0,
-                    "performance_pts": 0, "upset_pts": 0,
-                    "match_log": "withdrew",
-                })
-                if v.not_found:
-                    v._rebuild()
-                    await inter.response.edit_message(
-                        content=f"\u2705 Marked **{n}** as withdrew. Next:", embed=None, view=v)
-                else:
-                    data = _load()
-                    t = _find_tournament(data, v.tournament_id)
-                    cat = next((c for c in data.get("categories", []) if c.get("id") == t.get("category_id")), None)
-                    rpm = (cat or {}).get("round_points", {})
-                    v.pages = _build_preview_pages(t, v.rows, rpm, len(v.rows))
-                    confirm = CalculateConfirmView(v.cog, v.user_id, v.tournament_id, v.rows, v.pages)
-                    await inter.response.edit_message(content=None, embed=confirm._embed(), view=confirm)
-            wd_btn.callback = _wd
-            self.add_item(wd_btn)
-
-        cancel_btn = discord.ui.Button(label="\u2717 Cancel", style=discord.ButtonStyle.danger)
-        async def _cancel(inter: discord.Interaction, v=self):
-            if inter.user.id != v.user_id:
-                return await inter.response.send_message("\u274c Not for you.", ephemeral=True)
-            await inter.response.edit_message(content="\u274c Cancelled.", embed=None, view=None)
-        cancel_btn.callback = _cancel
-        self.add_item(cancel_btn)
-
-class CalculateConfirmView(discord.ui.View):
-    def __init__(self, cog, user_id: int, tournament_id: str,
-                 rows: List[dict], pages: List[str]):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.user_id = user_id
-        self.tournament_id = tournament_id
-        self.rows = rows
-        self.pages = pages
-        self.page = 0
-        self._rebuild()
-
-    def _rebuild(self):
-        self.clear_items()
-        if len(self.pages) > 1:
-            prev = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary,
-                                     disabled=(self.page == 0))
-            nxt  = discord.ui.Button(
-                label=f"Next ▶ ({self.page + 1}/{len(self.pages)})",
-                style=discord.ButtonStyle.secondary,
-                disabled=(self.page >= len(self.pages) - 1))
-
-            async def _prev(inter: discord.Interaction, v=self):
-                if inter.user.id != v.user_id:
-                    return await inter.response.send_message("❌ Not for you.", ephemeral=True)
-                v.page -= 1; v._rebuild()
-                await inter.response.edit_message(embed=v._embed(), view=v)
-
-            async def _nxt(inter: discord.Interaction, v=self):
-                if inter.user.id != v.user_id:
-                    return await inter.response.send_message("❌ Not for you.", ephemeral=True)
-                v.page += 1; v._rebuild()
-                await inter.response.edit_message(embed=v._embed(), view=v)
-
-            prev.callback = _prev
-            nxt.callback  = _nxt
-            self.add_item(prev)
-            self.add_item(nxt)
-
-        confirm = discord.ui.Button(label="✅ Confirm & Save", style=discord.ButtonStyle.success)
-        send_dm = discord.ui.Button(label="📋 Send copy-pastable block", style=discord.ButtonStyle.secondary)
-        repaste = discord.ui.Button(label="Re-paste draw",               style=discord.ButtonStyle.secondary)
-        cancel  = discord.ui.Button(label="✗ Cancel",                    style=discord.ButtonStyle.danger)
-
-        async def _confirm(inter: discord.Interaction, v=self):
-            if inter.user.id != v.user_id:
-                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
-            lines = [_format_bot_paste_line(r) for r in v.rows]
-            await v.cog._fantasy_end_submit(inter, v.tournament_id, "\n".join(lines))
-
-        async def _send_dm(inter: discord.Interaction, v=self):
-            if inter.user.id != v.user_id:
-                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
-            await inter.response.defer(ephemeral=True)
-            lines = [_format_bot_paste_line(r) for r in v.rows]
-            # Split into chunks that fit in a Discord message (< 1900 chars each, inside code block)
-            chunks = []
-            current = []
-            current_len = 0
-            for line in lines:
-                # +1 for newline
-                if current_len + len(line) + 1 > 1800 and current:
-                    chunks.append("\n".join(current))
-                    current = []
-                    current_len = 0
-                current.append(line)
-                current_len += len(line) + 1
-            if current:
-                chunks.append("\n".join(current))
-            try:
-                user = await inter.client.fetch_user(inter.user.id)
-                total = len(chunks)
-                for i, chunk in enumerate(chunks, 1):
-                    header = f"**Copy-pastable results block** ({i}/{total}) — paste into `/fantasy-admin tournament-end`\n" if i == 1 else f"*(part {i}/{total})*\n"
-                    await user.send(header + f"```\n{chunk}\n```")
-                await inter.followup.send(
-                    f"✅ Sent **{total}** message(s) to your DMs. Paste each part into `/fantasy-admin tournament-end`.",
-                    ephemeral=True
-                )
-            except discord.Forbidden:
-                await inter.followup.send("❌ Couldn\'t DM you — please enable DMs from server members.", ephemeral=True)
-            except Exception as e:
-                await inter.followup.send(f"❌ Error sending DM: `{e}`", ephemeral=True)
-
-        async def _repaste(inter: discord.Interaction, v=self):
-            if inter.user.id != v.user_id:
-                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
-            _staged_results.pop((v.user_id, v.tournament_id, "draw"), None)
-            await inter.response.send_modal(
-                RawDrawModal(v.cog, v.user_id, v.tournament_id, chunk_num=1))
-
-        async def _cancel(inter: discord.Interaction, v=self):
-            if inter.user.id != v.user_id:
-                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
-            await inter.response.edit_message(content="❌ Cancelled.", embed=None, view=None)
-
-        confirm.callback = _confirm
-        send_dm.callback = _send_dm
-        repaste.callback = _repaste
-        cancel.callback  = _cancel
-        self.add_item(confirm)
-        self.add_item(send_dm)
-        self.add_item(repaste)
-        self.add_item(cancel)
-
-    def _embed(self) -> discord.Embed:
-        e = discord.Embed(title="Calculate Preview", description=self.pages[self.page])
-        e.set_footer(text=f"Page {self.page + 1}/{len(self.pages)}")
-        return e
-# ============================================================
-# UI: paginator
-# ============================================================
+        await self.cog._calculate_from_raw_draw(interaction, self.tournament_id, str(self.draw_text))
 
 class PagerView(discord.ui.View):
     def __init__(self, pages: List[str], user_id: int, title: str):
@@ -928,7 +659,8 @@ def _seed_bucket(seed: Optional[int]) -> str:
 @dataclass
 class PlayerEntry:
     name: str
-    seed: Optional[int]
+    seed: Optional[int] = None
+    price: Optional[int] = None
 
 class PickSelect(discord.ui.Select):
     def __init__(self, owner_view, options: List[discord.SelectOption]):
@@ -942,6 +674,7 @@ class JoinFantasyView(discord.ui.View):
     PAGE_SIZE = 25
 
     def __init__(self, cog, user_id: int, tournament_id: str, pool: List[PlayerEntry],
+                 budget: int = 999_999_999,
                  target_user_id: Optional[int] = None, force_save: bool = False,
                  header: Optional[str] = None):
         super().__init__(timeout=300)
@@ -950,27 +683,34 @@ class JoinFantasyView(discord.ui.View):
         self.target_user_id = target_user_id if target_user_id is not None else user_id
         self.tournament_id = tournament_id
         self.pool = pool
+        self.budget = budget
         self.force_save = force_save
         self.header = header
         self.picks: List[PlayerEntry] = []
         self.used_keys: set = set()
-        self.top5_used = 0
-        self.top20_used = 0
+        self.spent = 0
         self.page = 0
         self._refresh_select()
+
+    def _remaining(self) -> int:
+        return self.budget - self.spent
 
     def _refresh_select(self):
         self.clear_items()
         remaining = [p for p in self.pool if _player_key(p.name) not in self.used_keys]
-        remaining.sort(key=lambda p: (p.seed if p.seed is not None else 10_000, p.name.lower()))
+        if BUDGET_MODE:
+            remaining = [p for p in remaining if (p.price or 0) <= self._remaining()]
+        remaining.sort(key=lambda p: (-(p.price or 0), p.name.lower()))
         total_pages = max(1, (len(remaining) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
         self.page = max(0, min(self.page, total_pages - 1))
         start = self.page * self.PAGE_SIZE
         show = remaining[start:start + self.PAGE_SIZE]
-        opts = [discord.SelectOption(label=_fmt_player(p.seed, p.name)[:100], value=p.name[:100]) for p in show]
+        opts = []
+        for p in show:
+            label = f"{p.name} (${p.price:,})"[:100] if BUDGET_MODE and p.price is not None else p.name[:100]
+            opts.append(discord.SelectOption(label=label, value=p.name[:100]))
         if opts:
             self.add_item(PickSelect(self, opts))
-        # Pagination buttons if needed
         if total_pages > 1:
             prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary,
                                           disabled=(self.page == 0), row=1)
@@ -1001,14 +741,6 @@ class JoinFantasyView(discord.ui.View):
             return False
         return True
 
-    def _rules_ok_for(self, p: PlayerEntry) -> Tuple[bool, str]:
-        b = _seed_bucket(p.seed)
-        if b == "top5" and self.top5_used >= 1:
-            return False, "❌ Only **one** player from seeds 1–5."
-        if b in ("top5", "top20") and self.top20_used >= 3:
-            return False, "❌ Only **three** players from seeds 1–20."
-        return True, ""
-
     async def on_pick(self, interaction: discord.Interaction, picked_name: str):
         if not await self._guard(interaction): return
         entry = next((p for p in self.pool if _player_key(p.name) == _player_key(picked_name)), None)
@@ -1016,27 +748,30 @@ class JoinFantasyView(discord.ui.View):
             return await interaction.response.send_message("❌ Player not found.", ephemeral=True)
         if _player_key(entry.name) in self.used_keys:
             return await interaction.response.send_message("❌ Already picked.", ephemeral=True)
-        ok, msg = self._rules_ok_for(entry)
-        if not ok:
-            return await interaction.response.send_message(msg, ephemeral=True)
+        cost = entry.price or 0
+        if BUDGET_MODE and cost > self._remaining():
+            return await interaction.response.send_message(
+                f"❌ **{entry.name}** costs ${cost:,} but you only have ${self._remaining():,} left.",
+                ephemeral=True)
         self.picks.append(entry)
         self.used_keys.add(_player_key(entry.name))
-        b = _seed_bucket(entry.seed)
-        if b == "top5": self.top5_used += 1; self.top20_used += 1
-        elif b == "top20": self.top20_used += 1
+        self.spent += cost
         self._refresh_select()
         await interaction.response.edit_message(content=self._status_text(), view=self)
 
     def _status_text(self) -> str:
         lines = [self.header or "**Fantasy Join — Pick 5 players**", ""]
+        if BUDGET_MODE:
+            lines.append(f"💰 Budget: **${self._remaining():,}** remaining of **${self.budget:,}**")
+            lines.append("")
         if self.picks:
             lines.append("**Your picks so far:**")
             for i, p in enumerate(self.picks, 1):
-                lines.append(f"{i}. {_fmt_player(p.seed, p.name)}")
+                price_str = f" — ${p.price:,}" if BUDGET_MODE and p.price is not None else ""
+                lines.append(f"{i}. {p.name}{price_str}")
         else:
             lines.append("No picks yet.")
-        lines.append("")
-        lines.append(f"Top 5 used: **{self.top5_used}/1** • Top 20 used: **{self.top20_used}/3** • Total: **{len(self.picks)}/5**")
+        lines.append(f"\nTotal: **{len(self.picks)}/5**")
         return "\n".join(lines)
 
 class ResetPicksButton(discord.ui.Button):
@@ -1047,23 +782,261 @@ class ResetPicksButton(discord.ui.Button):
         view: JoinFantasyView = self.view
         if interaction.user.id != view.user_id:
             return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-        view.picks = []; view.used_keys = set(); view.top5_used = 0; view.top20_used = 0
+        view.picks = []; view.used_keys = set(); view.spent = 0
         view._refresh_select()
         await interaction.response.edit_message(content=view._status_text(), view=view)
 
 class ConfirmPicksButton(discord.ui.Button):
     def __init__(self, disabled: bool = False):
-        super().__init__(label="Confirm roster", style=discord.ButtonStyle.success, disabled=disabled)
+        super().__init__(label="Confirm 5 picks →", style=discord.ButtonStyle.success, disabled=disabled)
 
     async def callback(self, interaction: discord.Interaction):
         view: JoinFantasyView = self.view
         if interaction.user.id != view.user_id:
             return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
         if len(view.picks) != 5:
-            return await interaction.response.send_message("❌ Pick 5 players.", ephemeral=True)
-        await view.cog._save_user_roster(interaction, view.tournament_id,
-                                          view.target_user_id, view.picks,
-                                          force_save=view.force_save)
+            return await interaction.response.send_message("❌ Pick exactly 5 players.", ephemeral=True)
+        cvc = CaptainVCView(
+            view.cog, view.user_id, view.tournament_id,
+            picks=view.picks, spent_so_far=view.spent,
+            budget=view.budget, pool=view.pool,
+            target_user_id=view.target_user_id, force_save=view.force_save,
+        )
+        await interaction.response.edit_message(content=cvc._status_text(), view=cvc)
+
+# ============================================================
+# Join flow: Step 2 — Captain / VC / Bench
+# ============================================================
+
+class CaptainVCView(discord.ui.View):
+    """After 5 picks: choose Captain, then VC, then Bench."""
+
+    def __init__(self, cog, user_id: int, tournament_id: str,
+                 picks: List[PlayerEntry], spent_so_far: int, budget: int,
+                 pool: List[PlayerEntry],
+                 target_user_id: Optional[int] = None, force_save: bool = False):
+        super().__init__(timeout=300)
+        self.cog = cog; self.user_id = user_id; self.tournament_id = tournament_id
+        self.picks = picks; self.spent_so_far = spent_so_far
+        self.budget = budget; self.pool = pool
+        self.target_user_id = target_user_id if target_user_id is not None else user_id
+        self.force_save = force_save
+        self.captain: Optional[str] = None
+        self.vice_captain: Optional[str] = None
+        self.bench: Optional[str] = None
+        self.step = "captain"
+        self._rebuild()
+
+    def _rebuild(self):
+        self.clear_items()
+        if self.step == "captain":
+            opts = [discord.SelectOption(label=p.name[:100], value=p.name[:100]) for p in self.picks]
+            sel = discord.ui.Select(placeholder="Choose your Captain (2× pts)…", min_values=1, max_values=1, options=opts)
+            async def _cap_cb(inter, v=self):
+                if inter.user.id != v.user_id: return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                v.captain = inter.data["values"][0]; v.step = "vc"; v._rebuild()
+                await inter.response.edit_message(content=v._status_text(), view=v)
+            sel.callback = _cap_cb; self.add_item(sel)
+
+        elif self.step == "vc":
+            opts = [discord.SelectOption(label=p.name[:100], value=p.name[:100])
+                    for p in self.picks if p.name != self.captain]
+            sel = discord.ui.Select(placeholder="Choose your Vice Captain (1.5× pts)…", min_values=1, max_values=1, options=opts)
+            async def _vc_cb(inter, v=self):
+                if inter.user.id != v.user_id: return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                chosen = inter.data["values"][0]
+                if chosen == v.captain: return await inter.response.send_message("❌ VC can't be same as Captain.", ephemeral=True)
+                v.vice_captain = chosen; v.step = "bench"; v._rebuild()
+                await inter.response.edit_message(content=v._status_text(), view=v)
+            sel.callback = _vc_cb; self.add_item(sel)
+
+        elif self.step == "bench":
+            pick_keys = {_player_key(p.name) for p in self.picks}
+            leftover = self.budget - self.spent_so_far
+            bench_pool = [p for p in self.pool
+                          if _player_key(p.name) not in pick_keys
+                          and (not BUDGET_MODE or (p.price or 0) <= leftover)]
+            bench_pool.sort(key=lambda p: (-(p.price or 0), p.name.lower()))
+            show = bench_pool[:25]
+            if show:
+                opts = []
+                for p in show:
+                    label = f"{p.name} (${p.price:,})"[:100] if BUDGET_MODE and p.price is not None else p.name[:100]
+                    opts.append(discord.SelectOption(label=label, value=p.name[:100]))
+                sel = discord.ui.Select(placeholder="Choose your Bench player (6th pick)…", min_values=1, max_values=1, options=opts)
+                async def _bench_cb(inter, v=self):
+                    if inter.user.id != v.user_id: return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                    name = inter.data["values"][0]
+                    entry = next((p for p in v.pool if _player_key(p.name) == _player_key(name)), None)
+                    cost = (entry.price or 0) if entry else 0
+                    if BUDGET_MODE and cost > v.budget - v.spent_so_far:
+                        return await inter.response.send_message(
+                            f"❌ Bench player ${cost:,} exceeds remaining budget ${v.budget - v.spent_so_far:,}.", ephemeral=True)
+                    v.bench = name
+                    chip_view = ChipSelectView(
+                        v.cog, v.user_id, v.tournament_id,
+                        picks=[p.name for p in v.picks],
+                        captain=v.captain, vice_captain=v.vice_captain, bench=v.bench,
+                        target_user_id=v.target_user_id, force_save=v.force_save,
+                    )
+                    await inter.response.edit_message(content=chip_view._status_text(), view=chip_view)
+                sel.callback = _bench_cb; self.add_item(sel)
+            else:
+                skip = discord.ui.Button(label="Skip bench (none available within budget)", style=discord.ButtonStyle.secondary)
+                async def _skip_cb(inter, v=self):
+                    if inter.user.id != v.user_id: return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                    chip_view = ChipSelectView(
+                        v.cog, v.user_id, v.tournament_id,
+                        picks=[p.name for p in v.picks],
+                        captain=v.captain, vice_captain=v.vice_captain, bench=None,
+                        target_user_id=v.target_user_id, force_save=v.force_save,
+                    )
+                    await inter.response.edit_message(content=chip_view._status_text(), view=chip_view)
+                skip.callback = _skip_cb; self.add_item(skip)
+
+    def _status_text(self) -> str:
+        lines = ["**Step 2 — Captain, Vice Captain & Bench**", "", "**Your 5 picks:**"]
+        for p in self.picks:
+            tag = " 🅒" if self.captain and p.name == self.captain else \
+                  (" 🅥" if self.vice_captain and p.name == self.vice_captain else "")
+            lines.append(f"• {p.name}{tag}")
+        lines.append("")
+        prompts = {
+            "captain": "👉 **Pick your Captain** — scores 2× points",
+            "vc":      f"✅ Captain: **{self.captain}**\n👉 **Pick your Vice Captain** — scores 1.5× points",
+            "bench":   f"✅ Captain: **{self.captain}** • VC: **{self.vice_captain}**\n"
+                       f"👉 **Pick your Bench player** — scores if Bench Boost chip is used",
+        }
+        lines.append(prompts.get(self.step, ""))
+        if BUDGET_MODE and self.step == "bench":
+            lines.append(f"\n💰 Budget remaining for bench: **${self.budget - self.spent_so_far:,}**")
+        return "\n".join(lines)
+
+# ============================================================
+# Join flow: Step 3 — Chip selection
+# ============================================================
+
+class ChipSelectView(discord.ui.View):
+    """After C/VC/Bench: optionally activate a chip for this tournament."""
+
+    def __init__(self, cog, user_id: int, tournament_id: str,
+                 picks: List[str], captain: Optional[str], vice_captain: Optional[str],
+                 bench: Optional[str], target_user_id: Optional[int] = None,
+                 force_save: bool = False):
+        super().__init__(timeout=300)
+        self.cog = cog; self.user_id = user_id; self.tournament_id = tournament_id
+        self.picks = picks; self.captain = captain; self.vice_captain = vice_captain
+        self.bench = bench
+        self.target_user_id = target_user_id if target_user_id is not None else user_id
+        self.force_save = force_save
+        self._rebuild()
+
+    def _rebuild(self):
+        self.clear_items()
+        data = _load()
+        existing_chip = _get_user_chip(data, self.user_id, self.tournament_id)
+        opts = [discord.SelectOption(label="No chip — save for later", value="none",
+                                      description="Your chip credit carries over to the next tournament",
+                                      default=(existing_chip is None))]
+        for chip_key, chip_label in CHIP_LABELS.items():
+            opts.append(discord.SelectOption(
+                label=chip_label, value=chip_key,
+                description=CHIP_DESCRIPTIONS[chip_key][:100],
+                default=(existing_chip == chip_key),
+            ))
+        sel = discord.ui.Select(placeholder="Activate a chip? (optional)", min_values=1, max_values=1, options=opts)
+        async def _chip_cb(inter, v=self):
+            if inter.user.id != v.user_id: return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+            chosen = inter.data["values"][0]
+            if chosen == "none": chosen = None
+            await v.cog._save_full_roster(
+                inter, v.tournament_id, v.target_user_id,
+                v.picks, v.captain, v.vice_captain, v.bench, chosen,
+                force_save=v.force_save,
+            )
+        sel.callback = _chip_cb
+        self.add_item(sel)
+
+    def _status_text(self) -> str:
+        data = _load()
+        existing = _get_user_chip(data, self.user_id, self.tournament_id)
+        credits = _get_user_credits(data, self.user_id)
+        lines = [
+            "**Step 3 — Chip (optional)**", "",
+            f"**Captain:** {self.captain} 🅒",
+            f"**Vice Captain:** {self.vice_captain} 🅥",
+            f"**Bench:** {self.bench or '(none)'}",
+            "",
+            f"🎴 You have **{credits}** chip credit(s).",
+        ]
+        if existing:
+            lines.append(f"Currently active: **{CHIP_LABELS.get(existing, existing)}**")
+        lines.append("\nPick a chip to activate it, or choose **No chip** to save your credit.")
+        return "\n".join(lines)
+
+# ============================================================
+# Prices entry modals (used in tournament creation flow)
+# ============================================================
+
+class PricesManualModal(discord.ui.Modal, title="Set Player Prices — Manual"):
+    prices_text = discord.ui.TextInput(
+        label="Player | Price  (one per line)",
+        style=discord.TextStyle.paragraph, required=True, max_length=4000,
+        placeholder="Carlos Alcaraz | 13590\nJannik Sinner | 12400\nAlexander Zverev | 5205")
+
+    def __init__(self, cog, user_id: int, tournament_id: str):
+        super().__init__(); self.cog = cog; self.user_id = user_id; self.tournament_id = tournament_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        await self.cog._apply_prices(interaction, self.tournament_id, str(self.prices_text))
+
+class PricesATPModal(discord.ui.Modal, title="Set Player Prices — ATP Paste"):
+    atp_text = discord.ui.TextInput(
+        label="Paste raw ATP rankings text",
+        style=discord.TextStyle.paragraph, required=True, max_length=4000,
+        placeholder="Paste directly from the ATP rankings page…")
+
+    def __init__(self, cog, user_id: int, tournament_id: str):
+        super().__init__(); self.cog = cog; self.user_id = user_id; self.tournament_id = tournament_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        parsed, errors = _parse_atp_paste(str(self.atp_text))
+        if errors or not parsed:
+            return await interaction.response.send_message(
+                "❌ Could not parse ATP paste.\n" + "\n".join(errors[:5]), ephemeral=True)
+        lines_text = "\n".join(f"{name} | {pts}" for name, pts in parsed.items())
+        await self.cog._apply_prices(interaction, self.tournament_id, lines_text, source="ATP paste")
+
+class PricesModeView(discord.ui.View):
+    """Two buttons shown after unseeded step when BUDGET_MODE is on."""
+
+    def __init__(self, cog, user_id: int, tournament_id: str):
+        super().__init__(timeout=180)
+        self.cog = cog; self.user_id = user_id; self.tournament_id = tournament_id
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True); return False
+        return True
+
+    @discord.ui.button(label="Enter prices manually", style=discord.ButtonStyle.primary)
+    async def manual(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._guard(interaction): return
+        await interaction.response.send_modal(PricesManualModal(self.cog, self.user_id, self.tournament_id))
+
+    @discord.ui.button(label="Paste ATP rankings", style=discord.ButtonStyle.secondary)
+    async def atp(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._guard(interaction): return
+        await interaction.response.send_modal(PricesATPModal(self.cog, self.user_id, self.tournament_id))
+
+    @discord.ui.button(label="Skip prices (no budget)", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._guard(interaction): return
+        await self.cog._fantasy_create_finalize_preview(interaction, self.tournament_id)
 
 # ============================================================
 # Admin create flow
@@ -1155,7 +1128,12 @@ class UnseededStepView(discord.ui.View):
     @discord.ui.button(label="Skip unseeded", style=discord.ButtonStyle.secondary)
     async def skip_unseeded(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._guard(interaction): return
-        await self.cog._fantasy_create_finalize_preview(interaction, self.tournament_id)
+        if BUDGET_MODE:
+            await interaction.response.edit_message(
+                content="💰 **Set player prices** — choose how to enter prices:",
+                embed=None, view=PricesModeView(self.cog, self.user_id, self.tournament_id))
+        else:
+            await self.cog._fantasy_create_finalize_preview(interaction, self.tournament_id)
 
 class ConfirmCreateView(discord.ui.View):
     def __init__(self, cog, user_id: int, tournament_id: str):
@@ -1209,7 +1187,11 @@ class SeedsModal(discord.ui.Modal, title="Fantasy Create — Seeds"):
             "opened_at": _now_unix(),
             "closed_at": None,
             "completed_at": None,
-            "players": [{"name": name, "seed": i + 1} for i, name in enumerate(clean)],
+            "budget_cap": None,
+            "chips_per_tournament": None,
+            "captain_multiplier": None,
+            "vc_multiplier": None,
+            "players": [{"name": name, "seed": i + 1, "price": None} for i, name in enumerate(clean)],
             "rosters": {},
             "results": {},
             "display": {"primary": None, "secondary": None, "tertiary": None,
@@ -1392,45 +1374,13 @@ def _compute_match_leaderboard(t: dict) -> Tuple[List[dict], List[dict], List[di
     return all_matches, upset_player_lb, perf_player_lb
 
 
-def _compute_perfect_picks(t: dict, seed_map: Dict[str, Optional[int]]) -> Tuple[List[dict], int]:
+def _compute_perfect_picks(t: dict, seed_map: Dict[str, Optional[int]]) -> Tuple[List[dict], int, Optional[str], int]:
     """
-    Find the highest-scoring 5-player roster that satisfies the draft rules:
-      • max 1 player from seeds 1–5
-      • max 3 players from seeds 1–20
-    Returns (roster_entries, total_points).
-    Uses a greedy approach: sort all players by total points desc, then pick
-    greedily while respecting constraints.
+    Wrapper: use budget knapsack solver if BUDGET_MODE, otherwise greedy (no constraints).
+    Returns (roster_entries, base_total, best_chip, chipped_total).
+    seed_map kept for API compat.
     """
-    results = list((t.get("results", {}) or {}).values())
-    results_sorted = sorted(results, key=lambda r: int(r.get("total", 0)), reverse=True)
-
-    chosen: List[dict] = []
-    top5_used = 0
-    top20_used = 0
-
-    for r in results_sorted:
-        if len(chosen) == 5:
-            break
-        name = r.get("player", "")
-        seed = seed_map.get(_player_key(name))
-        bucket = _seed_bucket(seed)
-
-        if bucket == "top5":
-            if top5_used >= 1:
-                continue
-            if top20_used >= 3:
-                continue
-            top5_used += 1
-            top20_used += 1
-        elif bucket == "top20":
-            if top20_used >= 3:
-                continue
-            top20_used += 1
-
-        chosen.append(r)
-
-    total = sum(int(r.get("total", 0)) for r in chosen)
-    return chosen, total
+    return _compute_perfect_picks_budget(t)
 
 
 # ============================================================
@@ -1458,27 +1408,32 @@ class ResultsMainView(discord.ui.View):
             key=lambda r: int(r.get("total", 0)), reverse=True,
         )
         self.player_results = results_sorted
+        prices = _price_map(t)
         p_lines: List[str] = [
             f"**Fantasy Results — {t.get('name')}**", "",
-            "Format: Rank. (Seed) Player — Total — Round", "",
+            "Format: Rank. Player — Base Total — Round", "",
         ]
         for i, r in enumerate(results_sorted, 1):
             name = r.get("player", "")
-            seed = seed_map.get(_player_key(name))
+            price_str = f" (${prices.get(_player_key(name), 0):,})" if BUDGET_MODE else ""
             p_lines.append(
-                f"{i}. {_fmt_player(seed, name)} — **{r.get('total', 0)}** — *{r.get('round', '')}*"
+                f"{i}. {name}{price_str} — **{r.get('total', 0)}** — *{r.get('round', '')}*"
             )
         self.player_pages = _chunk_pages(p_lines)
 
-        # ── Tab 1: User Leaderboard ─────────────────────────────────
+        # ── Tab 1: User Leaderboard (chip-adjusted) ──────────────────
         _data = _load()
-        scores = {uid: pts for uid, pts in _all_user_scores_for_tournament(t).items()
+        scores = {uid: pts for uid, pts in _all_user_scores_for_tournament(t, _data).items()
                   if not _is_blacklisted(_data, uid)}
         items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         ranks = _dense_ranks(scores)
         u_header = [f"**User Leaderboard — {t.get('name')}**", "",
-                    "Format: Rank. User — Total Points", ""]
-        u_body = [f"{ranks.get(uid, 0)}. <@{uid}> — **{pts}**" for uid, pts in items]
+                    "Rank. User — Total Points (chips applied)", ""]
+        u_body = []
+        for uid, pts in items:
+            chip = _get_user_chip(_data, uid, t["id"])
+            chip_str = f" *({CHIP_LABELS.get(chip, chip)})*" if chip else ""
+            u_body.append(f"{ranks.get(uid, 0)}. <@{uid}> — **{pts}**{chip_str}")
         u_pages: List[str] = []
         for start in range(0, max(1, len(u_body)), 20):
             u_pages.append("\n".join(u_header + u_body[start:start + 20]))
@@ -1486,19 +1441,26 @@ class ResultsMainView(discord.ui.View):
             f"**User Leaderboard — {t.get('name')}**\n\nℹ️ No user rosters found."
         ]
 
-        # ── Tabs 3, 4, 5: Perfect Picks / Top Matches / Upset Kings / Performance Kings ──
+        # ── Tabs 3-6 ─────────────────────────────────────────────────
         top_matches, upset_player_lb, perf_player_lb = _compute_match_leaderboard(t)
-        perfect_roster, perfect_total = _compute_perfect_picks(t, seed_map)
+        perfect_roster, perfect_base, best_chip, chipped_total = _compute_perfect_picks(t, seed_map)
 
         # Tab 3: Perfect Picks
         pp_lines: List[str] = [f"**🏅 Perfect Picks — {t.get('name')}**", "",
-                                "The best possible roster someone could have drafted.", ""]
+                                "Best possible roster within budget.", ""]
         if perfect_roster:
             for i, r in enumerate(perfect_roster, 1):
                 name = r.get("player", "")
-                seed = seed_map.get(_player_key(name))
-                pp_lines.append(f"{i}. {_fmt_player(seed, name)} — **{r.get('total', 0)}**")
-            pp_lines += ["", f"**Perfect Total: {perfect_total}**"]
+                price_str = f" (${prices.get(_player_key(name), 0):,})" if BUDGET_MODE else ""
+                pp_lines.append(f"{i}. {name}{price_str} — **{r.get('total', 0)}**")
+            pp_lines += ["", f"**Perfect Base Total: {perfect_base}**"]
+            if best_chip:
+                pp_lines.append(
+                    f"**Best Chip: {CHIP_LABELS.get(best_chip, best_chip)}** → **{chipped_total}** pts "
+                    f"(+{chipped_total - perfect_base})"
+                )
+            else:
+                pp_lines.append("*(No chip improves this roster)*")
         else:
             pp_lines.append("*(no results)*")
         self.perfect_pages = _chunk_pages(pp_lines)
@@ -1519,9 +1481,8 @@ class ResultsMainView(discord.ui.View):
         if upset_player_lb:
             for i, r in enumerate(upset_player_lb, 1):
                 name = r.get("player", "")
-                seed = seed_map.get(_player_key(name))
                 uk_lines.append(
-                    f"{i}. {_fmt_player(seed, name)} — **{r.get('upset_points', 0)} upset pts** — *{r.get('round', '')}*"
+                    f"{i}. {name} — **{r.get('upset_points', 0)} upset pts** — *{r.get('round', '')}*"
                 )
         else:
             uk_lines.append("*(no upset points recorded)*")
@@ -1533,9 +1494,8 @@ class ResultsMainView(discord.ui.View):
         if perf_player_lb:
             for i, r in enumerate(perf_player_lb, 1):
                 name = r.get("player", "")
-                seed = seed_map.get(_player_key(name))
                 pk_lines.append(
-                    f"{i}. {_fmt_player(seed, name)} — **{r.get('performance_points', 0)} perf pts** — *{r.get('round', '')}*"
+                    f"{i}. {name} — **{r.get('performance_points', 0)} perf pts** — *{r.get('round', '')}*"
                 )
         else:
             pk_lines.append("*(no performance points recorded)*")
@@ -1793,14 +1753,15 @@ def _score_user_in_tournament(t: dict, user_id: int) -> Optional[int]:
     results = t.get("results", {}) or {}
     return sum(int((results.get(_player_key(n)) or {}).get("total", 0)) for n in roster[:5])
 
-def _all_user_scores_for_tournament(t: dict) -> Dict[int, int]:
+def _all_user_scores_for_tournament(t: dict, data: Optional[dict] = None) -> Dict[int, int]:
     if not t.get("results_entered"): return {}
-    results = t.get("results", {}) or {}
+    if data is None: data = _load()
     out: Dict[int, int] = {}
-    for uid_str, roster in (t.get("rosters", {}) or {}).items():
+    for uid_str in (t.get("rosters") or {}):
         try: uid = int(uid_str)
         except Exception: continue
-        out[uid] = sum(int((results.get(_player_key(n)) or {}).get("total", 0)) for n in (roster or [])[:5])
+        chip = _get_user_chip(data, uid, t["id"])
+        out[uid] = _compute_user_score(t, uid, chip)
     return out
 
 def _dense_ranks(score_map: Dict[int, int]) -> Dict[int, int]:
@@ -1820,7 +1781,7 @@ def _compute_leaderboard(data: dict, guild_id: Optional[int], mode: str,
     points_total: Dict[int, int] = {}; points_count: Dict[int, int] = {}
     wins: Dict[int, int] = {}; top5: Dict[int, int] = {}; top10: Dict[int, int] = {}
     for t in tours:
-        score_map = {uid: pts for uid, pts in _all_user_scores_for_tournament(t).items()
+        score_map = {uid: pts for uid, pts in _all_user_scores_for_tournament(t, data).items()
                      if not _is_blacklisted(data, uid)}
         for uid, pts in score_map.items():
             points_total[uid] = points_total.get(uid, 0) + pts
@@ -1931,6 +1892,42 @@ class FetchConfirmView(discord.ui.View):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="❌ Fetch cancelled.", embed=None, view=None)
+
+class CalculateConfirmView(discord.ui.View):
+    """Shown after /fantasy-admin tournament-calculate preview — lets admin confirm or re-paste."""
+
+    def __init__(self, cog, user_id: int, tournament_id: str, rows: List[dict]):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.rows = rows
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="✅ Confirm & Save Results", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Build the pipe-delimited text and hand off to the existing submit path
+        lines = [_format_bot_paste_line(r) for r in self.rows]
+        combined = "\n".join(lines)
+        await self.cog._fantasy_end_submit(interaction, self.tournament_id, combined)
+
+    @discord.ui.button(label="Re-paste draw", style=discord.ButtonStyle.secondary)
+    async def repaste(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(
+            RawDrawModal(self.cog, self.user_id, self.tournament_id)
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="❌ Cancelled.", embed=None, view=None)
+# ============================================================
+# Cog
+# ============================================================
 
 
 # ============================================================
@@ -2173,8 +2170,206 @@ class CloseScheduleEditView(discord.ui.View):
 # Raw draw parsing + fantasy point calculation
 # ============================================================
 
+_RAW_ROUND_MAP: Dict[str, str] = {
+    "F": "Champion", "SF": "Semi-Final", "QF": "Quarter-Final",
+    "R16": "R16", "R32": "R32", "R64": "R64", "R128": "R128",
+}
+
+def _parse_raw_draw(text: str) -> List[dict]:
+    """
+    Parse a tab-separated draw block into match dicts.
+    Columns: Round  wRk  wName [yr|ev]  d.  lRk  lName [yr|ev]  Score  ...
+    """
+    matches = []
+    for line in text.strip().splitlines():
+        cols = line.split("\t")
+        if len(cols) < 7:
+            continue
+        round_code = cols[0].strip()
+        round_name = _RAW_ROUND_MAP.get(round_code)
+        if not round_name:
+            continue
+
+        w_rk_raw  = cols[1].strip()
+        w_name    = re.sub(r"\[.*?\]", "", cols[2]).strip()
+        l_rk_raw  = cols[4].strip()
+        l_name    = re.sub(r"\[.*?\]", "", cols[5]).strip()
+        score_raw = cols[6].strip() if len(cols) > 6 else ""
+
+        def _extract_rank(rk_str: str, name_str: str) -> Optional[int]:
+            m = re.search(r"\((\d+)\)", rk_str)
+            if m:
+                return int(m.group(1))
+            m = re.search(r"\((\d+)\)", name_str)
+            if m:
+                return int(m.group(1))
+            try:
+                n = int(rk_str)
+                return n if n > 0 else None
+            except ValueError:
+                return None
+
+        w_rank = _extract_rank(w_rk_raw, w_name)
+        l_rank = _extract_rank(l_rk_raw, l_name)
+
+        # Strip seeding/brackets from names
+        w_clean = re.sub(r"^\(\d+\)\s*", "", w_name).strip()
+        l_clean = re.sub(r"^\(\d+\)\s*", "", l_name).strip()
+
+        is_wo = bool(re.search(r"w/o|walkover|ret\s*$", score_raw, re.IGNORECASE))
+
+        matches.append({
+            "round": round_name,
+            "w_name": w_clean, "w_rank": w_rank,
+            "l_name": l_clean, "l_rank": l_rank,
+            "score_raw": score_raw,
+            "is_wo": is_wo,
+        })
+    return matches
 
 
+def _parse_set_score(score_raw: str) -> dict:
+    """
+    Parse '6-4 7-6(3) 3-6' into sets_won, sets_lost, winner_games, loser_games, total_games.
+    Tiebreaks count as 1 game each (7-6 = 13 total games that set).
+    """
+    sets_won = sets_lost = wg = lg = 0
+    for chunk in score_raw.strip().split():
+        m = re.match(r"^(\d+)-(\d+)(?:\(\d+\))?$", chunk)
+        if not m:
+            continue
+        a, b = int(m.group(1)), int(m.group(2))
+        # Tiebreak adds 1 game to each side (plays as 7-6 → 8 and 7 games)
+        # Actually tiebreak: count as 1 game each → total = a + b (already includes 7 and 6)
+        # But the score IS already 7-6, so just add them directly; tiebreak doesn't add extra.
+        wg += a
+        lg += b
+        if a > b:
+            sets_won += 1
+        else:
+            sets_lost += 1
+    return {"sets_won": sets_won, "sets_lost": sets_lost,
+            "winner_games": wg, "loser_games": lg,
+            "total_games": wg + lg}
+
+
+def _dominance(player_games: int, total_games: int) -> float:
+    return player_games / total_games if total_games > 0 else 0.5
+
+
+def _calc_player_fantasy(player_name: str, all_matches: List[dict]) -> dict:
+    """
+    Given a player name and the full list of parsed draw matches, compute:
+      - final round reached
+      - sets_won, sets_lost totals
+      - performance_pts (favourite wins: player_rank < opp_rank)
+      - upset_pts (underdog wins or losses: player_rank > opp_rank)
+      - match_log string (semicolon-separated, bot-paste format)
+    """
+    ROUND_ORDER_LOCAL = [
+        "Champion", "Finalist", "Semi-Final", "Quarter-Final",
+        "R16", "R32", "R64", "R128",
+    ]
+
+    def _name_match(a: str, b: str) -> bool:
+        norm = lambda s: re.sub(r"[^a-z]", "", s.lower())
+        na, nb = norm(a), norm(b)
+        if na in nb or nb in na:
+            return True
+        pa = a.lower().split()
+        pb = b.lower().split()
+        shared = [x for x in pa if any(x in y or y in x for y in pb)]
+        return len(shared) >= min(len(pa), len(pb))
+
+    won_matches  = [m for m in all_matches if _name_match(player_name, m["w_name"])]
+    lost_matches = [m for m in all_matches if _name_match(player_name, m["l_name"])]
+    all_player_matches = won_matches + lost_matches
+
+    if not all_player_matches:
+        return {}
+
+    # Determine furthest round (Champion > Finalist > ... > R128)
+    furthest_round = "R128"
+    for r in ROUND_ORDER_LOCAL:
+        if any(m["round"] == r for m in all_player_matches):
+            furthest_round = r
+            break
+
+    total_sw = total_sl = 0
+    perf_pts = upset_pts = 0
+    log_parts = []
+
+    # Process in chronological order (R128 first → Champion last)
+    sorted_matches = sorted(
+        [{"match": m, "won": True}  for m in won_matches] +
+        [{"match": m, "won": False} for m in lost_matches],
+        key=lambda x: ROUND_ORDER_LOCAL.index(x["match"]["round"]),
+        reverse=True,  # R128 has highest index → sort descending to get R128 first
+    )
+
+    for entry in sorted_matches:
+        m   = entry["match"]
+        won = entry["won"]
+        opp_name = m["l_name"] if won else m["w_name"]
+
+        if m["is_wo"]:
+            log_parts.append(f"d. {opp_name} w/o +0" if won else f"l. {opp_name} ret +0")
+            continue
+
+        sc = _parse_set_score(m["score_raw"])
+        p_sets  = sc["sets_won"]   if won else sc["sets_lost"]
+        o_sets  = sc["sets_lost"]  if won else sc["sets_won"]
+        p_games = sc["winner_games"] if won else sc["loser_games"]
+        dom     = _dominance(p_games, sc["total_games"])
+
+        total_sw += p_sets
+        total_sl += o_sets
+
+        p_rank = m["w_rank"] if won else m["l_rank"]
+        o_rank = m["l_rank"] if won else m["w_rank"]
+
+        if p_rank is not None and o_rank is not None and p_rank != o_rank:
+            if p_rank < o_rank:
+                # Favourite
+                pts = round((p_sets ** 3) * ((p_rank / o_rank) ** 2) * dom * 25)
+                perf_pts += pts
+                log_parts.append(f"d. {opp_name} {m['score_raw']} +{pts}perf")
+            else:
+                # Underdog
+                if won:
+                    pts = round((p_sets ** 3) * (p_rank / o_rank) * dom * 3)
+                    upset_pts += pts
+                    log_parts.append(f"d. {opp_name} {m['score_raw']} +{pts}upset")
+                else:
+                    pts = round(p_sets * (p_rank / o_rank) * dom * 0.6)
+                    upset_pts += pts
+                    log_parts.append(f"l. {opp_name} {m['score_raw']} +{pts}upset")
+        else:
+            # No rank info — log without pts
+            if won:
+                log_parts.append(f"d. {opp_name} {m['score_raw']} +0")
+            else:
+                log_parts.append(f"l. {opp_name} {m['score_raw']} +0")
+
+    return {
+        "player":          player_name,
+        "round":           furthest_round,
+        "sets_won":        total_sw,
+        "sets_lost":       total_sl,
+        "performance_pts": perf_pts,
+        "upset_pts":       upset_pts,
+        "match_log":       "; ".join(log_parts),
+    }
+
+
+def _format_bot_paste_line(r: dict) -> str:
+    """Format a single player result as a bot-paste line for /fantasy-admin tournament-end."""
+    return (
+        f"{r['player']} | {r['round']} | "
+        f"{r['sets_won']} | {r['sets_lost']} | "
+        f"{r['performance_pts']} | {r['upset_pts']} | "
+        f"{r['match_log']}"
+    )
 
 class FantasyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -2187,59 +2382,52 @@ class FantasyCog(commands.Cog):
     # ── Autocomplete helpers ──────────────────────────────────────────────────
 
     async def _ac_category(self, interaction: discord.Interaction, cur: str):
-        try:
-            data = _load_cached(); c = cur.lower(); out = []
-            for cat in data.get("categories", []):
-                if c in cat.get("id","").lower() or c in cat.get("title","").lower() or not c:
-                    out.append(app_commands.Choice(
-                        name=f"{cat.get('title','?')} ({cat.get('id','?')})"[:100],
-                        value=cat.get("id","")))
-                if len(out) >= 25: break
-            return out
-        except Exception:
-            return []
+        data = _load(); c = cur.lower(); out = []
+        for cat in data.get("categories", []):
+            if c in cat.get("id","").lower() or c in cat.get("title","").lower() or not c:
+                out.append(app_commands.Choice(
+                    name=f"{cat.get('title','?')} ({cat.get('id','?')})"[:100],
+                    value=cat.get("id","")))
+            if len(out) >= 25: break
+        return out
 
     async def _ac_tournament(self, interaction: discord.Interaction, cur: str):
-        try:
-            data = _load_cached()
-            gid = interaction.guild.id if interaction.guild else 0
-            c = cur.lower(); out = []
-            tours = sorted(data.get("tournaments", []),
-                           key=lambda t: (1 if t.get("results_entered") else 0, t.get("name","")))
-            for t in tours:
-                if t.get("guild_id") not in (0, gid): continue
-                if not _is_created(t): continue
-                tid = t.get("id",""); name = t.get("name",""); s = _status_key(t)
-                prefix = "✅ " if s == "Completed" else ("🔒 " if s == "Closed & Results Pending" else "")
-                label  = f"{prefix}{name} [{s}]"
-                if c in tid.lower() or c in name.lower() or not c:
-                    out.append(app_commands.Choice(name=label[:100], value=tid))
-                if len(out) >= 25: break
-            return out
-        except Exception:
-            return []
+        """All confirmed tournaments (open, closed, completed) — for roster-view, results, user-results."""
+        data = _load()
+        gid = interaction.guild.id if interaction.guild else 0
+        c = cur.lower(); out = []
+        # Sort: completed last so open ones appear first
+        tours = sorted(data.get("tournaments", []),
+                       key=lambda t: (1 if t.get("results_entered") else 0, t.get("name","")))
+        for t in tours:
+            if t.get("guild_id") not in (0, gid): continue
+            if not _is_created(t): continue
+            tid = t.get("id",""); name = t.get("name",""); s = _status_key(t)
+            prefix = "✅ " if s == "Completed" else ("🔒 " if s == "Closed & Results Pending" else "")
+            label  = f"{prefix}{name} [{s}]"
+            if c in tid.lower() or c in name.lower() or not c:
+                out.append(app_commands.Choice(name=label[:100], value=tid))
+            if len(out) >= 25: break
+        return out
 
     async def _ac_open_tournament(self, interaction: discord.Interaction, cur: str):
         """Only tournaments open for picks."""
-        try:
-            data = _load_cached()
-            gid = interaction.guild.id if interaction.guild else 0
-            c = cur.lower(); out = []
-            for t in data.get("tournaments", []):
-                if t.get("guild_id") not in (0, gid): continue
-                if not _is_created(t) or not t.get("picks_open", True): continue
-                tid = t.get("id",""); name = t.get("name","")
-                if c in tid.lower() or c in name.lower() or not c:
-                    out.append(app_commands.Choice(name=name[:100], value=tid))
-                if len(out) >= 25: break
-            return out
-        except Exception:
-            return []
+        data = _load()
+        gid = interaction.guild.id if interaction.guild else 0
+        c = cur.lower(); out = []
+        for t in data.get("tournaments", []):
+            if t.get("guild_id") not in (0, gid): continue
+            if not _is_created(t) or not t.get("picks_open", True): continue
+            tid = t.get("id",""); name = t.get("name","")
+            if c in tid.lower() or c in name.lower() or not c:
+                out.append(app_commands.Choice(name=name[:100], value=tid))
+            if len(out) >= 25: break
+        return out
 
     async def _ac_any_tournament(self, interaction: discord.Interaction, cur: str):
         """All tournaments including drafts (for admin commands)."""
         try:
-            data = _load_cached()
+            data = _load()
             gid = interaction.guild.id if interaction.guild else 0
             c = cur.lower(); out = []
             for t in data.get("tournaments", []):
@@ -2253,89 +2441,6 @@ class FantasyCog(commands.Cog):
             return out
         except Exception:
             return []
-    async def _run_calculate(self, interaction: discord.Interaction, tournament_id: str):
-        """
-        Called after all draw chunks staged. Parses, computes, previews.
-        """
-        key = (interaction.user.id, tournament_id, "draw")
-        raw_lines = _staged_results.pop(key, [])
-
-        if not raw_lines:
-            return await interaction.edit_original_response(
-                content="❌ No draw data staged. Try again.", view=None)
-
-        all_matches = _parse_raw_draw("\n".join(raw_lines))
-        if not all_matches:
-            return await interaction.edit_original_response(
-                content=(
-                    "❌ Could not parse any matches.\n"
-                    "Make sure you paste the raw tab-separated rows exactly as copied from the source."
-                ),
-                view=None,
-            )
-
-        data = _load()
-        t = _find_tournament(data, tournament_id)
-        if not t:
-            return await interaction.edit_original_response(content="❌ Tournament not found.", view=None)
-
-        category_id      = t.get("category_id")
-        cat              = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
-        round_points_map = (cat or {}).get("round_points", {})
-
-        rows: List[dict]       = []
-        not_found: List[str]   = []
-
-        for p in t.get("players", []):
-            result = _calc_player_fantasy(p["name"], all_matches)
-            if result:
-                rows.append(result)
-            else:
-                not_found.append(p["name"])
-
-        # Build preview
-        preview: List[str] = [
-            f"**Preview — {t.get('name')}**",
-            f"Parsed **{len(all_matches)}** match rows · **{len(rows)}/{len(t.get('players', []))}** players found",
-            "",
-        ]
-        for r in sorted(rows, key=lambda x: _ROUND_ORDER_CALC.index(x["round"])
-                        if x["round"] in _ROUND_ORDER_CALC else 99):
-            tourn_pts = round_points_map.get(r["round"], 0)
-            set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
-            est_total = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
-            preview.append(
-                f"**{r['player']}** — {r['round']} — "
-                f"{r['sets_won']}W/{r['sets_lost']}L — "
-                f"perf {r['performance_pts']} upset {r['upset_pts']} ~**{est_total}**"
-            )
-            if r.get("match_log"):
-                for entry in r["match_log"].split(";"):
-                    entry = entry.strip()
-                    if entry:
-                        preview.append(f"  ↳ {entry}")
-            preview.append("")
-
-        if not_found:
-            preview += ["⚠️ **Not found in draw (will block save):**"]
-            preview += [f"- {n}" for n in not_found]
-
-        total_players = len(t.get("players", []))
-        pages = _build_preview_pages(t, rows, round_points_map, total_players)
-
-        if not_found:
-            missing_text = (
-                "\u26a0\ufe0f **Players not found in draw:**\n"
-                + "\n".join(f"- {n}" for n in not_found)
-                + "\n\nMark each as withdrew, or cancel to re-paste the draw."
-            )
-            view = WithdrewSelectView(self, interaction.user.id, tournament_id,
-                                      rows, pages, not_found)
-            await interaction.edit_original_response(content=missing_text, embed=None, view=view)
-        else:
-            view = CalculateConfirmView(self, interaction.user.id, tournament_id, rows, pages)
-            await interaction.edit_original_response(content=None, embed=view._embed(), view=view)
-
 
     # ── Categories ────────────────────────────────────────────────────────────
 
@@ -2520,10 +2625,10 @@ class FantasyCog(commands.Cog):
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @f_admin.command(
-         name="tournament-calculate",
-         description="Admin: paste raw draw data to auto-calculate all fantasy points.",
-     )
-    @app_commands.autocomplete(tournament_id=_ac_tournament)  # was _ac_any_tournament
+        name="tournament-calculate",
+        description="Admin: paste raw draw data and auto-calculate all fantasy points.",
+    )
+    @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     async def fantasy_calculate(self, interaction: discord.Interaction, tournament_id: str):
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
@@ -2531,14 +2636,8 @@ class FantasyCog(commands.Cog):
         t = _find_tournament(data, tournament_id)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
-        _staged_results.pop((interaction.user.id, tournament_id, "draw"), None)
-        # First response must be send_message or send_modal — use send_message so
-        # subsequent edits from _run_calculate work via edit_original_response.
-        await interaction.response.send_message(
-            "📋 Paste your draw data in up to 6 parts. Click **Part 1** to begin.",
-            view=DrawChunkView(self, interaction.user.id, tournament_id,
-                               chunk_num=1, rows_so_far=0),
-            ephemeral=True,
+        await interaction.response.send_modal(
+            RawDrawModal(self, interaction.user.id, tournament_id)
         )
     async def fantasy_end(self, interaction: discord.Interaction):
         if not _is_admin(interaction.user):
@@ -2562,20 +2661,33 @@ class FantasyCog(commands.Cog):
         seeds = t.get("players", [])
         seed_keys = {_player_key(p["name"]) for p in seeds}
         names = _parse_multiline_list(unseeded_text)
-        t["players"] = seeds + [{"name": n, "seed": None} for n in names if _player_key(n) not in seed_keys]
+        t["players"] = seeds + [{"name": n, "seed": None, "price": None} for n in names if _player_key(n) not in seed_keys]
         _save(data)
-        await self._fantasy_create_finalize_preview(interaction, tournament_id)
+        if BUDGET_MODE:
+            view = PricesModeView(self, interaction.user.id, tournament_id)
+            if interaction.response.is_done():
+                await interaction.edit_original_response(
+                    content="💰 **Set player prices** — choose how to enter prices:", embed=None, view=view)
+            else:
+                await interaction.response.edit_message(
+                    content="💰 **Set player prices** — choose how to enter prices:", embed=None, view=view)
+        else:
+            await self._fantasy_create_finalize_preview(interaction, tournament_id)
 
     async def _fantasy_create_finalize_preview(self, interaction: discord.Interaction, tournament_id: str):
         data = _load()
         t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
         lines = [f"**Tournament:** {t.get('name')} (`{t.get('id')}`)",
-                 f"**Category:** {t.get('category_title')} (`{t.get('category_id')}`)", "",
-                 "**Players:**"]
+                 f"**Category:** {t.get('category_title')} (`{t.get('category_id')}`)",
+                 f"**Budget:** ${_t_budget(t):,}" if BUDGET_MODE else "",
+                 "", "**Players:**"]
         for p in t.get("players", []):
-            lines.append(f"- {_fmt_player(p.get('seed'), p.get('name'))}")
-        embed = discord.Embed(title="Confirm Fantasy Creation", description="\n".join(lines)[:3900])
+            price_str = f" — ${p.get('price'):,}" if BUDGET_MODE and p.get("price") is not None else \
+                        (" — *(no price)*" if BUDGET_MODE else "")
+            lines.append(f"- {p.get('name')}{price_str}")
+        embed = discord.Embed(title="Confirm Fantasy Creation",
+                              description="\n".join(l for l in lines if l is not None)[:3900])
         view = ConfirmCreateView(self, interaction.user.id, tournament_id)
         if interaction.response.is_done():
             await interaction.edit_original_response(content=None, embed=embed, view=view)
@@ -2587,9 +2699,176 @@ class FantasyCog(commands.Cog):
         t = _find_tournament(data, tournament_id)
         if not t: return await interaction.response.edit_message(content="❌ Not found.", embed=None, view=None)
         _mark_created(t); _save(data)
-        await interaction.response.edit_message(
-            content=f"✅ Fantasy tournament **confirmed**!\n**Name:** {t.get('name')}\n**ID:** `{t.get('id')}`",
-            embed=None, view=None)
+        msg = f"✅ Fantasy tournament **confirmed**!\n**Name:** {t.get('name')}\n**ID:** `{t.get('id')}`"
+        if BUDGET_MODE:
+            unpriced = [p["name"] for p in t.get("players", []) if p.get("price") is None]
+            if unpriced:
+                msg += f"\n\n⚠️ **{len(unpriced)} player(s) have no price set** — users won't be able to join until all players are priced."
+        await interaction.response.edit_message(content=msg, embed=None, view=None)
+
+    async def _apply_prices(self, interaction: discord.Interaction, tournament_id: str,
+                             prices_text: str, source: str = "manual"):
+        """Parse Player|Price lines and apply to tournament players, then show preview."""
+        data = _load()
+        t = _find_tournament(data, tournament_id)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        price_map, errors = _parse_prices_text(prices_text)
+        if errors:
+            return await interaction.response.send_message(
+                "❌ Errors:\n" + "\n".join(errors[:20]), ephemeral=True)
+        matched = 0; unmatched = []
+        for p in t.get("players", []):
+            pk = _player_key(p["name"])
+            if pk in price_map:
+                p["price"] = price_map[pk]; matched += 1
+            else:
+                unmatched.append(p["name"])
+        _save(data)
+        # Proceed to preview
+        await self._fantasy_create_finalize_preview(interaction, tournament_id)
+
+    async def _save_full_roster(self, interaction: discord.Interaction, tournament_id: str,
+                                 user_id: int, picks: List[str], captain: Optional[str],
+                                 vice_captain: Optional[str], bench: Optional[str],
+                                 chip: Optional[str], force_save: bool = False):
+        """Save the complete roster including C/VC/bench and chip selection."""
+        data = _load()
+        t = _find_tournament(data, tournament_id)
+        if not t:
+            return await interaction.response.send_message("❌ Not found.", ephemeral=True)
+        if not force_save and not t.get("picks_open", True):
+            return await interaction.response.send_message("❌ Picks are closed.", ephemeral=True)
+
+        uid_str = str(user_id)
+        user_chip_data = data.setdefault("user_chips", {}).setdefault(uid_str, {})
+        existing_chip = user_chip_data.get(tournament_id)
+        credits = int(user_chip_data.get("__credits__", 0))
+
+        # Grant credits on first-ever join
+        existing_roster = (t.get("rosters") or {}).get(uid_str)
+        chips_allowed = _t_chips(t)
+        if not existing_roster and chips_allowed > 0:
+            credits += chips_allowed
+            user_chip_data["__credits__"] = credits
+
+        # Spend / refund credits
+        if chip and chip != existing_chip:
+            if credits <= 0:
+                return await interaction.response.send_message(
+                    "❌ You have no chip credits. Choose **No chip** to save without one.", ephemeral=True)
+            credits -= 1
+            user_chip_data["__credits__"] = credits
+        elif chip is None and existing_chip:
+            credits += 1
+            user_chip_data["__credits__"] = credits
+
+        user_chip_data[tournament_id] = chip
+        t.setdefault("rosters", {})[uid_str] = {
+            "picks": picks, "captain": captain,
+            "vice_captain": vice_captain, "bench": bench,
+        }
+        _save(data)
+
+        prices = _price_map(t)
+        cap_m = _t_cap_multi(t); vc_m = _t_vc_multi(t)
+        if chip == CHIP_TRIPLE_CAPTAIN: cap_m = 3.0
+        saved_for = f" (for <@{user_id}>)" if user_id != interaction.user.id else ""
+        lines = [f"✅ Roster saved{saved_for}!", "", f"**{t.get('name')}**", ""]
+        total_cost = 0
+        for i, name in enumerate(picks, 1):
+            tag = " 🅒" if name == captain else (" 🅥" if name == vice_captain else "")
+            price = prices.get(_player_key(name), 0); total_cost += price
+            price_str = f" — ${price:,}" if BUDGET_MODE else ""
+            lines.append(f"{i}. {name}{tag}{price_str}")
+        if bench:
+            bench_price = prices.get(_player_key(bench), 0); total_cost += bench_price
+            lines.append(f"6. {bench} 🅑 [Bench]{f' — ${bench_price:,}' if BUDGET_MODE else ''}")
+        if BUDGET_MODE:
+            lines.append(f"\n💰 Total: **${total_cost:,} / ${_t_budget(t):,}**")
+        lines.append(f"\n**Captain:** {captain} ({cap_m}×) • **VC:** {vice_captain} ({vc_m}×)")
+        if chip:
+            lines.append(f"**Chip:** {CHIP_LABELS.get(chip, chip)}")
+            lines.append(f"*{CHIP_DESCRIPTIONS.get(chip, '')}*")
+        else:
+            lines.append(f"\nℹ️ No chip used. You have **{credits}** credit(s) remaining.")
+        await interaction.response.edit_message(content="\n".join(lines), view=None)
+
+    async def _calculate_from_raw_draw(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        draw_text: str,
+    ) -> None:
+        data = _load()
+        t = _find_tournament(data, tournament_id)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+
+        all_matches = _parse_raw_draw(draw_text)
+        if not all_matches:
+            return await interaction.response.send_message(
+                "❌ Could not parse any matches. Make sure the data is tab-separated "
+                "(copy directly from the results table).",
+                ephemeral=True,
+            )
+
+        tournament_players = t.get("players", [])
+        if not tournament_players:
+            return await interaction.response.send_message(
+                "❌ This tournament has no players registered.", ephemeral=True
+            )
+
+        rows: List[dict] = []
+        not_found: List[str] = []
+
+        for p in tournament_players:
+            result = _calc_player_fantasy(p["name"], all_matches)
+            if not result:
+                not_found.append(p["name"])
+            else:
+                rows.append(result)
+
+        # Build preview embed
+        category_id = t.get("category_id")
+        cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
+        round_points_map: Dict[str, int] = (cat or {}).get("round_points", {})
+
+        preview_lines = [
+            f"**Preview — {t.get('name')}**",
+            f"Parsed **{len(all_matches)}** matches · **{len(rows)}** players calculated",
+            "",
+            "Player — Round — Sets W/L — Perf — Upset — Est. Total",
+            "",
+        ]
+        for r in sorted(rows, key=lambda x: ROUND_ORDER.get(x["round"], 0), reverse=False):
+            tourn_pts = round_points_map.get(r["round"], 0)
+            set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
+            total_est = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
+            preview_lines.append(
+                f"**{r['player']}** — {r['round']} — "
+                f"{r['sets_won']}W/{r['sets_lost']}L — "
+                f"perf:{r['performance_pts']} upset:{r['upset_pts']} — "
+                f"~**{total_est}**"
+            )
+
+        if not_found:
+            preview_lines += ["", "⚠️ **Not found in draw:**"]
+            preview_lines += [f"- {n}" for n in not_found]
+
+        pages = _chunk_pages(preview_lines)
+        pager_view = PagerView(pages, interaction.user.id, "Calculate Preview")
+
+        # We need both the pager AND the confirm buttons — send pager first, then confirm separately
+        confirm_view = CalculateConfirmView(self, interaction.user.id, tournament_id, rows)
+
+        embed = discord.Embed(
+            title="Calculate Preview",
+            description=pages[0],
+        )
+        embed.set_footer(text=f"Page 1/{len(pages)} — Review above, then confirm or re-paste.")
+
+        await interaction.response.send_message(embed=embed, view=confirm_view, ephemeral=True)
 
     async def _fantasy_end_submit(self, interaction: discord.Interaction, tournament_id: str, results_text: str):
         # ── Helper: reply whether or not the interaction was already responded to ──
@@ -2734,27 +3013,43 @@ class FantasyCog(commands.Cog):
     async def _dm_results(self, t: dict, rows: List[dict]):
         """DM every user their roster and points after a tournament ends."""
         await asyncio.sleep(2)
-        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
         results = {_player_key(r["player"]): r for r in rows}
         rosters = t.get("rosters") or {}
         tourn_name = t.get("name", "?")
+        data = _load()
         print(f"[fantasy] _dm_results: {len(rosters)} users to DM for {tourn_name!r}")
 
-        for uid_str, roster in rosters.items():
+        for uid_str in rosters:
             try:
-                user = await self.bot.fetch_user(int(uid_str))
-                total = 0
+                uid = int(uid_str)
+                user = await self.bot.fetch_user(uid)
+                roster = _get_roster(t, uid)
+                chip   = _get_user_chip(data, uid, t["id"])
+                picks  = _roster_picks(roster)
+                cap    = (roster or {}).get("captain", "")
+                vc     = (roster or {}).get("vice_captain", "")
+                bench  = (roster or {}).get("bench", "")
+                cap_m  = _t_cap_multi(t); vc_m = _t_vc_multi(t)
+                if chip == CHIP_TRIPLE_CAPTAIN: cap_m = 3.0
+
+                active = picks[:]
+                if chip == CHIP_BENCH_BOOST and bench: active.append(bench)
+
                 pick_lines = []
-                for name in roster[:5]:
-                    seed = seed_map.get(_player_key(name))
-                    label = _fmt_player(seed, name)
+                for name in active:
                     r = results.get(_player_key(name))
-                    pts = int(r["total"]) if r else 0
-                    total += pts
+                    base = int(r["total"]) if r else 0
+                    tag  = " 🅒" if name == cap else (" 🅥" if name == vc else (" 🅑" if name == bench else ""))
                     round_str = r.get("round", "?") if r else "no result"
-                    pick_lines.append(f"{label} - **{pts}** ({round_str})")
-                desc = [f"**Fantasy Results - {tourn_name}**", "",
-                        "**Your Picks:**"] + pick_lines + ["", f"**Your Total: {total}**"]
+                    pick_lines.append(f"{name}{tag} — **{base}** base pts ({round_str})")
+
+                total = _compute_user_score(t, uid, chip)
+                chip_str = f"\n**Chip used:** {CHIP_LABELS.get(chip, chip)}" if chip else ""
+                desc = [f"**Fantasy Results — {tourn_name}**", "",
+                        f"**Captain:** {cap} ({cap_m}×) • **VC:** {vc} ({vc_m}×)"]
+                if chip_str: desc.append(chip_str)
+                desc += ["", "**Your Picks:**"] + pick_lines + \
+                        ["", f"**Your Total (multipliers & chip applied): {total}**"]
                 embed = discord.Embed(title="Fantasy Tournament Complete!", description="\n".join(desc))
                 await user.send(embed=embed)
                 print(f"[fantasy] DM sent to {uid_str}")
@@ -2816,13 +3111,14 @@ class FantasyCog(commands.Cog):
         t = _find_tournament(data, tournament_id)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
-        pool = [PlayerEntry(name=p["name"], seed=p.get("seed")) for p in t.get("players", [])]
+        pool = [PlayerEntry(name=p["name"], seed=p.get("seed"), price=p.get("price"))
+                for p in t.get("players", [])]
         if not pool:
             return await interaction.response.send_message("❌ No players in this tournament yet.", ephemeral=True)
+        budget = _t_budget(t)
         view = JoinFantasyView(
-            self, interaction.user.id, tournament_id, pool,
-            target_user_id=user.id,
-            force_save=True,
+            self, interaction.user.id, tournament_id, pool, budget=budget,
+            target_user_id=user.id, force_save=True,
             header=f"**Setting roster for {user.display_name} — Pick 5 players**"
         )
         await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
@@ -2838,15 +3134,16 @@ class FantasyCog(commands.Cog):
         t = _find_tournament(data, tournament_id)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
-        pool = [PlayerEntry(name=p["name"], seed=p.get("seed")) for p in t.get("players", [])]
+        pool = [PlayerEntry(name=p["name"], seed=p.get("seed"), price=p.get("price"))
+                for p in t.get("players", [])]
         if not pool:
             return await interaction.response.send_message("❌ No players in this tournament yet.", ephemeral=True)
-        existing = (t.get("rosters") or {}).get(str(user.id))
-        note = f" (currently has {len(existing)} picks)" if existing else " (no existing roster)"
+        existing = _get_roster(t, user.id)
+        note = f" (currently has {len(_roster_picks(existing))} picks)" if existing else " (no existing roster)"
+        budget = _t_budget(t)
         view = JoinFantasyView(
-            self, interaction.user.id, tournament_id, pool,
-            target_user_id=user.id,
-            force_save=True,
+            self, interaction.user.id, tournament_id, pool, budget=budget,
+            target_user_id=user.id, force_save=True,
             header=f"**Editing roster for {user.display_name}{note} — Pick 5 players**"
         )
         await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
@@ -2863,27 +3160,45 @@ class FantasyCog(commands.Cog):
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
 
         rosters = t.get("rosters") or {}
-        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
+        prices = _price_map(t)
+        budget = _t_budget(t)
 
         if not rosters:
             return await interaction.response.send_message(
                 f"ℹ️ No entries yet for **{t.get('name')}**.", ephemeral=True)
 
+        budget_str = f" • Budget: ${budget:,}" if BUDGET_MODE else ""
         lines = [f"**Fantasy Overview — {t.get('name')}**",
-                 f"*{len(rosters)} entrant(s)*", ""]
+                 f"*{len(rosters)} entrant(s)*{budget_str}", ""]
 
-        for uid_str, picks in rosters.items():
-            member = interaction.guild.get_member(int(uid_str)) if interaction.guild else None
-            name = member.display_name if member else f"<@{uid_str}>"
+        for uid_str in rosters:
+            try: uid = int(uid_str)
+            except Exception: continue
+            member = interaction.guild.get_member(uid) if interaction.guild else None
+            display = member.display_name if member else f"<@{uid_str}>"
+            roster = _get_roster(t, uid)
+            picks = _roster_picks(roster)
+            cap   = (roster or {}).get("captain", "")
+            vc    = (roster or {}).get("vice_captain", "")
+            bench = (roster or {}).get("bench", "")
+            chip  = _get_user_chip(data, uid, tournament_id)
+            credits = _get_user_credits(data, uid)
+
             formatted = []
-            for pick in (picks or [])[:5]:
-                seed = seed_map.get(_player_key(pick))
-                formatted.append(_fmt_player(seed, pick))
-            picks_str = ",  ".join(formatted) if formatted else "—"
-            lines.append(f"**{name}:** {picks_str}")
+            for name in picks:
+                tag = " [C]" if name == cap else (" [VC]" if name == vc else "")
+                formatted.append(f"{name}{tag}")
+            if bench: formatted.append(f"{bench} [B]")
+            picks_str  = ",  ".join(formatted) if formatted else "—"
+            chip_str   = f" | 🎴 {CHIP_LABELS.get(chip, chip)}" if chip else ""
+            credits_str = f" | {credits} credit(s)"
+            if BUDGET_MODE:
+                cost = _roster_cost(_roster_all_names(roster) if roster else [], prices)
+                lines.append(f"**{display}:** {picks_str}{chip_str} | ${cost:,}/{budget:,}{credits_str}")
+            else:
+                lines.append(f"**{display}:** {picks_str}{chip_str}{credits_str}")
 
-        # Paginate if needed (Discord message limit)
-        pages = _chunk_pages(lines[3:])  # chunk entrant lines
+        pages = _chunk_pages(lines[3:])
         header = "\n".join(lines[:3])
         full_pages = [header + "\n" + p for p in pages] if pages else [header + "\n*No entries.*"]
 
@@ -2931,27 +3246,37 @@ class FantasyCog(commands.Cog):
         if msg: return await interaction.response.send_message(msg, ephemeral=True)
         if not t.get("picks_open", True):
             return await interaction.response.send_message("❌ This fantasy is closed — picks are locked.", ephemeral=True)
-        pool = [PlayerEntry(name=p["name"], seed=p.get("seed")) for p in t.get("players", [])]
-        has_roster = str(interaction.user.id) in (t.get("rosters") or {})
+        if BUDGET_MODE:
+            unpriced = [p["name"] for p in t.get("players", []) if p.get("price") is None]
+            if unpriced:
+                return await interaction.response.send_message(
+                    "❌ This tournament isn't open yet — player prices haven't been fully set.", ephemeral=True)
+        budget = _t_budget(t)
+        pool = [PlayerEntry(name=p["name"], seed=p.get("seed"), price=p.get("price"))
+                for p in t.get("players", [])]
+        uid_str = str(interaction.user.id)
+        # Grant chip credits on first-ever join
+        if uid_str not in (t.get("rosters") or {}):
+            chips_allowed = _t_chips(t)
+            if chips_allowed > 0:
+                user_chip_data = data.setdefault("user_chips", {}).setdefault(uid_str, {})
+                user_chip_data["__credits__"] = int(user_chip_data.get("__credits__", 0)) + chips_allowed
+                _save(data)
+        has_roster = uid_str in (t.get("rosters") or {})
         header = "✏️ Edit your roster — pick 5 new players to replace your current picks." if has_roster else None
-        view = JoinFantasyView(self, interaction.user.id, tournament_id, pool, header=header)
+        view = JoinFantasyView(self, interaction.user.id, tournament_id, pool, budget=budget, header=header)
         await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
 
     async def _save_user_roster(self, interaction: discord.Interaction, tournament_id: str,
                                  user_id: int, picks: List[PlayerEntry],
                                  force_save: bool = False):
-        data = _load()
-        t = _find_tournament(data, tournament_id)
-        if not t: return await interaction.response.send_message("❌ Not found.", ephemeral=True)
-        if not force_save and not t.get("picks_open", True):
-            return await interaction.response.send_message("❌ Picks are closed for this tournament.", ephemeral=True)
-        t.setdefault("rosters", {})[str(user_id)] = [p.name for p in picks]; _save(data)
-        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
-        saved_for = f" (for <@{user_id}>)" if user_id != interaction.user.id else ""
-        lines = [f"✅ Roster saved{saved_for}.", "", f"**Tournament:** {t.get('name')}", "**Picks:**"]
-        for i, name in enumerate([p.name for p in picks], 1):
-            lines.append(f"{i}. {_fmt_player(seed_map.get(_player_key(name)), name)}")
-        await interaction.response.edit_message(content="\n".join(lines), view=None)
+        # Legacy shim — routes to _save_full_roster
+        await self._save_full_roster(
+            interaction, tournament_id, user_id,
+            [p.name for p in picks],
+            captain=picks[0].name if picks else None,
+            vice_captain=picks[1].name if len(picks) > 1 else None,
+            bench=None, chip=None, force_save=force_save)
 
     @fantasy.command(name="roster-view", description="View a user's fantasy picks.")
     @app_commands.autocomplete(tournament_id=_ac_tournament)
@@ -2966,37 +3291,120 @@ class FantasyCog(commands.Cog):
         is_admin = isinstance(interaction.user, discord.Member) and _is_admin(interaction.user)
         viewer_has_roster = str(interaction.user.id) in rosters
 
-        # Non-admins can only view others' picks if they've submitted their own
         if user and user.id != interaction.user.id and not is_admin and not viewer_has_roster:
             return await interaction.response.send_message(
-                "❌ You need to submit your own roster before viewing others' picks.",
-                ephemeral=True)
+                "❌ You need to submit your own roster before viewing others' picks.", ephemeral=True)
 
         target = user or interaction.user
-        roster = rosters.get(str(target.id))
+        roster = _get_roster(t, target.id)
         if not roster:
             return await interaction.response.send_message(
                 f"ℹ️ {'That user has' if user else 'You have'} no roster for this tournament.")
-        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
+
+        prices  = _price_map(t)
         results = t.get("results", {}) if t.get("results_entered") else {}
-        total_points = 0
+        chip    = _get_user_chip(data, target.id, tournament_id)
+        picks   = _roster_picks(roster)
+        cap     = (roster.get("captain") or "")
+        vc      = (roster.get("vice_captain") or "")
+        bench   = (roster.get("bench") or "")
+        cap_m   = _t_cap_multi(t); vc_m = _t_vc_multi(t)
+        if chip == CHIP_TRIPLE_CAPTAIN: cap_m = 3.0
+
         lines = [f"**Roster — {target.display_name}**",
-                 f"**Tournament:** {t.get('name')} (`{t.get('id')}`)", "", "**Picks:**"]
-        for i, name in enumerate(roster[:5], 1):
-            seed = seed_map.get(_player_key(name))
-            label = _fmt_player(seed, name)
+                 f"**Tournament:** {t.get('name')} (`{t.get('id')}`)", ""]
+        if BUDGET_MODE:
+            cost = _roster_cost(_roster_all_names(roster), prices)
+            lines.append(f"💰 **Cost: ${cost:,} / ${_t_budget(t):,}**")
+        lines.append(f"**Captain:** {cap} ({cap_m}×) • **VC:** {vc} ({vc_m}×)")
+        if chip: lines.append(f"**Chip:** {CHIP_LABELS.get(chip, chip)}")
+        lines.append("\n**Picks:**")
+
+        for i, name in enumerate(picks, 1):
+            tag = " 🅒" if name == cap else (" 🅥" if name == vc else "")
+            price_str = f" ${prices.get(_player_key(name), 0):,}" if BUDGET_MODE else ""
             if results:
-                r = results.get(_player_key(name)); pts = int(r["total"]) if r else 0
-                total_points += pts; lines.append(f"{i}. {label} — **{pts}**")
+                r = results.get(_player_key(name)); base = int(r["total"]) if r else 0
+                lines.append(f"{i}. {name}{tag}{price_str} — **{base}** base pts")
             else:
-                lines.append(f"{i}. {label}")
+                lines.append(f"{i}. {name}{tag}{price_str}")
+
+        if bench:
+            price_str = f" ${prices.get(_player_key(bench), 0):,}" if BUDGET_MODE else ""
+            bench_label = " *(active — Bench Boost!)*" if chip == CHIP_BENCH_BOOST else " *(bench)*"
+            if results:
+                r = results.get(_player_key(bench)); base = int(r["total"]) if r else 0
+                lines.append(f"6. {bench} 🅑{price_str} — **{base}** base pts{bench_label}")
+            else:
+                lines.append(f"6. {bench} 🅑{price_str}{bench_label}")
+
         if results:
-            lines.extend(["", f"**Total Points:** **{total_points}**", "",
-                           "Use the menu below for a detailed breakdown."])
+            total = _compute_user_score(t, target.id, chip)
+            lines.extend(["", f"**Your Total (chips & multipliers applied): {total}**", "",
+                           "Use the menu below for a per-pick breakdown."])
+
         embed = discord.Embed(title="Fantasy Roster", description="\n".join(lines))
-        view = RosterPickMenuView(interaction.user.id, roster[:5], seed_map, results,
-                                   f"{target.display_name}'s Picks")
-        await interaction.response.send_message(embed=embed, view=view)
+
+        # Inline breakdown select
+        all_names = picks + ([bench] if bench else [])
+        opts = []
+        for name in all_names:
+            r = results.get(_player_key(name)) if results else None
+            pts = int(r.get("total", 0)) if r else 0
+            tag = " [C]" if name == cap else (" [VC]" if name == vc else (" [B]" if name == bench else ""))
+            opts.append(discord.SelectOption(label=f"{name}{tag} — {pts}"[:100], value=name[:100]))
+
+        class _BView(discord.ui.View):
+            def __init__(inner_self):
+                super().__init__(timeout=240)
+                if opts:
+                    sel = discord.ui.Select(placeholder="Pick a player for breakdown…",
+                                             min_values=1, max_values=1, options=opts)
+                    async def _cb(inter):
+                        if inter.user.id != interaction.user.id:
+                            return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+                        picked = inter.data["values"][0]
+                        r = results.get(_player_key(picked)) if results else None
+                        is_cap   = _player_key(picked) == _player_key(cap)
+                        is_vc    = _player_key(picked) == _player_key(vc)
+                        is_bench = _player_key(picked) == _player_key(bench)
+                        tag2 = ("🅒 " if is_cap else "") + ("🅥 " if is_vc else "") + ("🅑 " if is_bench else "")
+                        if not r:
+                            return await inter.response.send_message(embed=discord.Embed(
+                                title="Pick Breakdown",
+                                description=f"**{tag2}{picked}**\n\nℹ️ Results not entered yet."), ephemeral=True)
+                        base = int(r.get("total", 0))
+                        eff = base
+                        if chip == CHIP_DOUBLE_UPSET: eff += int(r.get("upset_points", 0))
+                        if chip == CHIP_ALL_IN:
+                            eff = int(round(eff * 4.0)) if is_cap else int(round(eff * 0.5))
+                        if is_cap and chip != CHIP_ALL_IN: eff = int(round(eff * cap_m))
+                        elif is_vc: eff = int(round(eff * vc_m))
+                        dlines = [f"**{tag2}{picked} — {r.get('round','')}**", "",
+                                  f"**Tournament Pts:** {r.get('tournament_points',0):+}",
+                                  f"**Set Pts:** {r.get('set_points',0):+}  ({r.get('sets_won',0)}W/{r.get('sets_lost',0)}L)",
+                                  f"**Performance Pts:** {r.get('performance_points',0):+}",
+                                  f"**Upset Pts:** {r.get('upset_points',0):+}",
+                                  f"**Base Total:** {base}"]
+                        if eff != base: dlines.append(f"**After multipliers/chip:** {eff}")
+                        if chip: dlines.append(f"**Chip:** {CHIP_LABELS.get(chip, chip)}")
+                        log = r.get("match_log","")
+                        if log:
+                            dlines += ["","**Match Results:**"]
+                            for match in log.split(";"):
+                                m = match.strip()
+                                if not m: continue
+                                pm = m.rsplit(" ",1)
+                                if len(pm)==2 and pm[1].lstrip("+-").isdigit():
+                                    sign = "" if pm[1].startswith(("+","-")) else "+"
+                                    dlines.append(f"{pm[0].strip()} | {sign}{pm[1]}")
+                                else: dlines.append(m)
+                        await inter.response.send_message(embed=discord.Embed(
+                            title="Pick Breakdown", description="\n".join(dlines)), ephemeral=True)
+                    sel.callback = _cb
+                    inner_self.add_item(sel)
+
+        await interaction.response.send_message(embed=embed, view=_BView())
 
     @fantasy.command(name="results", description="View sorted fantasy results for a tournament.")
     @app_commands.autocomplete(tournament_id=_ac_tournament)
@@ -3020,15 +3428,19 @@ class FantasyCog(commands.Cog):
         if msg: return await interaction.response.send_message(msg, ephemeral=True)
         if not t.get("results_entered"):
             return await interaction.response.send_message("❌ Results not entered yet.", ephemeral=True)
-        scores = {uid: pts for uid, pts in _all_user_scores_for_tournament(t).items()
+        scores = {uid: pts for uid, pts in _all_user_scores_for_tournament(t, data).items()
                   if not _is_blacklisted(data, uid)}
         if not scores:
             return await interaction.response.send_message("ℹ️ No user rosters found.", ephemeral=True)
         items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         ranks = _dense_ranks(scores)
         header = [f"**User Results — {t.get('name')}** (`{t.get('id')}`)", "",
-                  "Format: Rank. User — Total Points", ""]
-        body = [f"{ranks.get(uid,0)}. <@{uid}> — **{pts}**" for uid, pts in items]
+                  "Rank. User — Total Points (chips applied)", ""]
+        body = []
+        for uid, pts in items:
+            chip = _get_user_chip(data, uid, tournament_id)
+            chip_str = f" *({CHIP_LABELS.get(chip, chip)})*" if chip else ""
+            body.append(f"{ranks.get(uid,0)}. <@{uid}> — **{pts}**{chip_str}")
         pages: List[str] = []
         for start in range(0, max(1, len(body)), 20):
             pages.append("\n".join(header + body[start:start+20]))
