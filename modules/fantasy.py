@@ -25,8 +25,10 @@ BUDGET_MODE               = True   # Enable player budget system
 BUDGET_CAP                = 20000  # Default budget cap (used when not set per-tournament)
 ADMIN_CAN_SET_BUDGET      = True   # Allow admins to override budget cap per tournament
 
-CHIPS_PER_TOURNAMENT      = 1      # Chip credits granted to each user per tournament they join
+CHIPS_PER_TOURNAMENT      = 1      # kept for compat but credit system replaced by 2-week window
 ADMIN_CAN_SET_CHIPS       = True   # Allow admins to override chip allowance per tournament
+
+CHIP_WINDOW_DAYS          = 14     # Users can use one chip per this many days
 
 CAPTAIN_MULTIPLIER        = 2.0    # Default captain score multiplier
 VC_MULTIPLIER             = 1.5    # Default vice-captain score multiplier
@@ -42,13 +44,13 @@ CHIP_LABELS = {
     CHIP_TRIPLE_CAPTAIN: "🔱 Triple Captain",
     CHIP_BENCH_BOOST:    "🚀 Bench Boost",
     CHIP_DOUBLE_UPSET:   "⚡ Double Upset",
-    CHIP_ALL_IN:         "💀 All-In",
+    CHIP_ALL_IN:         ":spaces: All-In",
 }
 CHIP_DESCRIPTIONS = {
-    CHIP_TRIPLE_CAPTAIN: "Your captain scores **3×** instead of 2× this tournament.",
-    CHIP_BENCH_BOOST:    "Your bench player scores **full points** alongside your 5 picks.",
-    CHIP_DOUBLE_UPSET:   "All **upset points** for your whole team are doubled.",
-    CHIP_ALL_IN:         "Your captain scores **4×**, but all other picks score **0.5×**. VC multiplier still stacks on the 0.5× base. Captain must be your All-In pick.",
+    CHIP_TRIPLE_CAPTAIN: "Your captain scores 3× instead of 2× this tournament.",
+    CHIP_BENCH_BOOST:    "Your bench player scores full points alongside your 5 picks.",
+    CHIP_DOUBLE_UPSET:   "All upset points for your whole team are doubled.",
+    CHIP_ALL_IN:         "Your captain scores 4×, but all other picks score 0.5×.",
 }
 
 # ============================================================
@@ -64,7 +66,7 @@ def _load() -> dict:
     data.setdefault("categories", [])
     data.setdefault("tournaments", [])
     data.setdefault("ldb_blacklist", [])
-    data.setdefault("user_chips", {})  # {uid_str: {tournament_id: chip_key, "__credits__": int}}
+    data.setdefault("user_chips", {})  # {uid_str: {tournament_id: chip_key, "last_chip_at": unix_ts}}
     return data
 
 def _save(data: dict) -> None:
@@ -153,11 +155,15 @@ def _get_user_chip(data: dict, user_id: int, tournament_id: str) -> Optional[str
 def _set_user_chip(data: dict, user_id: int, tournament_id: str, chip: Optional[str]) -> None:
     data.setdefault("user_chips", {}).setdefault(str(user_id), {})[tournament_id] = chip
 
-def _get_user_credits(data: dict, user_id: int) -> int:
-    return int(data.get("user_chips", {}).get(str(user_id), {}).get("__credits__", 0))
+def _user_chip_eligible(data: dict, user_id: int) -> bool:
+    """True if the user can use a chip — hasn't used one in the last CHIP_WINDOW_DAYS days."""
+    last = int(data.get("user_chips", {}).get(str(user_id), {}).get("last_chip_at", 0))
+    return (_now_unix() - last) >= (CHIP_WINDOW_DAYS * 86400)
 
-def _set_user_credits(data: dict, user_id: int, credits: int) -> None:
-    data.setdefault("user_chips", {}).setdefault(str(user_id), {})["__credits__"] = max(0, credits)
+def _user_chip_cooldown_ts(data: dict, user_id: int) -> int:
+    """Unix timestamp when user's next chip becomes available (0 if already eligible)."""
+    last = int(data.get("user_chips", {}).get(str(user_id), {}).get("last_chip_at", 0))
+    return last + (CHIP_WINDOW_DAYS * 86400)
 
 # ── Roster storage ────────────────────────────────────────────
 # t["rosters"][uid_str] = {
@@ -897,8 +903,8 @@ class CaptainVCView(discord.ui.View):
     def _status_text(self) -> str:
         lines = ["**Step 2 — Captain, Vice Captain & Bench**", "", "**Your 5 picks:**"]
         for p in self.picks:
-            tag = " 🅒" if self.captain and p.name == self.captain else \
-                  (" 🅥" if self.vice_captain and p.name == self.vice_captain else "")
+            tag = " **[C]**" if self.captain and p.name == self.captain else \
+                  (" **[VC]**" if self.vice_captain and p.name == self.vice_captain else "")
             lines.append(f"• {p.name}{tag}")
         lines.append("")
         prompts = {
@@ -935,18 +941,24 @@ class ChipSelectView(discord.ui.View):
         self.clear_items()
         data = _load()
         existing_chip = _get_user_chip(data, self.user_id, self.tournament_id)
-        opts = [discord.SelectOption(label="No chip — save for later", value="none",
-                                      description="Your chip credit carries over to the next tournament",
+        eligible = _user_chip_eligible(data, self.user_id)
+        next_ts  = _user_chip_cooldown_ts(data, self.user_id)
+
+        opts = [discord.SelectOption(label="No chip this tournament", value="none",
+                                      description="Save your chip for later",
                                       default=(existing_chip is None))]
         for chip_key, chip_label in CHIP_LABELS.items():
+            desc = CHIP_DESCRIPTIONS[chip_key][:100] if eligible else \
+                   f"Available <t:{next_ts}:R>"[:100]
             opts.append(discord.SelectOption(
                 label=chip_label, value=chip_key,
-                description=CHIP_DESCRIPTIONS[chip_key][:100],
+                description=desc,
                 default=(existing_chip == chip_key),
             ))
         sel = discord.ui.Select(placeholder="Activate a chip? (optional)", min_values=1, max_values=1, options=opts)
         async def _chip_cb(inter, v=self):
-            if inter.user.id != v.user_id: return await inter.response.send_message("❌ Not for you.", ephemeral=True)
+            if inter.user.id != v.user_id:
+                return await inter.response.send_message("❌ Not for you.", ephemeral=True)
             chosen = inter.data["values"][0]
             if chosen == "none": chosen = None
             await v.cog._save_full_roster(
@@ -960,18 +972,22 @@ class ChipSelectView(discord.ui.View):
     def _status_text(self) -> str:
         data = _load()
         existing = _get_user_chip(data, self.user_id, self.tournament_id)
-        credits = _get_user_credits(data, self.user_id)
+        eligible = _user_chip_eligible(data, self.user_id)
+        next_ts  = _user_chip_cooldown_ts(data, self.user_id)
         lines = [
             "**Step 3 — Chip (optional)**", "",
-            f"**Captain:** {self.captain} 🅒",
-            f"**Vice Captain:** {self.vice_captain} 🅥",
+            f"**Captain:** {self.captain} **[C]**",
+            f"**Vice Captain:** {self.vice_captain} **[VC]**",
             f"**Bench:** {self.bench or '(none)'}",
             "",
-            f"🎴 You have **{credits}** chip credit(s).",
         ]
+        if eligible:
+            lines.append("🎴 **You can use a chip this tournament.**")
+        else:
+            lines.append(f"🎴 Your next chip is available <t:{next_ts}:R>.")
         if existing:
             lines.append(f"Currently active: **{CHIP_LABELS.get(existing, existing)}**")
-        lines.append("\nPick a chip to activate it, or choose **No chip** to save your credit.")
+        lines.append("\nPick a chip to activate it, or choose **No chip**.")
         return "\n".join(lines)
 
 # ============================================================
@@ -2626,7 +2642,7 @@ class FantasyCog(commands.Cog):
 
     @f_admin.command(
         name="tournament-calculate",
-        description="Admin: paste raw draw data and auto-calculate all fantasy points.",
+        description="Admin: paste raw draw data to auto-calculate all fantasy points.",
     )
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     async def fantasy_calculate(self, interaction: discord.Interaction, tournament_id: str):
@@ -2636,10 +2652,82 @@ class FantasyCog(commands.Cog):
         t = _find_tournament(data, tournament_id)
         if not t:
             return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
-        await interaction.response.send_modal(
-            RawDrawModal(self, interaction.user.id, tournament_id)
+        _staged_results.pop((interaction.user.id, tournament_id, "draw"), None)
+        await interaction.response.send_message(
+            "📋 Paste your draw data in up to 6 parts. Click **Part 1** to begin.",
+            view=DrawChunkView(self, interaction.user.id, tournament_id,
+                               chunk_num=1, rows_so_far=0),
+            ephemeral=True,
         )
+
+    @f_admin.command(name="tournament-end", description="Admin: submit results and complete a fantasy tournament.")
     async def fantasy_end(self, interaction: discord.Interaction):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        gid = interaction.guild.id if interaction.guild else 0
+        ts = [t for t in data.get("tournaments", [])
+              if t.get("guild_id") in (0, gid) and not t.get("results_entered")]
+        if not ts:
+            return await interaction.response.send_message(
+                "❌ No tournaments awaiting results.", ephemeral=True)
+        view = TournamentEndSelectView(self, interaction.user.id, ts)
+        await interaction.response.send_message(
+            "Select the tournament to enter results for:", view=view, ephemeral=True)
+
+    async def _run_calculate(self, interaction: discord.Interaction, tournament_id: str):
+        """Called after all draw chunks are staged. Parses, computes, previews."""
+        key = (interaction.user.id, tournament_id, "draw")
+        raw_lines = _staged_results.pop(key, [])
+
+        if not raw_lines:
+            return await interaction.edit_original_response(
+                content="❌ No draw data staged. Try again.", view=None)
+
+        all_matches = _parse_raw_draw("\n".join(raw_lines))
+        if not all_matches:
+            return await interaction.edit_original_response(
+                content=(
+                    "❌ Could not parse any matches.\n"
+                    "Make sure you paste the raw tab-separated rows exactly as copied from the source."
+                ),
+                view=None,
+            )
+
+        data = _load()
+        t = _find_tournament(data, tournament_id)
+        if not t:
+            return await interaction.edit_original_response(content="❌ Tournament not found.", view=None)
+
+        category_id      = t.get("category_id")
+        cat              = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
+        round_points_map = (cat or {}).get("round_points", {})
+
+        rows: List[dict]     = []
+        not_found: List[str] = []
+
+        for p in t.get("players", []):
+            result = _calc_player_fantasy(p["name"], all_matches)
+            if result:
+                rows.append(result)
+            else:
+                not_found.append(p["name"])
+
+        total_players = len(t.get("players", []))
+        pages = _build_preview_pages(t, rows, round_points_map, total_players)
+
+        if not_found:
+            missing_text = (
+                "⚠️ **Players not found in draw:**\n"
+                + "\n".join(f"- {n}" for n in not_found)
+                + "\n\nMark each as withdrew, or cancel to re-paste the draw."
+            )
+            view = WithdrewSelectView(self, interaction.user.id, tournament_id,
+                                      rows, pages, not_found)
+            await interaction.edit_original_response(content=missing_text, embed=None, view=view)
+        else:
+            view = CalculateConfirmView(self, interaction.user.id, tournament_id, rows, pages)
+            await interaction.edit_original_response(content=None, embed=view._embed(), view=view)
         if not _is_admin(interaction.user):
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         data = _load()
@@ -2742,26 +2830,20 @@ class FantasyCog(commands.Cog):
 
         uid_str = str(user_id)
         user_chip_data = data.setdefault("user_chips", {}).setdefault(uid_str, {})
-        existing_chip = user_chip_data.get(tournament_id)
-        credits = int(user_chip_data.get("__credits__", 0))
+        existing_chip  = user_chip_data.get(tournament_id)
+        if existing_chip not in CHIP_LABELS: existing_chip = None
 
-        # Grant credits on first-ever join
-        existing_roster = (t.get("rosters") or {}).get(uid_str)
-        chips_allowed = _t_chips(t)
-        if not existing_roster and chips_allowed > 0:
-            credits += chips_allowed
-            user_chip_data["__credits__"] = credits
-
-        # Spend / refund credits
+        # Chip eligibility: one chip per CHIP_WINDOW_DAYS days
         if chip and chip != existing_chip:
-            if credits <= 0:
+            if not _user_chip_eligible(data, user_id):
+                next_ts = _user_chip_cooldown_ts(data, user_id)
                 return await interaction.response.send_message(
-                    "❌ You have no chip credits. Choose **No chip** to save without one.", ephemeral=True)
-            credits -= 1
-            user_chip_data["__credits__"] = credits
+                    f"❌ You can't use a chip yet — your next chip is available <t:{next_ts}:R>.",
+                    ephemeral=True)
+            user_chip_data["last_chip_at"] = _now_unix()
         elif chip is None and existing_chip:
-            credits += 1
-            user_chip_data["__credits__"] = credits
+            # Removing chip — reset window so they can use one again immediately
+            user_chip_data["last_chip_at"] = 0
 
         user_chip_data[tournament_id] = chip
         t.setdefault("rosters", {})[uid_str] = {
@@ -2777,13 +2859,13 @@ class FantasyCog(commands.Cog):
         lines = [f"✅ Roster saved{saved_for}!", "", f"**{t.get('name')}**", ""]
         total_cost = 0
         for i, name in enumerate(picks, 1):
-            tag = " 🅒" if name == captain else (" 🅥" if name == vice_captain else "")
+            tag = " **[C]**" if name == captain else (" **[VC]**" if name == vice_captain else "")
             price = prices.get(_player_key(name), 0); total_cost += price
             price_str = f" — ${price:,}" if BUDGET_MODE else ""
             lines.append(f"{i}. {name}{tag}{price_str}")
         if bench:
             bench_price = prices.get(_player_key(bench), 0); total_cost += bench_price
-            lines.append(f"6. {bench} 🅑 [Bench]{f' — ${bench_price:,}' if BUDGET_MODE else ''}")
+            lines.append(f"6. {bench} **[B]**{f' — ${bench_price:,}' if BUDGET_MODE else ''}")
         if BUDGET_MODE:
             lines.append(f"\n💰 Total: **${total_cost:,} / ${_t_budget(t):,}**")
         lines.append(f"\n**Captain:** {captain} ({cap_m}×) • **VC:** {vice_captain} ({vc_m}×)")
@@ -2791,7 +2873,11 @@ class FantasyCog(commands.Cog):
             lines.append(f"**Chip:** {CHIP_LABELS.get(chip, chip)}")
             lines.append(f"*{CHIP_DESCRIPTIONS.get(chip, '')}*")
         else:
-            lines.append(f"\nℹ️ No chip used. You have **{credits}** credit(s) remaining.")
+            next_ts = _user_chip_cooldown_ts(data, user_id)
+            if _user_chip_eligible(data, user_id):
+                lines.append("\nℹ️ No chip used this tournament. You can use one now or next time.")
+            else:
+                lines.append(f"\nℹ️ No chip used. Next chip available <t:{next_ts}:R>.")
         await interaction.response.edit_message(content="\n".join(lines), view=None)
 
     async def _calculate_from_raw_draw(
@@ -3039,7 +3125,7 @@ class FantasyCog(commands.Cog):
                 for name in active:
                     r = results.get(_player_key(name))
                     base = int(r["total"]) if r else 0
-                    tag  = " 🅒" if name == cap else (" 🅥" if name == vc else (" 🅑" if name == bench else ""))
+                    tag  = " **[C]**" if name == cap else (" **[VC]**" if name == vc else (" **[B]**" if name == bench else ""))
                     round_str = r.get("round", "?") if r else "no result"
                     pick_lines.append(f"{name}{tag} — **{base}** base pts ({round_str})")
 
@@ -3182,21 +3268,22 @@ class FantasyCog(commands.Cog):
             vc    = (roster or {}).get("vice_captain", "")
             bench = (roster or {}).get("bench", "")
             chip  = _get_user_chip(data, uid, tournament_id)
-            credits = _get_user_credits(data, uid)
+            eligible = _user_chip_eligible(data, uid)
+            next_ts  = _user_chip_cooldown_ts(data, uid)
 
             formatted = []
             for name in picks:
-                tag = " [C]" if name == cap else (" [VC]" if name == vc else "")
+                tag = " **[C]**" if name == cap else (" **[VC]**" if name == vc else "")
                 formatted.append(f"{name}{tag}")
-            if bench: formatted.append(f"{bench} [B]")
-            picks_str  = ",  ".join(formatted) if formatted else "—"
-            chip_str   = f" | 🎴 {CHIP_LABELS.get(chip, chip)}" if chip else ""
-            credits_str = f" | {credits} credit(s)"
+            if bench: formatted.append(f"{bench} **[B]**")
+            picks_str = ",  ".join(formatted) if formatted else "—"
+            chip_str  = f" | 🎴 {CHIP_LABELS.get(chip, chip)}" if chip else ""
+            chip_avail = " | 🎴 chip ready" if eligible else f" | 🎴 chip <t:{next_ts}:R>"
             if BUDGET_MODE:
                 cost = _roster_cost(_roster_all_names(roster) if roster else [], prices)
-                lines.append(f"**{display}:** {picks_str}{chip_str} | ${cost:,}/{budget:,}{credits_str}")
+                lines.append(f"**{display}:** {picks_str}{chip_str}{chip_avail} | ${cost:,}/{budget:,}")
             else:
-                lines.append(f"**{display}:** {picks_str}{chip_str}{credits_str}")
+                lines.append(f"**{display}:** {picks_str}{chip_str}{chip_avail}")
 
         pages = _chunk_pages(lines[3:])
         header = "\n".join(lines[:3])
@@ -3255,13 +3342,6 @@ class FantasyCog(commands.Cog):
         pool = [PlayerEntry(name=p["name"], seed=p.get("seed"), price=p.get("price"))
                 for p in t.get("players", [])]
         uid_str = str(interaction.user.id)
-        # Grant chip credits on first-ever join
-        if uid_str not in (t.get("rosters") or {}):
-            chips_allowed = _t_chips(t)
-            if chips_allowed > 0:
-                user_chip_data = data.setdefault("user_chips", {}).setdefault(uid_str, {})
-                user_chip_data["__credits__"] = int(user_chip_data.get("__credits__", 0)) + chips_allowed
-                _save(data)
         has_roster = uid_str in (t.get("rosters") or {})
         header = "✏️ Edit your roster — pick 5 new players to replace your current picks." if has_roster else None
         view = JoinFantasyView(self, interaction.user.id, tournament_id, pool, budget=budget, header=header)
@@ -3321,7 +3401,7 @@ class FantasyCog(commands.Cog):
         lines.append("\n**Picks:**")
 
         for i, name in enumerate(picks, 1):
-            tag = " 🅒" if name == cap else (" 🅥" if name == vc else "")
+            tag = " **[C]**" if name == cap else (" **[VC]**" if name == vc else "")
             price_str = f" ${prices.get(_player_key(name), 0):,}" if BUDGET_MODE else ""
             if results:
                 r = results.get(_player_key(name)); base = int(r["total"]) if r else 0
@@ -3334,9 +3414,9 @@ class FantasyCog(commands.Cog):
             bench_label = " *(active — Bench Boost!)*" if chip == CHIP_BENCH_BOOST else " *(bench)*"
             if results:
                 r = results.get(_player_key(bench)); base = int(r["total"]) if r else 0
-                lines.append(f"6. {bench} 🅑{price_str} — **{base}** base pts{bench_label}")
+                lines.append(f"6. {bench} **[B]**{price_str} — **{base}** base pts{bench_label}")
             else:
-                lines.append(f"6. {bench} 🅑{price_str}{bench_label}")
+                lines.append(f"6. {bench} **[B]**{price_str}{bench_label}")
 
         if results:
             total = _compute_user_score(t, target.id, chip)
@@ -3368,7 +3448,7 @@ class FantasyCog(commands.Cog):
                         is_cap   = _player_key(picked) == _player_key(cap)
                         is_vc    = _player_key(picked) == _player_key(vc)
                         is_bench = _player_key(picked) == _player_key(bench)
-                        tag2 = ("🅒 " if is_cap else "") + ("🅥 " if is_vc else "") + ("🅑 " if is_bench else "")
+                        tag2 = ("**[C]** " if is_cap else "") + ("**[VC]** " if is_vc else "") + ("**[B]** " if is_bench else "")
                         if not r:
                             return await inter.response.send_message(embed=discord.Embed(
                                 title="Pick Breakdown",
