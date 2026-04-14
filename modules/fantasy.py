@@ -3007,33 +3007,39 @@ class FantasyCog(commands.Cog):
             else:
                 not_found.append(p["name"])
 
-        total_players = len(t.get("players", []))
-        pages = _build_preview_pages(t, rows, round_points_map, total_players)
+        # Build preview lines (same logic as _calculate_from_raw_draw)
+        preview_lines = [
+            f"**Preview — {t.get('name')}**",
+            f"Parsed **{len(all_matches)}** matches · **{len(rows)}** players calculated",
+            "",
+            "Player — Round — Sets W/L — Perf — Upset — Est. Total",
+            "",
+        ]
+        for r in sorted(rows, key=lambda x: ROUND_ORDER.get(x["round"], 0), reverse=False):
+            tourn_pts = round_points_map.get(r["round"], 0)
+            set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
+            total_est = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
+            preview_lines.append(
+                f"**{r['player']}** — {r['round']} — "
+                f"{r['sets_won']}W/{r['sets_lost']}L — "
+                f"perf:{r['performance_pts']} upset:{r['upset_pts']} — "
+                f"~**{total_est}**"
+            )
 
         if not_found:
-            missing_text = (
-                "⚠️ **Players not found in draw:**\n"
-                + "\n".join(f"- {n}" for n in not_found)
-                + "\n\nMark each as withdrew, or cancel to re-paste the draw."
-            )
-            view = WithdrewSelectView(self, interaction.user.id, tournament_id,
-                                      rows, pages, not_found)
-            await interaction.edit_original_response(content=missing_text, embed=None, view=view)
-        else:
-            view = CalculateConfirmView(self, interaction.user.id, tournament_id, rows, pages)
-            await interaction.edit_original_response(content=None, embed=view._embed(), view=view)
-        if not _is_admin(interaction.user):
-            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
-        data = _load()
-        gid = interaction.guild.id if interaction.guild else 0
-        ts = [t for t in data.get("tournaments", [])
-              if t.get("guild_id") in (0, gid) and not t.get("results_entered")]
-        if not ts:
-            return await interaction.response.send_message(
-                "❌ No tournaments awaiting results.", ephemeral=True)
-        view = TournamentEndSelectView(self, interaction.user.id, ts)
-        await interaction.response.send_message(
-            "Select the tournament to enter results for:", view=view, ephemeral=True)
+            preview_lines += ["", "⚠️ **Not found in draw:**"]
+            preview_lines += [f"- {n}" for n in not_found]
+
+        pages = _chunk_pages(preview_lines)
+        confirm_view = CalculateConfirmView(self, interaction.user.id, tournament_id, rows)
+
+        embed = discord.Embed(
+            title="Calculate Preview",
+            description=pages[0],
+        )
+        embed.set_footer(text=f"Page 1/{len(pages)} — Review above, then confirm or re-paste.")
+
+        await interaction.edit_original_response(content=None, embed=embed, view=confirm_view)
 
 
     async def _fantasy_create_set_unseeded(self, interaction: discord.Interaction, tournament_id: str, unseeded_text: str):
