@@ -2200,6 +2200,111 @@ async def _finalize_chunked_results(cog, interaction: discord.Interaction, tourn
     await cog._fantasy_end_submit(interaction, tournament_id, combined)
 
 
+class DrawChunkModal(discord.ui.Modal, title="Fantasy Calculate — Draw Data (chunk)"):
+    chunk_text = discord.ui.TextInput(
+        label="Raw tab-separated draw block",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder="Paste the tab-separated draw data from the tennis results page...",
+    )
+
+    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int):
+        super().__init__(title=f"Draw Data — Part {chunk_num} of {MAX_CHUNKS}")
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.chunk_num = chunk_num
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+        raw = str(self.chunk_text).strip()
+        key = (self.user_id, self.tournament_id, "draw")
+        existing = _staged_results.get(key, [])
+        new_lines = [l for l in raw.splitlines() if l.strip()]
+        _staged_results[key] = existing + new_lines
+        total_rows = len(_staged_results[key])
+        next_chunk = self.chunk_num + 1
+
+        if next_chunk > MAX_CHUNKS:
+            await interaction.response.edit_message(
+                content=f"✅ Part {self.chunk_num} saved ({total_rows} rows total). Calculating…",
+                view=None,
+            )
+            await self.cog._run_calculate(interaction, self.tournament_id)
+        else:
+            view = DrawChunkView(
+                self.cog, self.user_id, self.tournament_id,
+                chunk_num=next_chunk, rows_so_far=total_rows,
+            )
+            await interaction.response.edit_message(
+                content=(
+                    f"✅ Part {self.chunk_num} saved — **{total_rows}** rows staged so far.\n"
+                    f"Click **Part {next_chunk}** to continue, or **Done** if all data is entered."
+                ),
+                view=view,
+            )
+
+
+class DrawChunkView(discord.ui.View):
+    """Shown between draw data chunks. Has a 'Next Part' button, a 'Done' button, and a Cancel button."""
+
+    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int, rows_so_far: int):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.chunk_num = chunk_num
+        self.rows_so_far = rows_so_far
+
+        next_btn = discord.ui.Button(
+            label=f"Part {chunk_num} →",
+            style=discord.ButtonStyle.primary,
+        )
+        next_btn.callback = self._next_callback
+        self.add_item(next_btn)
+
+        done_btn = discord.ui.Button(
+            label="✅ Done — Calculate",
+            style=discord.ButtonStyle.success,
+        )
+        done_btn.callback = self._done_callback
+        self.add_item(done_btn)
+
+        cancel_btn = discord.ui.Button(
+            label="✗ Cancel",
+            style=discord.ButtonStyle.danger,
+        )
+        cancel_btn.callback = self._cancel_callback
+        self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+            return False
+        return True
+
+    async def _next_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(
+            DrawChunkModal(self.cog, self.user_id, self.tournament_id, self.chunk_num)
+        )
+
+    async def _done_callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            content=f"✅ Finalizing {self.rows_so_far} rows…", view=None
+        )
+        await self.cog._run_calculate(interaction, self.tournament_id)
+
+    async def _cancel_callback(self, interaction: discord.Interaction):
+        key = (self.user_id, self.tournament_id, "draw")
+        _staged_results.pop(key, None)
+        await interaction.response.edit_message(
+            content="❌ Draw calculation cancelled. Staged data cleared.", view=None
+        )
+
+
 class ChunkedResultsView(discord.ui.View):
     """Shown between chunks. Has a 'Next Part' button and an early 'Done' button."""
 
