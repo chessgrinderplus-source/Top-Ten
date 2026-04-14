@@ -1027,7 +1027,10 @@ class PricesATPModal(discord.ui.Modal, title="Set Player Prices — ATP Paste"):
             return await interaction.response.send_message(
                 "❌ Could not parse ATP paste.\n" + "\n".join(errors[:5]), ephemeral=True)
         lines_text = "\n".join(f"{name} | {pts}" for name, pts in parsed.items())
-        await self.cog._apply_prices(interaction, self.tournament_id, lines_text, source="ATP paste")
+        # Pass the keyed price map so unmatched players can be renamed against it
+        atp_prices = {_player_key(name): pts for name, pts in parsed.items()}
+        await self.cog._apply_prices(interaction, self.tournament_id, lines_text,
+                                      source="ATP paste", atp_prices=atp_prices)
 
 class PricesModeView(discord.ui.View):
     """Two buttons shown after unseeded step when BUDGET_MODE is on."""
@@ -1075,14 +1078,134 @@ class UnmatchedPricesModal(discord.ui.Modal, title="Set Missing Player Prices"):
                                       source="manual (missing players)")
 
 
+class RenameForATPModal(discord.ui.Modal, title="Rename Players — Match ATP Names"):
+    """
+    Lets the admin map tournament player names to the names as they appear in the ATP paste.
+    Format: TournamentName | ATPName  (one per line)
+    The tournament player's name is renamed to the ATP name so the price lookup succeeds,
+    and the price is immediately applied from the already-parsed ATP data stored in the view.
+    """
+    rename_text = discord.ui.TextInput(
+        label="TournamentName | ATPName  (one per line)",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder="Stan Wawrinka | Stanislas Wawrinka\nGael Monfils | Gaël Monfils",
+    )
+
+    def __init__(self, cog, user_id: int, tournament_id: str,
+                 unmatched: List[str], atp_prices: Dict[str, int]):
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.unmatched = unmatched
+        self.atp_prices = atp_prices  # {player_key: price} from the original ATP parse
+        # Pre-fill with unmatched names on the left side
+        try:
+            self.rename_text.default = "\n".join(f"{n} | " for n in unmatched)[:4000]
+        except Exception:
+            pass
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+        data = _load()
+        t = _find_tournament(data, self.tournament_id)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+
+        text = str(self.rename_text).strip()
+        renamed = 0; still_missing = []; rename_errors = []
+        for idx, raw in enumerate(text.splitlines(), 1):
+            line = raw.strip()
+            if not line:
+                continue
+            if "|" not in line:
+                rename_errors.append(f"Line {idx}: expected 'TournamentName | ATPName', got: {line!r}")
+                continue
+            t_name_raw, atp_name_raw = line.split("|", 1)
+            t_name = t_name_raw.strip()
+            atp_name = atp_name_raw.strip()
+            if not t_name or not atp_name:
+                rename_errors.append(f"Line {idx}: both names required.")
+                continue
+            atp_key = _player_key(atp_name)
+            if atp_key not in self.atp_prices:
+                rename_errors.append(
+                    f"Line {idx}: '{atp_name}' not found in ATP paste "
+                    f"(tried key '{atp_key}'). Check spelling.")
+                still_missing.append(t_name)
+                continue
+            # Find and rename the player in the tournament, applying the price
+            found = False
+            for p in t.get("players", []):
+                if _player_key(p["name"]) == _player_key(t_name):
+                    p["name"] = atp_name  # rename to ATP name so future lookups work
+                    p["price"] = self.atp_prices[atp_key]
+                    renamed += 1
+                    found = True
+                    break
+            if not found:
+                rename_errors.append(f"Line {idx}: '{t_name}' not found in tournament player list.")
+                still_missing.append(t_name)
+
+        _save(data)
+
+        if rename_errors:
+            err_text = "\n".join(rename_errors[:10])
+            if still_missing:
+                prefill = "\n".join(f"{n} | " for n in still_missing)
+                view = UnmatchedPricesView(
+                    self.cog, self.user_id, self.tournament_id,
+                    unmatched=still_missing, prefill=prefill,
+                    atp_prices=self.atp_prices,
+                )
+                msg = (
+                    f"⚠️ **{renamed} renamed & priced.** Some issues:\n{err_text}\n\n"
+                    f"**{len(still_missing)} still unpriced** — enter manually or try renaming again."
+                )
+                if interaction.response.is_done():
+                    await interaction.edit_original_response(content=msg, embed=None, view=view)
+                else:
+                    await interaction.response.send_message(msg, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message(
+                    f"⚠️ {renamed} renamed & priced, but some errors:\n{err_text}", ephemeral=True)
+            return
+
+        # Check if any players are still unpriced
+        still_unpriced = [p["name"] for p in t.get("players", []) if p.get("price") is None]
+        if still_unpriced:
+            prefill = "\n".join(f"{n} | " for n in still_unpriced)
+            view = UnmatchedPricesView(
+                self.cog, self.user_id, self.tournament_id,
+                unmatched=still_unpriced, prefill=prefill,
+                atp_prices=self.atp_prices,
+            )
+            msg = (
+                f"✅ **{renamed} renamed & priced.**\n"
+                f"**{len(still_unpriced)} still unpriced** — enter manually or rename more."
+            )
+            if interaction.response.is_done():
+                await interaction.edit_original_response(content=msg, embed=None, view=view)
+            else:
+                await interaction.response.send_message(msg, view=view, ephemeral=True)
+        else:
+            await self.cog._fantasy_create_finalize_preview(interaction, self.tournament_id)
+
+
 class UnmatchedPricesView(discord.ui.View):
     """Shown when some players couldn't be auto-priced. Forces manual entry before proceeding."""
 
     def __init__(self, cog, user_id: int, tournament_id: str,
-                 unmatched: List[str], prefill: str):
+                 unmatched: List[str], prefill: str,
+                 atp_prices: Optional[Dict[str, int]] = None):
         super().__init__(timeout=300)
         self.cog = cog; self.user_id = user_id; self.tournament_id = tournament_id
         self.unmatched = unmatched; self.prefill = prefill
+        self.atp_prices = atp_prices  # present when arriving from an ATP paste
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -1094,6 +1217,19 @@ class UnmatchedPricesView(discord.ui.View):
         if not await self._guard(interaction): return
         await interaction.response.send_modal(
             UnmatchedPricesModal(self.cog, self.user_id, self.tournament_id, self.prefill))
+
+    @discord.ui.button(label="Rename players (match ATP)", style=discord.ButtonStyle.primary)
+    async def rename_players(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._guard(interaction): return
+        if not self.atp_prices:
+            return await interaction.response.send_message(
+                "❌ No ATP data available to match against. Re-paste ATP rankings first.",
+                ephemeral=True)
+        await interaction.response.send_modal(
+            RenameForATPModal(
+                self.cog, self.user_id, self.tournament_id,
+                self.unmatched, self.atp_prices,
+            ))
 
     @discord.ui.button(label="Re-paste all prices", style=discord.ButtonStyle.secondary)
     async def repaste_all(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2848,9 +2984,13 @@ class FantasyCog(commands.Cog):
         await interaction.response.edit_message(content=msg, embed=None, view=None)
 
     async def _apply_prices(self, interaction: discord.Interaction, tournament_id: str,
-                             prices_text: str, source: str = "manual"):
+                             prices_text: str, source: str = "manual",
+                             atp_prices: Optional[Dict[str, int]] = None):
         """Parse Player|Price lines and apply to tournament players.
-        If any players are unmatched, blocks proceeding and shows which ones need manual prices."""
+        Already-priced players are preserved — only unpriced players are updated.
+        If any players are still unpriced after the paste, blocks proceeding.
+        atp_prices: keyed price map from the original ATP parse, forwarded to UnmatchedPricesView
+        so the admin can rename unmatched players against the ATP data."""
         data = _load()
         t = _find_tournament(data, tournament_id)
         if not t:
@@ -2864,22 +3004,28 @@ class FantasyCog(commands.Cog):
             pk = _player_key(p["name"])
             if pk in price_map:
                 p["price"] = price_map[pk]; matched += 1
-            else:
+            elif p.get("price") is None:
+                # Only flag as unmatched if not already priced from a previous pass
                 unmatched.append(p["name"])
+            # else: already priced — leave it alone
         _save(data)
+
+        already_priced = sum(1 for p in t.get("players", []) if p.get("price") is not None and _player_key(p["name"]) not in price_map)
 
         if unmatched:
             # Show unmatched players and offer retry options — cannot proceed until all are priced
             unmatched_lines = "\n".join(f"- {n}" for n in unmatched)
             prefill = "\n".join(f"{n} | " for n in unmatched)
+            already_str = f" ({already_priced} already priced from earlier)" if already_priced else ""
             msg = (
-                f"⚠️ **{matched} players priced** from {source}, but "
+                f"⚠️ **{matched} players priced** from {source}{already_str}, but "
                 f"**{len(unmatched)} could not be matched** and must be priced manually:\n\n"
                 f"{unmatched_lines}\n\n"
                 f"Enter prices for the missing players to continue."
             )
             view = UnmatchedPricesView(self, interaction.user.id, tournament_id,
-                                        unmatched=unmatched, prefill=prefill)
+                                        unmatched=unmatched, prefill=prefill,
+                                        atp_prices=atp_prices)
             if interaction.response.is_done():
                 await interaction.edit_original_response(content=msg, embed=None, view=view)
             else:
