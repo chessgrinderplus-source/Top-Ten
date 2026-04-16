@@ -1616,13 +1616,12 @@ class ResultsMainView(discord.ui.View):
         prices = _price_map(t)
         p_lines: List[str] = [
             f"**Fantasy Results — {t.get('name')}**", "",
-            "Format: Rank. Player — Base Total — Round", "",
         ]
         for i, r in enumerate(results_sorted, 1):
             name = r.get("player", "")
             price_str = f" (${prices.get(_player_key(name), 0):,})" if BUDGET_MODE else ""
             p_lines.append(
-                f"{i}. {name}{price_str} — **{r.get('total', 0)}** — *{r.get('round', '')}*"
+                f"{i}. {name}{price_str} — **{r.get('total', 0)}**"
             )
         self.player_pages = _chunk_pages(p_lines)
 
@@ -3408,13 +3407,10 @@ class FantasyCog(commands.Cog):
         lines = [f"✅ **{title}** — {t.get('name')}", ""]
         if note:
             lines += [note, ""]
-        lines.append("Player — Round — Total (Tourn + Sets + Perf + Upset) | W-L")
         lines.append("")
         for r in sorted(rows, key=lambda x: x["total"], reverse=True):
             lines.append(
-                f"**{r['player']}** — {r['round']} — **{r['total']}** "
-                f"({r['tournament_points']} + {r['set_points']} + {r.get('performance_points',0)} + {r['upset_points']}) "
-                f"| {r.get('sets_won', 0)}W-{r.get('sets_lost', 0)}L"
+                f"**{r['player']}** — **{r['total']}**"
             )
         pager = PagerView(_chunk_pages(lines), interaction.user.id, title)
         if interaction.response.is_done():
