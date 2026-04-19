@@ -190,8 +190,27 @@ def _roster_all_names(roster: dict) -> List[str]:
     bench = (roster or {}).get("bench")
     return picks + ([bench] if bench else [])
 
+def _is_wo_or_retire(r: dict) -> bool:
+    """
+    Returns True if the player's match log contains a walkover or retirement entry.
+    Used to trigger bench substitution.
+    """
+    if not r:
+        return False
+    log = (r.get("match_log") or "").strip()
+    if not log:
+        return False
+    return bool(re.search(r"\bw/o\b|walkover|\bret\b", log, re.IGNORECASE))
+
+
 def _compute_user_score(t: dict, user_id: int, chip: Optional[str]) -> int:
-    """Score a user's roster applying C/VC multipliers and chip effects."""
+    """Score a user's roster applying C/VC multipliers and chip effects.
+
+    Alternate rule: if a main pick walkovers or retires (i.e. never played a
+    real match), the bench player substitutes in for that pick's score.
+    The bench player inherits the role (C/VC) of the replaced pick if applicable.
+    Only one substitution is made (first qualifying replaced pick triggers it).
+    """
     roster = _get_roster(t, user_id)
     if not roster or not t.get("results_entered"): return 0
     results = t.get("results", {}) or {}
@@ -203,7 +222,29 @@ def _compute_user_score(t: dict, user_id: int, chip: Optional[str]) -> int:
     vc_m    = _t_vc_multi(t)
     if chip == CHIP_TRIPLE_CAPTAIN: cap_m = 3.0
 
+    # Build the active list, applying bench substitution for w/o or retired picks
     active = picks[:]
+    effective_captain = captain
+    effective_vc = vc
+    bench_used_as_sub = False
+
+    if bench and chip != CHIP_BENCH_BOOST:
+        bench_r = results.get(_player_key(bench))
+        bench_has_real_score = bench_r and not _is_wo_or_retire(bench_r)
+        if bench_has_real_score:
+            for i, name in enumerate(active):
+                r = results.get(_player_key(name))
+                if _is_wo_or_retire(r):
+                    # Substitute bench in for this pick
+                    # Inherit the C/VC role if the replaced player held it
+                    if _player_key(name) == _player_key(captain):
+                        effective_captain = bench
+                    elif _player_key(name) == _player_key(vc):
+                        effective_vc = bench
+                    active[i] = bench
+                    bench_used_as_sub = True
+                    break  # only one substitution
+
     if chip == CHIP_BENCH_BOOST and bench:
         active.append(bench)
 
@@ -215,11 +256,11 @@ def _compute_user_score(t: dict, user_id: int, chip: Optional[str]) -> int:
         if chip == CHIP_DOUBLE_UPSET:
             base += int(r.get("upset_points", 0))
         if chip == CHIP_ALL_IN:
-            base = int(round(base * 4.0)) if _player_key(name) == _player_key(captain) \
+            base = int(round(base * 4.0)) if _player_key(name) == _player_key(effective_captain) \
                    else int(round(base * 0.5))
-        if _player_key(name) == _player_key(captain) and chip != CHIP_ALL_IN:
+        if _player_key(name) == _player_key(effective_captain) and chip != CHIP_ALL_IN:
             base = int(round(base * cap_m))
-        elif _player_key(name) == _player_key(vc):
+        elif _player_key(name) == _player_key(effective_vc):
             base = int(round(base * vc_m))
         total += base
     return total
@@ -3187,11 +3228,33 @@ class FantasyCog(commands.Cog):
         saved_for = f" (for <@{user_id}>)" if user_id != interaction.user.id else ""
         lines = [f"✅ Roster saved{saved_for}!", "", f"**{t.get('name')}**", ""]
         total_cost = 0
-        for i, name in enumerate(picks, 1):
-            tag = f" **[C]** ({cap_m}×)" if name == captain else (f" **[VC]** ({vc_m}×)" if name == vice_captain else "")
+
+        # Separate captain, vc, and the other 3 picks for ordered display
+        seed_map_save = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
+        def _save_order_key(name: str) -> tuple:
+            seed = seed_map_save.get(_player_key(name))
+            if seed is not None:
+                try: return (0, int(seed), name.lower())
+                except (ValueError, TypeError): pass
+            return (1, 0, name.lower())
+
+        others_save = sorted([n for n in picks if n != captain and n != vice_captain], key=_save_order_key)
+        display_picks = []
+        if captain and captain in picks:
+            display_picks.append((captain, f" **[C]** ({cap_m}×)"))
+        if vice_captain and vice_captain in picks:
+            display_picks.append((vice_captain, f" **[VC]** ({vc_m}×)"))
+        for name in others_save:
+            display_picks.append((name, ""))
+        shown_save = {n for n, _ in display_picks}
+        for name in picks:
+            if name not in shown_save:
+                display_picks.append((name, ""))
+
+        for name, tag in display_picks:
             price = prices.get(_player_key(name), 0); total_cost += price
             price_str = f" — ${price:,}" if BUDGET_MODE else ""
-            lines.append(f"{i}. {name}{tag}{price_str}")
+            lines.append(f"{name}{tag}{price_str}")
         if bench:
             bench_price = prices.get(_player_key(bench), 0); total_cost += bench_price
             lines.append(f"6. {bench} **[B]**{f' — ${bench_price:,}' if BUDGET_MODE else ''}")
@@ -3773,23 +3836,70 @@ class FantasyCog(commands.Cog):
         if chip: lines.append(f"**Chip:** {CHIP_LABELS.get(chip, chip)}")
         lines.append("\n**Picks:**")
 
-        for i, name in enumerate(picks, 1):
-            tag = f" **[C]** ({cap_m}×)" if name == cap else (f" **[VC]** ({vc_m}×)" if name == vc else "")
+        # Build seed/ranking map for ordering the non-C/VC picks
+        seed_map = {_player_key(p["name"]): p.get("seed") for p in t.get("players", [])}
+
+        def _pick_order_key(name: str) -> tuple:
+            """Sort key: seeded players first (by seed number), then unseeded alphabetically."""
+            seed = seed_map.get(_player_key(name))
+            if seed is not None:
+                try:
+                    return (0, int(seed), name.lower())
+                except (ValueError, TypeError):
+                    pass
+            return (1, 0, name.lower())
+
+        # Separate captain, vc, and the other 3 picks
+        others = [n for n in picks if n != cap and n != vc]
+        others_sorted = sorted(others, key=_pick_order_key)
+
+        # Display order: Captain, VC, then 3 others by ranking
+        display_order = []
+        if cap and cap in picks:
+            display_order.append((cap, f" **[C]** ({cap_m}×)"))
+        if vc and vc in picks:
+            display_order.append((vc, f" **[VC]** ({vc_m}×)"))
+        for name in others_sorted:
+            display_order.append((name, ""))
+        # Include any picks that are neither cap nor vc and weren't sorted (edge cases)
+        shown = {n for n, _ in display_order}
+        for name in picks:
+            if name not in shown:
+                display_order.append((name, ""))
+
+        # Check if bench sub is in effect (for display annotation)
+        bench_subbed_for: Optional[str] = None
+        if bench and results:
+            bench_r = results.get(_player_key(bench))
+            if bench_r and not _is_wo_or_retire(bench_r):
+                for name, _ in display_order:
+                    r_chk = results.get(_player_key(name))
+                    if _is_wo_or_retire(r_chk):
+                        bench_subbed_for = name
+                        break
+
+        for name, tag in display_order:
             price_str = f" ${prices.get(_player_key(name), 0):,}" if BUDGET_MODE else ""
             if results:
                 r = results.get(_player_key(name)); base = int(r["total"]) if r else 0
-                lines.append(f"{i}. {name}{tag}{price_str} — **{base}** base pts")
+                wo_note = " *(w/o — bench sub active)*" if (name == bench_subbed_for) else ""
+                lines.append(f"{name}{tag}{price_str} — **{base}** base pts{wo_note}")
             else:
-                lines.append(f"{i}. {name}{tag}{price_str}")
+                lines.append(f"{name}{tag}{price_str}")
 
         if bench:
             price_str = f" ${prices.get(_player_key(bench), 0):,}" if BUDGET_MODE else ""
-            bench_label = " *(active — Bench Boost!)*" if chip == CHIP_BENCH_BOOST else " *(bench)*"
+            if chip == CHIP_BENCH_BOOST:
+                bench_label = " *(active — Bench Boost!)*"
+            elif bench_subbed_for:
+                bench_label = f" *(subbed in for {bench_subbed_for})*"
+            else:
+                bench_label = " *(bench)*"
             if results:
                 r = results.get(_player_key(bench)); base = int(r["total"]) if r else 0
-                lines.append(f"6. {bench} **[B]**{price_str} — **{base}** base pts{bench_label}")
+                lines.append(f"{bench} **[B]**{price_str} — **{base}** base pts{bench_label}")
             else:
-                lines.append(f"6. {bench} **[B]**{price_str}{bench_label}")
+                lines.append(f"{bench} **[B]**{price_str}{bench_label}")
 
         if results:
             total = _compute_user_score(t, target.id, chip)
