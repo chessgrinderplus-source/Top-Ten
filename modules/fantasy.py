@@ -2920,6 +2920,36 @@ class FantasyCog(commands.Cog):
         view = ConfirmDeleteTournamentView(self, interaction.user.id, tournament_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+    @f_admin.command(name="copy-player-list", description="Admin: get the seeded + unseeded player blocks for a tournament (ready to paste into tournament-create).")
+    @app_commands.autocomplete(tournament_id=_ac_any_tournament)
+    async def fantasy_copy_player_list(self, interaction: discord.Interaction, tournament_id: str):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        t = _find_tournament(data, tournament_id)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        players = t.get("players", [])
+        if not players:
+            return await interaction.response.send_message("ℹ️ No players in this tournament.", ephemeral=True)
+
+        seeded   = sorted([p for p in players if p.get("seed") is not None], key=lambda p: p["seed"])
+        unseeded = [p for p in players if p.get("seed") is None]
+
+        seeded_block   = "\n".join(p["name"] for p in seeded)
+        unseeded_block = "\n".join(p["name"] for p in unseeded)
+
+        lines = [f"**Player list — {t.get('name')}** (`{t.get('id')}`)", ""]
+        lines.append(f"**Seeded ({len(seeded)})** — paste into the *Seeds* box:")
+        lines.append(f"```\n{seeded_block or '(none)'}\n```")
+        if unseeded:
+            lines.append(f"**Unseeded ({len(unseeded)})** — paste into the *Unseeded* box:")
+            lines.append(f"```\n{unseeded_block}\n```")
+        else:
+            lines.append("*No unseeded players.*")
+
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
     @f_admin.command(name="tournament-reassign-category", description="Admin: change a tournament's category (recomputes results if already entered).")
     @app_commands.autocomplete(tournament_id=_ac_any_tournament, category_id=_ac_category)
     async def fantasy_reassign_category(self, interaction: discord.Interaction,
