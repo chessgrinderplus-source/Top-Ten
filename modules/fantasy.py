@@ -2920,7 +2920,7 @@ class FantasyCog(commands.Cog):
         view = ConfirmDeleteTournamentView(self, interaction.user.id, tournament_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @f_admin.command(name="copy-player-list", description="Admin: get the seeded + unseeded player blocks for a tournament (ready to paste into tournament-create).")
+    @f_admin.command(name="copy-player-list", description="Admin: get copy-pasteable seeded/unseeded player blocks for a tournament.")
     @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     async def fantasy_copy_player_list(self, interaction: discord.Interaction, tournament_id: str):
         if not _is_admin(interaction.user):
