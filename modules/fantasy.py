@@ -3697,6 +3697,64 @@ class FantasyCog(commands.Cog):
             header=header,
         )
         await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
+    @f_admin.command(name="reset-chip", description="Admin: reset a user's chip for a tournament (or all users).")
+    @app_commands.autocomplete(tournament_id=_ac_tournament)
+    @app_commands.describe(
+        tournament_id="Fantasy tournament ID",
+        user="The user whose chip to reset (leave blank to reset ALL users)",
+    )
+    async def fantasy_reset_chip(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        user: Optional[discord.Member] = None,
+    ):
+        if not _is_admin(interaction.user):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        data = _load()
+        t = _find_tournament(data, tournament_id)
+        if not t:
+            return await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+
+        tid = t["id"]
+        user_chips: dict = data.setdefault("user_chips", {})
+
+        if user is not None:
+            # ── Single-user reset ──────────────────────────────────────────
+            uid_str = str(user.id)
+            existing = user_chips.get(uid_str, {}).get(tid)
+            if existing is None:
+                return await interaction.response.send_message(
+                    f"ℹ️ **{user.display_name}** has no chip active for **{t['name']}**.",
+                    ephemeral=True,
+                )
+            # Remove the chip entry for this tournament; preserve last_chip_at and others
+            user_chips[uid_str].pop(tid, None)
+            _save(data)
+            chip_label = CHIP_LABELS.get(existing, existing)
+            await interaction.response.send_message(
+                f"✅ Reset **{chip_label}** chip for **{user.display_name}** in **{t['name']}**.\n"
+                f"Their {CHIP_WINDOW_DAYS}-day cooldown is **not** affected — only the tournament chip entry was removed.",
+                ephemeral=True,
+            )
+        else:
+            # ── Universal reset (all users in this tournament) ─────────────
+            count = 0
+            for uid_str, chips in user_chips.items():
+                if tid in chips:
+                    chips.pop(tid)
+                    count += 1
+            _save(data)
+            if count == 0:
+                return await interaction.response.send_message(
+                    f"ℹ️ No chip entries found for **{t['name']}**.", ephemeral=True
+                )
+            await interaction.response.send_message(
+                f"✅ Reset chips for **{count}** user(s) in **{t['name']}**.\n"
+                f"Individual {CHIP_WINDOW_DAYS}-day cooldowns are **not** affected — only tournament chip entries were removed.",
+                ephemeral=True,
+            )
+
     # ── User commands ─────────────────────────────────────────────────────────
 
     @f_admin.command(name="overview", description="Admin: see every entrant and their picks at a glance.")
