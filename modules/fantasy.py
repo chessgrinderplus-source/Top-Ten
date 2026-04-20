@@ -3698,7 +3698,7 @@ class FantasyCog(commands.Cog):
         )
         await interaction.response.send_message(content=view._status_text(), view=view, ephemeral=True)
     @f_admin.command(name="reset-chip", description="Admin: reset a user's chip for a tournament (or all users).")
-    @app_commands.autocomplete(tournament_id=_ac_tournament)
+    @app_commands.autocomplete(tournament_id=_ac_any_tournament)
     @app_commands.describe(
         tournament_id="Fantasy tournament ID",
         user="The user whose chip to reset (leave blank to reset ALL users)",
