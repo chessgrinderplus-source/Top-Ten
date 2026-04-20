@@ -28,7 +28,7 @@ ADMIN_CAN_SET_BUDGET      = True   # Allow admins to override budget cap per tou
 CHIPS_PER_TOURNAMENT      = 1      # kept for compat but credit system replaced by 2-week window
 ADMIN_CAN_SET_CHIPS       = True   # Allow admins to override chip allowance per tournament
 
-CHIP_WINDOW_DAYS          = 14     # Users can use one chip per this many days
+CHIP_WINDOW_DAYS          = 0    # Users can use one chip per this many days
 
 CAPTAIN_MULTIPLIER        = 2.0    # Default captain score multiplier
 VC_MULTIPLIER             = 1.5    # Default vice-captain score multiplier
