@@ -7,6 +7,7 @@ import time
 import os
 import asyncio
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Optional, List, Dict, Tuple, Any
 
 import aiohttp
@@ -2170,6 +2171,278 @@ class CalculateConfirmView(discord.ui.View):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="❌ Cancelled.", embed=None, view=None)
+
+# ============================================================
+# Fuzzy match resolution: one missing player at a time
+# ============================================================
+
+class FuzzyMatchView(discord.ui.View):
+    """
+    Step through each missing player one at a time.
+    For each, shows up to 3 fuzzy draw-name candidates plus an 'Enter manually' fallback.
+    Players with no fuzzy match at all are auto-queued for the manual modal.
+    """
+
+    _MANUAL = "__manual__"
+
+    def __init__(
+        self,
+        cog,
+        user_id: int,
+        tournament_id: str,
+        found_rows: List[dict],
+        fuzzy_candidates: Dict[str, List[Tuple[str, float]]],
+        truly_missing: List[str],
+        all_matches: List[dict],
+    ):
+        super().__init__(timeout=300)
+        self.cog            = cog
+        self.user_id        = user_id
+        self.tournament_id  = tournament_id
+        self.found_rows     = found_rows          # already computed rows
+        self.fuzzy_candidates = fuzzy_candidates  # {t_name: [(draw_name, score), ...]}
+        self.truly_missing  = truly_missing       # no candidates → auto-manual
+        self.all_matches    = all_matches
+
+        # Only page through players that have at least one candidate to choose from
+        self.to_review: List[str] = list(fuzzy_candidates.keys())
+        self.idx:        int       = 0
+        self.selections: Dict[str, str] = {}   # {t_name: draw_name | _MANUAL}
+
+        self._rebuild()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+            return False
+        return True
+
+    # ── internal helpers ────────────────────────────────────────
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        if not self.to_review:
+            return
+
+        current    = self.to_review[self.idx]
+        candidates = self.fuzzy_candidates.get(current, [])
+
+        # Row 0 — select for this player
+        opts = [
+            discord.SelectOption(
+                label=draw_name[:100],
+                value=draw_name,
+                default=(self.selections.get(current) == draw_name),
+            )
+            for draw_name, _ in candidates
+        ]
+        opts.append(discord.SelectOption(
+            label="⌨️ Enter manually",
+            value=self._MANUAL,
+            default=(self.selections.get(current) == self._MANUAL),
+        ))
+
+        sel = discord.ui.Select(
+            placeholder=f"Match for: {current}"[:150],
+            options=opts,
+            min_values=1,
+            max_values=1,
+            row=0,
+        )
+
+        async def _sel_cb(interaction: discord.Interaction, _name=current, _sel=sel) -> None:
+            self.selections[_name] = _sel.values[0]
+            self._rebuild()
+            await interaction.response.edit_message(embed=self._embed(), view=self)
+
+        sel.callback = _sel_cb
+        self.add_item(sel)
+
+        # Row 1 — navigation buttons
+        prev_btn = discord.ui.Button(
+            label="◀ Previous",
+            style=discord.ButtonStyle.secondary,
+            disabled=(self.idx == 0),
+            row=1,
+        )
+
+        async def _prev(interaction: discord.Interaction) -> None:
+            self.idx -= 1
+            self._rebuild()
+            await interaction.response.edit_message(embed=self._embed(), view=self)
+
+        prev_btn.callback = _prev
+        self.add_item(prev_btn)
+
+        next_btn = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.primary,
+            disabled=(self.idx >= len(self.to_review) - 1),
+            row=1,
+        )
+
+        async def _next(interaction: discord.Interaction) -> None:
+            self.idx += 1
+            self._rebuild()
+            await interaction.response.edit_message(embed=self._embed(), view=self)
+
+        next_btn.callback = _next
+        self.add_item(next_btn)
+
+        done_btn = discord.ui.Button(
+            label="✅ Done",
+            style=discord.ButtonStyle.success,
+            row=1,
+        )
+
+        async def _done(interaction: discord.Interaction) -> None:
+            # Unvisited players default to manual
+            for name in self.to_review:
+                self.selections.setdefault(name, self._MANUAL)
+
+            new_rows     = list(self.found_rows)
+            manual_names = list(self.truly_missing)
+
+            for t_name, choice in self.selections.items():
+                if choice == self._MANUAL:
+                    manual_names.append(t_name)
+                else:
+                    r = _calc_player_fantasy(choice, self.all_matches)
+                    if r:
+                        r["player"] = t_name   # restore tournament-roster name
+                        new_rows.append(r)
+                    else:
+                        manual_names.append(t_name)
+
+            if manual_names:
+                _fuzzy_resolved[(self.user_id, self.tournament_id)] = new_rows
+                await interaction.response.send_modal(
+                    MissingPlayersModal(
+                        self.cog, self.user_id, self.tournament_id, manual_names
+                    )
+                )
+            else:
+                data   = _load()
+                t      = _find_tournament(data, self.tournament_id) or {}
+                cat_id = t.get("category_id")
+                cat    = next((c for c in data.get("categories", []) if c.get("id") == cat_id), None)
+                rp_map = (cat or {}).get("round_points", {})
+                embed  = _build_calculate_preview_embed(t, new_rows, rp_map)
+                view   = CalculateConfirmView(self.cog, self.user_id, self.tournament_id, new_rows)
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+        done_btn.callback = _done
+        self.add_item(done_btn)
+
+    def _embed(self) -> discord.Embed:
+        n       = len(self.to_review)
+        current = self.to_review[self.idx] if self.to_review else "?"
+        cands   = self.fuzzy_candidates.get(current, [])
+
+        lines = [
+            f"**Player {self.idx + 1} of {n}:** `{current}`",
+            "",
+            "Pick the correct draw entry below, or choose **⌨️ Enter manually**:",
+            "",
+        ]
+        cur_sel = self.selections.get(current)
+        for draw_name, _ in cands:
+            marker = "▶ " if cur_sel == draw_name else "   "
+            lines.append(f"{marker}**{draw_name}**")
+        manual_marker = "▶ " if cur_sel == self._MANUAL else "   "
+        lines.append(f"{manual_marker}⌨️ Enter manually")
+
+        # Progress tracker
+        lines += ["", "─── Progress ───"]
+        for i, name in enumerate(self.to_review):
+            sel  = self.selections.get(name)
+            icon = "👉" if i == self.idx else ("⬜" if sel is None else ("⌨️" if sel == self._MANUAL else "✅"))
+            lines.append(f"{icon} {name}")
+
+        if self.truly_missing:
+            lines += ["", "⌨️ **Auto-queued for manual entry:**"]
+            lines += [f"  • {n}" for n in self.truly_missing]
+
+        return discord.Embed(
+            title=f"🔍 Resolve Missing Players ({n} to review)",
+            description="\n".join(lines),
+        )
+
+
+class MissingPlayersModal(discord.ui.Modal, title="Enter Missing Player Results"):
+    """
+    Focused modal pre-filled with template lines for players that couldn't be auto-matched.
+    On submit, merges with already-resolved rows and sends the calculate preview.
+    """
+
+    results = discord.ui.TextInput(
+        label="Player | Round | SW | SL | Perf | Upset | Log",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder="Raphael Collignon | R64 | 0 | 1 | 0 | 0 | l. Nakashima 3-6 4-6 +0",
+    )
+
+    def __init__(
+        self,
+        cog,
+        user_id: int,
+        tournament_id: str,
+        missing_names: List[str],
+    ):
+        super().__init__(title="Enter Missing Player Results")
+        self.cog           = cog
+        self.user_id       = user_id
+        self.tournament_id = tournament_id
+        template = "\n".join(
+            f"{name} | R64 | 0 | 1 | 0 | 0 | " for name in missing_names
+        )
+        try:
+            self.results.default = template[:4000]
+        except Exception:
+            pass
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+        key           = (self.user_id, self.tournament_id)
+        existing_rows = _fuzzy_resolved.pop(key, [])
+
+        parsed, errors = _parse_results_lines(str(self.results).strip())
+        if errors:
+            # Restore staging so the user can retry without losing fuzzy selections
+            _fuzzy_resolved[key] = existing_rows
+            return await interaction.response.send_message(
+                "❌ Errors in manual entry:\n" + "\n".join(errors[:20]),
+                ephemeral=True,
+            )
+
+        manual_rows = [
+            {
+                "player":          r["player"],
+                "round":           _normalize_round(r["round"]) or r["round"],
+                "sets_won":        r.get("sets_won", 0),
+                "sets_lost":       r.get("sets_lost", 0),
+                "performance_pts": r.get("performance_pts", 0),
+                "upset_pts":       r.get("upset_pts", 0),
+                "match_log":       r.get("match_log", ""),
+            }
+            for r in parsed
+        ]
+
+        all_rows = existing_rows + manual_rows
+
+        data   = _load()
+        t      = _find_tournament(data, self.tournament_id) or {}
+        cat_id = t.get("category_id")
+        cat    = next((c for c in data.get("categories", []) if c.get("id") == cat_id), None)
+        rp_map = (cat or {}).get("round_points", {})
+
+        embed = _build_calculate_preview_embed(t, all_rows, rp_map)
+        view  = CalculateConfirmView(self.cog, self.user_id, self.tournament_id, all_rows)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 # ============================================================
 # Cog
 # ============================================================
@@ -2181,6 +2454,9 @@ class CalculateConfirmView(discord.ui.View):
 
 # In-memory staging: {(user_id, tournament_id): [line, line, ...]}
 _staged_results: Dict[Tuple[int, str], List[str]] = {}
+
+# Rows already resolved by FuzzyMatchView, waiting for MissingPlayersModal to supply the rest
+_fuzzy_resolved: Dict[Tuple[int, str], List[dict]] = {}
 
 MAX_CHUNKS = 6
 
@@ -2720,6 +2996,71 @@ def _format_bot_paste_line(r: dict) -> str:
         f"{r['performance_pts']} | {r['upset_pts']} | "
         f"{r['match_log']}"
     )
+
+def _fuzzy_draw_matches(
+    player_name: str,
+    draw_names: List[str],
+    threshold: float = 0.55,
+    top_n: int = 3,
+) -> List[Tuple[str, float]]:
+    """
+    Return up to top_n fuzzy matches for player_name from draw_names, all above threshold.
+    Uses SequenceMatcher on cleaned names plus a surname-match bonus.
+    """
+    p_clean = re.sub(r"[^a-z\s]", "", player_name.lower())
+    p_words  = p_clean.split()
+    p_surname = p_words[-1] if p_words else ""
+
+    scored: List[Tuple[str, float]] = []
+    seen_keys: set = set()
+    for draw_name in draw_names:
+        dk_clean  = re.sub(r"[^a-z\s]", "", draw_name.lower())
+        dk_words  = dk_clean.split()
+        dk_surname = dk_words[-1] if dk_words else ""
+
+        score = SequenceMatcher(None, p_clean, dk_clean).ratio()
+        # Strong signal: last name of either player appears in the other
+        if len(p_surname) > 4 and (p_surname in dk_clean or dk_surname in p_clean):
+            score = max(score, 0.75)
+
+        key = _player_key(draw_name)
+        if score >= threshold and key not in seen_keys:
+            seen_keys.add(key)
+            scored.append((draw_name, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_n]
+
+
+def _build_calculate_preview_embed(
+    t: dict,
+    rows: List[dict],
+    round_points_map: Dict[str, int],
+) -> discord.Embed:
+    """Build the Calculate Preview embed from a list of computed rows."""
+    t_name = t.get("name", "Tournament")
+    preview_lines = [
+        f"**Preview — {t_name}**",
+        f"**{len(rows)}** players calculated",
+        "",
+        "Player — Round — Sets W/L — Perf — Upset — Est. Total",
+        "",
+    ]
+    for r in sorted(rows, key=lambda x: ROUND_ORDER.get(x.get("round", ""), 0), reverse=False):
+        tourn_pts = round_points_map.get(r.get("round", ""), 0)
+        set_pts   = r.get("sets_won", 0) * 5 - r.get("sets_lost", 0) * 2
+        total_est = tourn_pts + set_pts + r.get("performance_pts", 0) + r.get("upset_pts", 0)
+        preview_lines.append(
+            f"**{r.get('player', '?')}** — {r.get('round', '?')} — "
+            f"{r.get('sets_won', 0)}W/{r.get('sets_lost', 0)}L — "
+            f"perf:{r.get('performance_pts', 0)} upset:{r.get('upset_pts', 0)} — "
+            f"~**{total_est}**"
+        )
+    pages = _chunk_pages(preview_lines)
+    embed = discord.Embed(title="Calculate Preview", description=pages[0])
+    embed.set_footer(text=f"Page 1/{len(pages)} — Review above, then confirm or re-paste.")
+    return embed
+
 
 class FantasyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -3336,45 +3677,52 @@ class FantasyCog(commands.Cog):
             else:
                 rows.append(result)
 
-        # Build preview embed
+        # ── Fuzzy-match resolution for players not found in draw ──────────────
+        if not_found:
+            # Collect every unique player name that appears anywhere in the draw
+            draw_name_set: Dict[str, str] = {}   # normalised_key → original draw name
+            for m in all_matches:
+                for dn in (m.get("w_name", ""), m.get("l_name", "")):
+                    if dn:
+                        draw_name_set[_player_key(dn)] = dn
+            draw_names = list(draw_name_set.values())
+
+            fuzzy_candidates: Dict[str, List[Tuple[str, float]]] = {}
+            truly_missing:    List[str] = []
+
+            for t_name in not_found:
+                matches_found = _fuzzy_draw_matches(t_name, draw_names)
+                if matches_found:
+                    fuzzy_candidates[t_name] = matches_found
+                else:
+                    truly_missing.append(t_name)
+
+            if fuzzy_candidates:
+                # Show the per-player fuzzy review UI; truly_missing flows through it too
+                view  = FuzzyMatchView(
+                    self, interaction.user.id, tournament_id,
+                    rows, fuzzy_candidates, truly_missing, all_matches,
+                )
+                await interaction.response.send_message(
+                    embed=view._embed(), view=view, ephemeral=True
+                )
+                return
+
+            # No fuzzy candidates at all — go straight to the manual modal
+            if truly_missing:
+                _fuzzy_resolved[(interaction.user.id, tournament_id)] = rows
+                await interaction.response.send_modal(
+                    MissingPlayersModal(self, interaction.user.id, tournament_id, truly_missing)
+                )
+                return
+
+        # ── All players resolved — show confirm preview ───────────────────────
         category_id = t.get("category_id")
         cat = next((c for c in data.get("categories", []) if c.get("id") == category_id), None)
         round_points_map: Dict[str, int] = (cat or {}).get("round_points", {})
 
-        preview_lines = [
-            f"**Preview — {t.get('name')}**",
-            f"Parsed **{len(all_matches)}** matches · **{len(rows)}** players calculated",
-            "",
-            "Player — Round — Sets W/L — Perf — Upset — Est. Total",
-            "",
-        ]
-        for r in sorted(rows, key=lambda x: ROUND_ORDER.get(x["round"], 0), reverse=False):
-            tourn_pts = round_points_map.get(r["round"], 0)
-            set_pts   = r["sets_won"] * 5 - r["sets_lost"] * 2
-            total_est = tourn_pts + set_pts + r["performance_pts"] + r["upset_pts"]
-            preview_lines.append(
-                f"**{r['player']}** — {r['round']} — "
-                f"{r['sets_won']}W/{r['sets_lost']}L — "
-                f"perf:{r['performance_pts']} upset:{r['upset_pts']} — "
-                f"~**{total_est}**"
-            )
-
-        if not_found:
-            preview_lines += ["", "⚠️ **Not found in draw:**"]
-            preview_lines += [f"- {n}" for n in not_found]
-
-        pages = _chunk_pages(preview_lines)
-        pager_view = PagerView(pages, interaction.user.id, "Calculate Preview")
-
-        # We need both the pager AND the confirm buttons — send pager first, then confirm separately
+        embed        = _build_calculate_preview_embed(t, rows, round_points_map)
         confirm_view = CalculateConfirmView(self, interaction.user.id, tournament_id, rows)
-
-        embed = discord.Embed(
-            title="Calculate Preview",
-            description=pages[0],
-        )
-        embed.set_footer(text=f"Page 1/{len(pages)} — Review above, then confirm or re-paste.")
-
         await interaction.response.send_message(embed=embed, view=confirm_view, ephemeral=True)
 
     async def _fantasy_end_submit(self, interaction: discord.Interaction, tournament_id: str, results_text: str):
