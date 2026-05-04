@@ -2369,6 +2369,109 @@ class FuzzyMatchView(discord.ui.View):
         )
 
 
+# Staging for _fantasy_end_submit missing-player resolution
+# {(user_id, tournament_id): [already-resolved row dicts]}
+_end_submit_resolved: Dict[Tuple[int, str], List[dict]] = {}
+
+
+class MissingEndPlayersView(discord.ui.View):
+    """
+    Shown when _fantasy_end_submit finds registered players absent from the results paste
+    (after fuzzy matching has already been attempted).
+    Offers: Auto-fill as 0 pts  |  Enter manually
+    """
+
+    def __init__(self, cog, user_id: int, tournament_id: str,
+                 resolved_rows: List[dict], missing_names: List[str]):
+        super().__init__(timeout=300)
+        self.cog            = cog
+        self.user_id        = user_id
+        self.tournament_id  = tournament_id
+        self.resolved_rows  = resolved_rows   # rows already parsed/fuzzy-resolved
+        self.missing_names  = missing_names   # canonical names still absent
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+            return False
+        return True
+
+    def _embed(self) -> discord.Embed:
+        names_str = "\n".join(f"• {n}" for n in self.missing_names)
+        return discord.Embed(
+            title="⚠️ Players missing from results",
+            description=(
+                f"The following **{len(self.missing_names)}** registered player(s) "
+                f"have no results entry:\n\n{names_str}\n\n"
+                "**Auto-fill** → score them as 0 pts (R128, no sets/perf/upset).\n"
+                "**Enter manually** → open a pre-filled modal to type their results."
+            ),
+        )
+
+    @discord.ui.button(label="Auto-fill as 0 pts", style=discord.ButtonStyle.secondary)
+    async def autofill(self, interaction: discord.Interaction, button: discord.ui.Button):
+        zero_rows = [
+            {"player": name, "round": "R128", "sets_won": 0, "sets_lost": 0,
+             "performance_pts": 0, "upset_pts": 0, "match_log": ""}
+            for name in self.missing_names
+        ]
+        all_rows_text = "\n".join(
+            f"{r['player']} | {r['round']} | {r.get('sets_won',0)} | "
+            f"{r.get('sets_lost',0)} | {r.get('performance_pts',0)} | "
+            f"{r.get('upset_pts',0)} | {r.get('match_log','')}"
+            for r in self.resolved_rows + zero_rows
+        )
+        await interaction.response.edit_message(
+            content="⏳ Auto-filling missing players…", embed=None, view=None
+        )
+        await self.cog._fantasy_end_submit(interaction, self.tournament_id, all_rows_text)
+
+    @discord.ui.button(label="Enter manually", style=discord.ButtonStyle.primary)
+    async def enter_manually(self, interaction: discord.Interaction, button: discord.ui.Button):
+        key = (self.user_id, self.tournament_id)
+        _end_submit_resolved[key] = self.resolved_rows
+        await interaction.response.send_modal(
+            _EndSubmitMissingModal(self.cog, self.user_id, self.tournament_id, self.missing_names)
+        )
+
+
+class _EndSubmitMissingModal(discord.ui.Modal, title="Enter Missing Player Results"):
+    results = discord.ui.TextInput(
+        label="Player | Round | SW | SL | Perf | Upset | Log",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder="Raphael Collignon | R64 | 0 | 1 | 0 | 0 | l. Nakashima 3-6 4-6 +0",
+    )
+
+    def __init__(self, cog, user_id: int, tournament_id: str, missing_names: List[str]):
+        super().__init__(title="Enter Missing Player Results")
+        self.cog           = cog
+        self.user_id       = user_id
+        self.tournament_id = tournament_id
+        template = "\n".join(f"{name} | R128 | 0 | 1 | 0 | 0 | " for name in missing_names)
+        try:
+            self.results.default = template[:4000]
+        except Exception:
+            pass
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        key = (self.user_id, self.tournament_id)
+        existing_rows = _end_submit_resolved.pop(key, [])
+        # Combine existing resolved rows with manually entered ones as a single text blob
+        existing_text = "\n".join(
+            f"{r['player']} | {r['round']} | {r.get('sets_won',0)} | "
+            f"{r.get('sets_lost',0)} | {r.get('performance_pts',0)} | "
+            f"{r.get('upset_pts',0)} | {r.get('match_log','')}"
+            for r in existing_rows
+        )
+        manual_text = str(self.results).strip()
+        combined = "\n".join(filter(None, [existing_text, manual_text]))
+        await self.cog._fantasy_end_submit(interaction, self.tournament_id, combined)
+
+
 class MissingPlayersModal(discord.ui.Modal, title="Enter Missing Player Results"):
     """
     Focused modal pre-filled with template lines for players that couldn't be auto-matched.
@@ -3759,35 +3862,30 @@ class FantasyCog(commands.Cog):
             tp_names   = [p["name"] for p in tp_players]
 
             # ── Fuzzy-resolve submitted names against tournament player list ──
-            # Build a canonical name map: submitted key → registered name
-            fuzzy_name_map: Dict[str, str] = {}  # submitted _player_key → canonical name
+            # Remap submitted player names to canonical registered names where possible
             for r in rows:
                 sk = _player_key(r["player"])
-                if sk in tp_keys:
-                    fuzzy_name_map[sk] = r["player"]  # exact match
-                else:
-                    # Try fuzzy match against registered names
+                if sk not in tp_keys:
                     matches = _fuzzy_draw_matches(r["player"], tp_names, threshold=0.65, top_n=1)
                     if matches:
-                        fuzzy_name_map[sk] = matches[0][0]  # map to canonical name
+                        r["player"] = matches[0][0]
 
-            # Remap submitted rows to canonical names where fuzzy-resolved
-            for r in rows:
-                sk = _player_key(r["player"])
-                if sk in fuzzy_name_map and fuzzy_name_map[sk] != r["player"]:
-                    r["player"] = fuzzy_name_map[sk]
-
-            # Re-check after fuzzy resolution
-            tp_keys_after = {_player_key(p["name"]) for p in tp_players}
-            unknown = [r["player"] for r in rows if _player_key(r["player"]) not in tp_keys_after]
-            given   = {_player_key(r["player"]) for r in rows}
-            missing = [p["name"] for p in tp_players if _player_key(p["name"]) not in given]
-            if unknown or missing:
-                msg = ["❌ Validation failed."]
-                if unknown: msg.append("\n**Unknown:**"); msg.extend([f"- {n}" for n in unknown[:50]])
-                if missing: msg.append("\n**Missing:**");  msg.extend([f"- {n}" for n in missing[:50]])
+            # Unknown = submitted names that still don't match any registered player (hard error)
+            unknown = [r["player"] for r in rows if _player_key(r["player"]) not in tp_keys]
+            if unknown:
+                msg = ["❌ Validation failed.", "\n**Unknown (not in player list):**"]
+                msg.extend([f"- {n}" for n in unknown[:50]])
                 view = RetryEndView(self, interaction.user.id, tournament_id, results_text)
                 return await _reply("\n".join(msg), view=view, ephemeral=True)
+
+            # Missing = registered players absent from submitted results → ask admin
+            given   = {_player_key(r["player"]) for r in rows}
+            missing = [p["name"] for p in tp_players if _player_key(p["name"]) not in given]
+            if missing:
+                view = MissingEndPlayersView(
+                    self, interaction.user.id, tournament_id, rows, missing
+                )
+                return await _reply(embed=view._embed(), view=view, ephemeral=True)
 
             # Build final rows
             final_rows = []
