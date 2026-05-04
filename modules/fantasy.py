@@ -3754,10 +3754,34 @@ class FantasyCog(commands.Cog):
                 return await _reply("❌ Errors:\n" + "\n".join(parse_errors[:30]),
                                     view=view, ephemeral=True)
 
-            tp_keys = {_player_key(p["name"]) for p in t.get("players", [])}
-            unknown = [r["player"] for r in rows if _player_key(r["player"]) not in tp_keys]
+            tp_players = t.get("players", [])
+            tp_keys    = {_player_key(p["name"]) for p in tp_players}
+            tp_names   = [p["name"] for p in tp_players]
+
+            # ── Fuzzy-resolve submitted names against tournament player list ──
+            # Build a canonical name map: submitted key → registered name
+            fuzzy_name_map: Dict[str, str] = {}  # submitted _player_key → canonical name
+            for r in rows:
+                sk = _player_key(r["player"])
+                if sk in tp_keys:
+                    fuzzy_name_map[sk] = r["player"]  # exact match
+                else:
+                    # Try fuzzy match against registered names
+                    matches = _fuzzy_draw_matches(r["player"], tp_names, threshold=0.65, top_n=1)
+                    if matches:
+                        fuzzy_name_map[sk] = matches[0][0]  # map to canonical name
+
+            # Remap submitted rows to canonical names where fuzzy-resolved
+            for r in rows:
+                sk = _player_key(r["player"])
+                if sk in fuzzy_name_map and fuzzy_name_map[sk] != r["player"]:
+                    r["player"] = fuzzy_name_map[sk]
+
+            # Re-check after fuzzy resolution
+            tp_keys_after = {_player_key(p["name"]) for p in tp_players}
+            unknown = [r["player"] for r in rows if _player_key(r["player"]) not in tp_keys_after]
             given   = {_player_key(r["player"]) for r in rows}
-            missing = [p["name"] for p in t.get("players", []) if _player_key(p["name"]) not in given]
+            missing = [p["name"] for p in tp_players if _player_key(p["name"]) not in given]
             if unknown or missing:
                 msg = ["❌ Validation failed."]
                 if unknown: msg.append("\n**Unknown:**"); msg.extend([f"- {n}" for n in unknown[:50]])
