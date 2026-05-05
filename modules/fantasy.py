@@ -1074,6 +1074,89 @@ class PricesATPModal(discord.ui.Modal, title="Set Player Prices — ATP Paste"):
         await self.cog._apply_prices(interaction, self.tournament_id, lines_text,
                                       source="ATP paste", atp_prices=atp_prices)
 
+MAX_ATP_CHUNKS = 10
+
+# Staging for chunked ATP rankings paste: {(user_id, tournament_id): [raw text chunks]}
+_staged_atp: Dict[Tuple[int, str], List[str]] = {}
+
+
+class ChunkedATPModal(discord.ui.Modal, title="ATP Rankings — chunk"):
+    chunk_text = discord.ui.TextInput(
+        label="Paste ATP rankings (this chunk)",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder="Paste directly from the ATP rankings page…",
+    )
+
+    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int):
+        super().__init__(title=f"ATP Rankings — Part {chunk_num} of {MAX_ATP_CHUNKS}")
+        self.cog = cog; self.user_id = user_id
+        self.tournament_id = tournament_id; self.chunk_num = chunk_num
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        key = (self.user_id, self.tournament_id)
+        _staged_atp.setdefault(key, []).append(str(self.chunk_text).strip())
+        total_chunks = len(_staged_atp[key])
+        next_chunk = self.chunk_num + 1
+
+        if next_chunk > MAX_ATP_CHUNKS:
+            await interaction.response.edit_message(
+                content=f"✅ Part {self.chunk_num} saved. Finalizing…", view=None)
+            await _finalize_atp(self.cog, interaction, self.tournament_id)
+        else:
+            view = ChunkedATPView(self.cog, self.user_id, self.tournament_id,
+                                  chunk_num=next_chunk, chunks_so_far=total_chunks)
+            await interaction.response.edit_message(
+                content=(
+                    f"✅ Part {self.chunk_num} saved ({total_chunks} chunk(s) so far).\n"
+                    f"Click **Part {next_chunk}** to continue, or **Done** if that's all."
+                ),
+                view=view,
+            )
+
+
+class ChunkedATPView(discord.ui.View):
+    def __init__(self, cog, user_id: int, tournament_id: str, chunk_num: int, chunks_so_far: int):
+        super().__init__(timeout=300)
+        self.cog = cog; self.user_id = user_id
+        self.tournament_id = tournament_id
+        self.chunk_num = chunk_num; self.chunks_so_far = chunks_so_far
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Not for you.", ephemeral=True); return False
+        return True
+
+    @discord.ui.button(label="Paste next chunk", style=discord.ButtonStyle.primary)
+    async def next_chunk(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._guard(interaction): return
+        await interaction.response.send_modal(
+            ChunkedATPModal(self.cog, self.user_id, self.tournament_id, self.chunk_num))
+
+    @discord.ui.button(label="Done — apply rankings", style=discord.ButtonStyle.success)
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._guard(interaction): return
+        await interaction.response.edit_message(content="⏳ Applying rankings…", view=None)
+        await _finalize_atp(self.cog, interaction, self.tournament_id)
+
+
+async def _finalize_atp(cog, interaction: discord.Interaction, tournament_id: str):
+    key = (interaction.user.id, tournament_id)
+    chunks = _staged_atp.pop(key, [])
+    combined = "\n".join(chunks)
+    parsed, errors = _parse_atp_paste(combined)
+    if errors or not parsed:
+        return await interaction.edit_original_response(
+            content="❌ Could not parse ATP paste.\n" + "\n".join(errors[:5]), view=None)
+    lines_text = "\n".join(f"{name} | {pts}" for name, pts in parsed.items())
+    atp_prices = {_player_key(name): pts for name, pts in parsed.items()}
+    await cog._apply_prices(interaction, tournament_id, lines_text,
+                            source="ATP paste", atp_prices=atp_prices)
+
+
 class PricesModeView(discord.ui.View):
     """Two buttons shown after unseeded step when BUDGET_MODE is on."""
 
@@ -1094,7 +1177,13 @@ class PricesModeView(discord.ui.View):
     @discord.ui.button(label="Paste ATP rankings", style=discord.ButtonStyle.secondary)
     async def atp(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._guard(interaction): return
-        await interaction.response.send_modal(PricesATPModal(self.cog, self.user_id, self.tournament_id))
+        # Start chunked flow — open part 1 modal, show "next / done" buttons after each chunk
+        await interaction.response.send_message(
+            "Paste your ATP rankings in up to 6 chunks. Click **Paste next chunk** to begin.",
+            view=ChunkedATPView(self.cog, self.user_id, self.tournament_id,
+                                chunk_num=1, chunks_so_far=0),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Skip prices (no budget)", style=discord.ButtonStyle.secondary)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
